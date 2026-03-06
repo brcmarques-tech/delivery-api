@@ -10,7 +10,7 @@ API backend (NestJS + GraphQL) do sistema de delivery.
 ## Instalação
 
 ```bash
-npm install
+yarn
 ```
 
 ## Variáveis de ambiente
@@ -36,8 +36,8 @@ docker compose up
 Certifique-se de ter PostgreSQL e Redis rodando, configure o `.env` e execute:
 
 ```bash
-npm run start:dev   # Desenvolvimento (watch mode)
-npm run start       # Produção
+yarn start:dev   # Desenvolvimento (watch mode)
+yarn start       # Produção
 ```
 
 A API estará disponível em `http://localhost:3000/graphql`.
@@ -46,12 +46,12 @@ A API estará disponível em `http://localhost:3000/graphql`.
 
 | Comando | Descrição |
 |---|---|
-| `npm run start:dev` | Desenvolvimento com hot-reload |
-| `npm run start` | Iniciar servidor |
-| `npm run build` | Build de produção |
-| `npm run start:prod` | Rodar build de produção |
-| `npm test` | Rodar testes unitários |
-| `npm run test:e2e` | Rodar testes e2e |
+| `yarn start:dev` | Desenvolvimento com hot-reload |
+| `yarn start` | Iniciar servidor |
+| `yarn build` | Build de produção |
+| `yarn start:prod` | Rodar build de produção |
+| `yarn test` | Rodar testes unitários |
+| `yarn test:e2e` | Rodar testes e2e |
 
 ## Estrutura
 
