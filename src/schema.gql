@@ -1,0 +1,246 @@
+# ------------------------------------------------------
+# THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
+# ------------------------------------------------------
+
+type Address {
+  city: String!
+  complement: String
+  createdAt: DateTime!
+  id: ID!
+  isDefault: Boolean!
+  latitude: Float!
+  longitude: Float!
+  neighborhood: String!
+  number: String!
+  state: String!
+  street: String!
+  user: User!
+  zipCode: String!
+}
+
+type AuthResponse {
+  accessToken: String!
+  user: User!
+}
+
+type Category {
+  createdAt: DateTime!
+  id: ID!
+  imageUrl: String
+  isActive: Boolean!
+  name: String!
+  products: [Product!]
+  sortOrder: Float!
+  store: Store!
+}
+
+input CreateOrderInput {
+  deliveryAddress: String!
+  deliveryLatitude: Float!
+  deliveryLongitude: Float!
+  items: [OrderItemInput!]!
+  notes: String
+  storeId: String!
+}
+
+input CreateProductInput {
+  categoryId: String
+  description: String
+  imageUrl: String
+  name: String!
+  price: Float!
+  storeId: String!
+  unit: String
+}
+
+input CreateStoreInput {
+  city: String!
+  complement: String
+  deliveryFee: Float
+  description: String
+  estimatedDeliveryMinutes: Float
+  latitude: Float!
+  longitude: Float!
+  minimumOrder: Float
+  name: String!
+  neighborhood: String!
+  number: String!
+  phone: String!
+  state: String!
+  street: String!
+  zipCode: String!
+}
+
+"""
+A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
+"""
+scalar DateTime
+
+type Delivery {
+  createdAt: DateTime!
+  currentLatitude: Float
+  currentLongitude: Float
+  deliveredAt: DateTime
+  deliverer: User!
+  id: ID!
+  order: Order!
+  pickedUpAt: DateTime
+  updatedAt: DateTime!
+}
+
+input LoginInput {
+  email: String!
+  password: String!
+}
+
+type Mutation {
+  acceptDelivery(orderId: String!): Delivery!
+  confirmDelivery(deliveryId: String!): Delivery!
+  confirmPickup(deliveryId: String!): Delivery!
+  createCategory(name: String!, storeId: String!): Category!
+  createOrder(input: CreateOrderInput!): Order!
+  createProduct(input: CreateProductInput!): Product!
+  createStore(input: CreateStoreInput!): Store!
+  login(input: LoginInput!): AuthResponse!
+  register(input: RegisterInput!): AuthResponse!
+  toggleProductAvailability(id: String!): Product!
+  toggleStoreOpen(id: String!): Store!
+  updateOrderStatus(id: String!, status: OrderStatus!): Order!
+}
+
+type Order {
+  createdAt: DateTime!
+  customer: User!
+  delivery: Delivery
+  deliveryAddress: String!
+  deliveryFee: Float!
+  deliveryLatitude: Float!
+  deliveryLongitude: Float!
+  id: ID!
+  items: [OrderItem!]!
+  notes: String
+  orderNumber: String!
+  status: OrderStatus!
+  store: Store!
+  subtotal: Float!
+  total: Float!
+  updatedAt: DateTime!
+}
+
+type OrderItem {
+  id: ID!
+  notes: String
+  order: Order!
+  product: Product!
+  quantity: Int!
+  totalPrice: Float!
+  unitPrice: Float!
+}
+
+input OrderItemInput {
+  notes: String
+  productId: String!
+  quantity: Int!
+}
+
+enum OrderStatus {
+  ACCEPTED
+  CANCELLED
+  DELIVERED
+  DELIVERING
+  PENDING
+  PICKED_UP
+  PREPARING
+  READY
+}
+
+type Product {
+  category: Category
+  createdAt: DateTime!
+  description: String
+  id: ID!
+  imageUrl: String
+  isActive: Boolean!
+  isAvailable: Boolean!
+  name: String!
+  price: Float!
+  promotionalPrice: Float
+  stock: Float!
+  store: Store!
+  unit: String
+  updatedAt: DateTime!
+}
+
+type Query {
+  availableDeliveries: [Order!]!
+  categoriesByStore(storeId: String!): [Category!]!
+  me: User!
+  myDeliveries: [Delivery!]!
+  myOrders: [Order!]!
+  myStores: [Store!]!
+  nearbyStores(latitude: Float!, longitude: Float!, radiusKm: Float): [Store!]!
+  order(id: String!): Order!
+  product(id: String!): Product!
+  productsByStore(storeId: String!): [Product!]!
+  store(id: String!): Store!
+  storeOrders(storeId: String!): [Order!]!
+  stores: [Store!]!
+}
+
+input RegisterInput {
+  email: String!
+  name: String!
+  password: String!
+  phone: String!
+  role: UserRole
+}
+
+type Store {
+  bannerUrl: String
+  categories: [Category!]
+  city: String!
+  complement: String
+  createdAt: DateTime!
+  deliveryFee: Float!
+  description: String
+  estimatedDeliveryMinutes: Float!
+  id: ID!
+  isActive: Boolean!
+  isOpen: Boolean!
+  latitude: Float!
+  logoUrl: String
+  longitude: Float!
+  minimumOrder: Float!
+  name: String!
+  neighborhood: String!
+  number: String!
+  owner: User!
+  phone: String!
+  products: [Product!]
+  state: String!
+  street: String!
+  updatedAt: DateTime!
+  zipCode: String!
+}
+
+type User {
+  addresses: [Address!]
+  avatarUrl: String
+  createdAt: DateTime!
+  email: String!
+  id: ID!
+  isActive: Boolean!
+  name: String!
+  orders: [Order!]
+  phone: String!
+  role: UserRole!
+  stores: [Store!]
+  updatedAt: DateTime!
+}
+
+enum UserRole {
+  ADMIN
+  CUSTOMER
+  DELIVERER
+  VENDOR
+}
