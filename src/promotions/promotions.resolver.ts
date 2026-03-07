@@ -1,8 +1,9 @@
-import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Float } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { Promotion } from './entities/promotion.entity';
 import { PromotionsService } from './promotions.service';
 import { CreatePromotionInput } from './dto/create-promotion.input';
+import { PaymentsService } from '../payments/payments.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -12,16 +13,32 @@ import { UserRole } from '../common/enums';
 
 @Resolver(() => Promotion)
 export class PromotionsResolver {
-  constructor(private promotionsService: PromotionsService) {}
+  constructor(
+    private promotionsService: PromotionsService,
+    private paymentsService: PaymentsService,
+  ) {}
 
   @Mutation(() => Promotion)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  createPromotion(
+  async createPromotion(
     @Args('input') input: CreatePromotionInput,
     @CurrentUser() user: User,
   ): Promise<Promotion> {
-    return this.promotionsService.create(input, user);
+    const promotion = await this.promotionsService.create(input, user);
+
+    // Generate checkout for payment
+    try {
+      const payment = await this.paymentsService.createPromotionCheckout(promotion, user);
+      if (payment.checkoutUrl) {
+        promotion.checkoutUrl = payment.checkoutUrl;
+        await this.promotionsService.saveCheckoutUrl(promotion.id, payment.checkoutUrl);
+      }
+    } catch {
+      // If MP fails, promotion is created but without checkout — admin can approve manually
+    }
+
+    return promotion;
   }
 
   @Query(() => [Promotion])
@@ -33,9 +50,7 @@ export class PromotionsResolver {
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   myPromotions(@CurrentUser() user: User): Promise<Promotion[]> {
-    // This returns all promotions for all stores owned by the user
-    // For simplicity, we return all and filter client-side or add a storeId filter
-    return this.promotionsService.findAll();
+    return this.promotionsService.findByOwner(user.id);
   }
 
   @Query(() => [Promotion])
@@ -57,5 +72,28 @@ export class PromotionsResolver {
   @Roles(UserRole.SUPERADMIN)
   markPromotionPaid(@Args('id') id: string): Promise<Promotion> {
     return this.promotionsService.markAsPaid(id);
+  }
+
+  @Mutation(() => Promotion)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  swapPromotionProduct(
+    @Args('id') id: string,
+    @Args('productId') productId: string,
+    @Args('promotionalPrice', { type: () => Float }) promotionalPrice: number,
+    @Args('title') title: string,
+    @CurrentUser() user: User,
+  ): Promise<Promotion> {
+    return this.promotionsService.swapProduct(id, productId, promotionalPrice, title, user.id);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  deletePromotion(
+    @Args('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<boolean> {
+    return this.promotionsService.delete(id, user.id);
   }
 }

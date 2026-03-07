@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Store } from './entities/store.entity';
 import { CreateStoreInput } from './dto/create-store.input';
+import { UpdateStoreInput } from './dto/update-store.input';
 import { User } from '../users/entities/user.entity';
 import { getPlanConfig } from '../common/plan-config';
 
@@ -62,6 +63,18 @@ export class StoresService {
         { lat, lng, radius: radiusKm },
       )
       .getMany();
+  }
+
+  async update(input: UpdateStoreInput, owner: User): Promise<Store> {
+    const store = await this.storesRepository.findOne({
+      where: { id: input.id, owner: { id: owner.id } },
+    });
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+    const { id, ...updates } = input;
+    Object.entries(updates).forEach(([key, value]) => {
+      if (value !== undefined) (store as any)[key] = value;
+    });
+    return this.storesRepository.save(store);
   }
 
   async toggleOpen(id: string, owner: User): Promise<Store> {

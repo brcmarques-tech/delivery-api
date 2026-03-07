@@ -58,19 +58,22 @@ input CreatePromotionInput {
   description: String
   endDate: DateTime!
   imageUrl: String
-  price: Float!
+  productId: String
+  promotionalPrice: Float!
   startDate: DateTime!
   storeId: String!
   title: String!
 }
 
 input CreateStoreInput {
+  bannerUrl: String
   city: String!
   complement: String
   deliveryFee: Float
   description: String
   estimatedDeliveryMinutes: Float
   latitude: Float!
+  logoUrl: String
   longitude: Float!
   minimumOrder: Float
   name: String!
@@ -128,11 +131,14 @@ type Mutation {
   createStore(input: CreateStoreInput!): Store!
   deleteCategory(id: String!): Boolean!
   deleteProduct(id: String!): Boolean!
+  deletePromotion(id: String!): Boolean!
   login(input: LoginInput!): AuthResponse!
   markPromotionPaid(id: String!): Promotion!
   register(input: RegisterInput!): AuthResponse!
   registerAsDeliverer(input: RegisterDelivererInput!): User!
   rejectUser(id: String!, reason: String!): User!
+  setPromoPricePerDay(price: Float!): PlatformConfig!
+  swapPromotionProduct(id: String!, productId: String!, promotionalPrice: Float!, title: String!): Promotion!
   toggleProductAvailability(id: String!): Product!
   togglePromotionActive(id: String!): Promotion!
   toggleStoreActive(id: String!): Store!
@@ -140,8 +146,10 @@ type Mutation {
   toggleUserActive(id: String!): User!
   updateOrderStatus(id: String!, status: OrderStatus!): Order!
   updateProduct(input: UpdateProductInput!): Product!
+  updateStore(input: UpdateStoreInput!): Store!
   updateUserRole(id: String!, role: UserRole!): User!
   updateVendorPlan(durationMonths: Int! = 1, id: String!, plan: VendorPlan!): User!
+  uploadFromUrl(folder: String, url: String!): String!
   uploadImage(base64: String!, folder: String): String!
 }
 
@@ -233,6 +241,13 @@ type PlanInfo {
   platformDeliveryFee: Float!
 }
 
+type PlatformConfig {
+  id: ID!
+  key: String!
+  updatedAt: DateTime!
+  value: String!
+}
+
 type Product {
   category: Category
   createdAt: DateTime!
@@ -251,6 +266,8 @@ type Product {
 }
 
 type Promotion {
+  adCost: Float!
+  checkoutUrl: String
   createdAt: DateTime!
   description: String
   endDate: DateTime!
@@ -258,7 +275,9 @@ type Promotion {
   imageUrl: String
   isActive: Boolean!
   isPaid: Boolean!
-  price: Float!
+  price: Float
+  product: Product
+  promotionalPrice: Float!
   startDate: DateTime!
   store: Store!
   title: String!
@@ -286,8 +305,11 @@ type Query {
   notificationLogs: [NotificationLog!]!
   order(id: String!): Order!
   pendingApprovals: [User!]!
+  platformConfigs: [PlatformConfig!]!
   product(id: String!): Product!
   productsByStore(storeId: String!): [Product!]!
+  promoPricePerDay: Float!
+  searchProductImages(query: String!): [String!]!
   store(id: String!): Store!
   storeOrders(storeId: String!): [Order!]!
   stores: [Store!]!
@@ -354,6 +376,25 @@ input UpdateProductInput {
   name: String
   price: Float
   unit: String
+}
+
+input UpdateStoreInput {
+  bannerUrl: String
+  city: String
+  complement: String
+  deliveryFee: Float
+  description: String
+  estimatedDeliveryMinutes: Float
+  id: String!
+  logoUrl: String
+  minimumOrder: Float
+  name: String
+  neighborhood: String
+  number: String
+  phone: String
+  state: String
+  street: String
+  zipCode: String
 }
 
 type User {

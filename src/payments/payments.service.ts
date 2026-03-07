@@ -6,6 +6,7 @@ import { MercadoPagoConfig, Preference, Payment as MpPayment, Customer } from 'm
 import { Payment } from './entities/payment.entity';
 import { User } from '../users/entities/user.entity';
 import { Order } from '../orders/entities/order.entity';
+import { Promotion } from '../promotions/entities/promotion.entity';
 import { UsersService } from '../users/users.service';
 import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
@@ -108,6 +109,52 @@ export class PaymentsService {
     return undefined;
   }
 
+  async createPromotionCheckout(promotion: Promotion, user: User): Promise<Payment> {
+    const mpCustomerId = await this.getOrCreateMpCustomer(user);
+    const preference = new Preference(this.mpClient);
+    const result = await preference.create({
+      body: {
+        items: [
+          {
+            id: `promo-${promotion.id}`,
+            title: `Promoção: ${promotion.title}`,
+            description: `Anúncio no app por ${Math.ceil((new Date(promotion.endDate).getTime() - new Date(promotion.startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1} dias`,
+            quantity: 1,
+            unit_price: Number(promotion.adCost),
+            currency_id: 'BRL',
+          },
+        ],
+        payer: {
+          email: user.email,
+          name: user.name,
+          ...(mpCustomerId ? { id: mpCustomerId } : {}),
+        },
+        ...(this.configService.get('VENDOR_APP_URL') ? {
+          back_urls: {
+            success: `${this.configService.get('VENDOR_APP_URL')}/dashboard/promotions?status=success`,
+            failure: `${this.configService.get('VENDOR_APP_URL')}/dashboard/promotions?status=failure`,
+            pending: `${this.configService.get('VENDOR_APP_URL')}/dashboard/promotions?status=pending`,
+          },
+        } : {}),
+        external_reference: `promo:${promotion.id}`,
+        notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
+      },
+    });
+
+    const payment = this.paymentsRepository.create({
+      type: 'PROMOTION',
+      description: `Promoção: ${promotion.title}`,
+      amount: Number(promotion.adCost),
+      status: 'pending',
+      mpPreferenceId: result.id,
+      checkoutUrl: result.init_point,
+      metadata: { promotionId: promotion.id },
+      user,
+    });
+
+    return this.paymentsRepository.save(payment);
+  }
+
   async createOrderCheckout(order: Order, customer: User): Promise<{ checkoutUrl: string; preferenceId: string }> {
     const mpCustomerId = await this.getOrCreateMpCustomer(customer);
     const preference = new Preference(this.mpClient);
@@ -181,6 +228,45 @@ export class PaymentsService {
         if (order && order.status === OrderStatus.AWAITING_PAYMENT) {
           order.status = OrderStatus.PENDING;
           await orderRepo.save(order);
+        }
+      }
+      return;
+    }
+
+    // Handle promotion payment
+    if (externalRef.startsWith('promo:')) {
+      const promotionId = externalRef.replace('promo:', '');
+      if (status === 'approved') {
+        const promoRepo = this.paymentsRepository.manager.getRepository(Promotion);
+        const productRepo = this.paymentsRepository.manager.getRepository('Product');
+        const promotion = await promoRepo.findOne({
+          where: { id: promotionId },
+          relations: ['product'],
+        });
+        if (promotion && !promotion.isPaid) {
+          promotion.isPaid = true;
+          await promoRepo.save(promotion);
+          // Apply promotional price to the product
+          if (promotion.product && promotion.promotionalPrice) {
+            const now = new Date();
+            const start = new Date(promotion.startDate);
+            const end = new Date(promotion.endDate);
+            if (now >= start && now <= end) {
+              await productRepo.update(promotion.product.id, {
+                promotionalPrice: promotion.promotionalPrice,
+              });
+            }
+          }
+        }
+      }
+      // Update payment record
+      const prefId = (mpData as any).preference_id;
+      if (prefId) {
+        const payment = await this.paymentsRepository.findOne({ where: { mpPreferenceId: prefId } });
+        if (payment) {
+          payment.mpPaymentId = String(paymentId);
+          payment.status = status || 'pending';
+          await this.paymentsRepository.save(payment);
         }
       }
       return;

@@ -3,6 +3,7 @@ import { UseGuards } from '@nestjs/common';
 import { Store } from './entities/store.entity';
 import { StoresService } from './stores.service';
 import { CreateStoreInput } from './dto/create-store.input';
+import { UpdateStoreInput } from './dto/update-store.input';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -22,6 +23,16 @@ export class StoresResolver {
     @CurrentUser() user: User,
   ): Promise<Store> {
     return this.storesService.create(input, user);
+  }
+
+  @Mutation(() => Store)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  updateStore(
+    @Args('input') input: UpdateStoreInput,
+    @CurrentUser() user: User,
+  ): Promise<Store> {
+    return this.storesService.update(input, user);
   }
 
   @Query(() => [Store])

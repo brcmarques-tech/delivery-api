@@ -18,6 +18,7 @@ import { MailModule } from './mail/mail.module';
 import { UploadModule } from './upload/upload.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { PaymentsModule } from './payments/payments.module';
+import { PlatformConfigModule } from './config/platform-config.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { PaymentsModule } from './payments/payments.module';
     UploadModule,
     PromotionsModule,
     PaymentsModule,
+    PlatformConfigModule,
   ],
 })
 export class AppModule {}

@@ -1,4 +1,5 @@
 import { InputType, Field, Float } from '@nestjs/graphql';
+import { IsOptional } from 'class-validator';
 
 @InputType()
 export class CreatePromotionInput {
@@ -6,9 +7,11 @@ export class CreatePromotionInput {
   title: string;
 
   @Field({ nullable: true })
+  @IsOptional()
   description?: string;
 
   @Field({ nullable: true })
+  @IsOptional()
   imageUrl?: string;
 
   @Field()
@@ -18,8 +21,12 @@ export class CreatePromotionInput {
   endDate: Date;
 
   @Field(() => Float)
-  price: number;
+  promotionalPrice: number;
 
   @Field()
   storeId: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  productId?: string;
 }
