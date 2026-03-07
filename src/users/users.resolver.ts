@@ -1,4 +1,4 @@
-import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Int } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { User } from './entities/user.entity';
 import { UsersService } from './users.service';
@@ -6,8 +6,10 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { UserRole } from '../common/enums';
+import { UserRole, VendorPlan } from '../common/enums';
 import { RegisterDelivererInput } from './dto/register-deliverer.input';
+import { PlanInfo } from '../common/plan-info.type';
+import { PLAN_CONFIGS } from '../common/plan-config';
 
 @Resolver(() => User)
 export class UsersResolver {
@@ -74,5 +76,24 @@ export class UsersResolver {
   @Roles(UserRole.SUPERADMIN)
   toggleUserActive(@Args('id') id: string): Promise<User> {
     return this.usersService.toggleUserActive(id);
+  }
+
+  @Mutation(() => User)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  updateVendorPlan(
+    @Args('id') id: string,
+    @Args('plan', { type: () => VendorPlan }) plan: VendorPlan,
+    @Args('durationMonths', { type: () => Int, defaultValue: 1 }) durationMonths: number,
+  ): Promise<User> {
+    return this.usersService.updateVendorPlan(id, plan, durationMonths);
+  }
+
+  @Query(() => [PlanInfo])
+  availablePlans(): PlanInfo[] {
+    return Object.entries(PLAN_CONFIGS).map(([plan, config]) => ({
+      plan: plan as VendorPlan,
+      ...config,
+    }));
   }
 }

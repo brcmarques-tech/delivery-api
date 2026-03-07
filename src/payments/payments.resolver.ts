@@ -1,0 +1,38 @@
+import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
+import { UseGuards } from '@nestjs/common';
+import { Payment } from './entities/payment.entity';
+import { PaymentsService } from './payments.service';
+import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { User } from '../users/entities/user.entity';
+import { UserRole, VendorPlan } from '../common/enums';
+
+@Resolver(() => Payment)
+export class PaymentsResolver {
+  constructor(private paymentsService: PaymentsService) {}
+
+  @Mutation(() => Payment)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  createPlanUpgrade(
+    @Args('plan', { type: () => VendorPlan }) plan: VendorPlan,
+    @CurrentUser() user: User,
+  ): Promise<Payment> {
+    return this.paymentsService.createPlanUpgrade(user, plan);
+  }
+
+  @Query(() => [Payment])
+  @UseGuards(GqlAuthGuard)
+  myPayments(@CurrentUser() user: User): Promise<Payment[]> {
+    return this.paymentsService.findByUser(user.id);
+  }
+
+  @Query(() => [Payment])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  allPayments(): Promise<Payment[]> {
+    return this.paymentsService.findAll();
+  }
+}

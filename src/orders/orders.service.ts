@@ -9,6 +9,7 @@ import { User } from '../users/entities/user.entity';
 import { ProductsService } from '../products/products.service';
 import { StoresService } from '../stores/stores.service';
 import { OrderStatus } from '../common/enums';
+import { getPlanConfig } from '../common/plan-config';
 
 const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED],
@@ -59,6 +60,12 @@ export class OrdersService {
     const deliveryFee = Number(store.deliveryFee);
     const total = subtotal + deliveryFee;
 
+    // Calcula comissao da plataforma baseado no plano do vendedor
+    const storeOwner = store.owner;
+    const planConfig = getPlanConfig(storeOwner?.vendorPlan);
+    const platformCommission = Math.round(subtotal * planConfig.commissionRate * 100) / 100;
+    const platformDeliveryFee = planConfig.platformDeliveryFee;
+
     const order = this.ordersRepository.create({
       orderNumber: `ORD-${Date.now()}`,
       customer,
@@ -67,6 +74,8 @@ export class OrdersService {
       subtotal,
       deliveryFee,
       total,
+      platformCommission,
+      platformDeliveryFee,
       deliveryAddress: input.deliveryAddress,
       deliveryLatitude: input.deliveryLatitude,
       deliveryLongitude: input.deliveryLongitude,
@@ -124,6 +133,18 @@ export class OrdersService {
     const result = await this.ordersRepository
       .createQueryBuilder('order')
       .select('COALESCE(SUM(order.total), 0)', 'total')
+      .where('order.status = :status', { status: OrderStatus.DELIVERED })
+      .getRawOne();
+    return parseFloat(result.total);
+  }
+
+  async platformRevenue(): Promise<number> {
+    const result = await this.ordersRepository
+      .createQueryBuilder('order')
+      .select(
+        'COALESCE(SUM(order.platformCommission), 0) + COALESCE(SUM(order.platformDeliveryFee), 0)',
+        'total',
+      )
       .where('order.status = :status', { status: OrderStatus.DELIVERED })
       .getRawOne();
     return parseFloat(result.total);

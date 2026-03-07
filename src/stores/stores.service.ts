@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Store } from './entities/store.entity';
 import { CreateStoreInput } from './dto/create-store.input';
 import { User } from '../users/entities/user.entity';
+import { getPlanConfig } from '../common/plan-config';
 
 @Injectable()
 export class StoresService {
@@ -13,6 +14,17 @@ export class StoresService {
   ) {}
 
   async create(input: CreateStoreInput, owner: User): Promise<Store> {
+    const planConfig = getPlanConfig(owner.vendorPlan);
+    const currentStores = await this.storesRepository.count({
+      where: { owner: { id: owner.id } },
+    });
+
+    if (currentStores >= planConfig.maxStores) {
+      throw new BadRequestException(
+        `Seu plano permite no maximo ${planConfig.maxStores} loja(s). Faca upgrade para criar mais.`,
+      );
+    }
+
     const store = this.storesRepository.create({ ...input, owner });
     return this.storesRepository.save(store);
   }

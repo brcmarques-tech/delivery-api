@@ -40,6 +40,9 @@ class DashboardStats {
   @Field(() => Float)
   totalRevenue: number;
 
+  @Field(() => Float)
+  platformRevenue: number;
+
   @Field(() => [RoleCount])
   usersByRole: RoleCount[];
 
@@ -62,12 +65,13 @@ export class DashboardResolver {
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
   async dashboardStats(): Promise<DashboardStats> {
-    const [totalUsers, totalStores, totalOrders, totalRevenue, usersByRole, ordersByStatus, pendingApprovals] =
+    const [totalUsers, totalStores, totalOrders, totalRevenue, platformRevenue, usersByRole, ordersByStatus, pendingApprovals] =
       await Promise.all([
         this.usersService.totalCount(),
         this.storesService.totalCount(),
         this.ordersService.totalCount(),
         this.ordersService.totalRevenue(),
+        this.ordersService.platformRevenue(),
         this.usersService.countByRole(),
         this.ordersService.countByStatus(),
         this.usersService.pendingCount(),
@@ -78,6 +82,7 @@ export class DashboardResolver {
       totalStores,
       totalOrders,
       totalRevenue,
+      platformRevenue,
       usersByRole: usersByRole.map((r) => ({ role: r.role, count: Number(r.count) })),
       ordersByStatus: ordersByStatus.map((s) => ({ status: s.status, count: Number(s.count) })),
       pendingApprovals,

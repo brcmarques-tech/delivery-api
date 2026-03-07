@@ -53,6 +53,16 @@ input CreateProductInput {
   unit: String
 }
 
+input CreatePromotionInput {
+  description: String
+  endDate: DateTime!
+  imageUrl: String
+  price: Float!
+  startDate: DateTime!
+  storeId: String!
+  title: String!
+}
+
 input CreateStoreInput {
   city: String!
   complement: String
@@ -74,6 +84,7 @@ input CreateStoreInput {
 type DashboardStats {
   ordersByStatus: [StatusCount!]!
   pendingApprovals: Int!
+  platformRevenue: Float!
   totalOrders: Int!
   totalRevenue: Float!
   totalStores: Int!
@@ -110,18 +121,23 @@ type Mutation {
   confirmPickup(deliveryId: String!): Delivery!
   createCategory(name: String!, storeId: String!): Category!
   createOrder(input: CreateOrderInput!): Order!
+  createPlanUpgrade(plan: VendorPlan!): Payment!
   createProduct(input: CreateProductInput!): Product!
+  createPromotion(input: CreatePromotionInput!): Promotion!
   createStore(input: CreateStoreInput!): Store!
   login(input: LoginInput!): AuthResponse!
+  markPromotionPaid(id: String!): Promotion!
   register(input: RegisterInput!): AuthResponse!
   registerAsDeliverer(input: RegisterDelivererInput!): User!
   rejectUser(id: String!, reason: String!): User!
   toggleProductAvailability(id: String!): Product!
+  togglePromotionActive(id: String!): Promotion!
   toggleStoreActive(id: String!): Store!
   toggleStoreOpen(id: String!): Store!
   toggleUserActive(id: String!): User!
   updateOrderStatus(id: String!, status: OrderStatus!): Order!
   updateUserRole(id: String!, role: UserRole!): User!
+  updateVendorPlan(durationMonths: Int! = 1, id: String!, plan: VendorPlan!): User!
   uploadImage(base64: String!, folder: String): String!
 }
 
@@ -149,6 +165,8 @@ type Order {
   items: [OrderItem!]!
   notes: String
   orderNumber: String!
+  platformCommission: Float!
+  platformDeliveryFee: Float!
   status: OrderStatus!
   store: Store!
   subtotal: Float!
@@ -183,6 +201,28 @@ enum OrderStatus {
   READY
 }
 
+type Payment {
+  amount: Float!
+  checkoutUrl: String
+  createdAt: DateTime!
+  description: String!
+  id: ID!
+  mpPaymentId: String
+  mpPreferenceId: String
+  status: String!
+  type: String!
+  user: User!
+}
+
+type PlanInfo {
+  canPromote: Boolean!
+  commissionRate: Float!
+  maxStores: Int!
+  monthlyPrice: Float!
+  plan: VendorPlan!
+  platformDeliveryFee: Float!
+}
+
 type Product {
   category: Category
   createdAt: DateTime!
@@ -200,16 +240,37 @@ type Product {
   updatedAt: DateTime!
 }
 
+type Promotion {
+  createdAt: DateTime!
+  description: String
+  endDate: DateTime!
+  id: ID!
+  imageUrl: String
+  isActive: Boolean!
+  isPaid: Boolean!
+  price: Float!
+  startDate: DateTime!
+  store: Store!
+  title: String!
+  updatedAt: DateTime!
+}
+
 type Query {
+  activePromotions: [Promotion!]!
   allOrders: [Order!]!
+  allPayments: [Payment!]!
+  allPromotions: [Promotion!]!
   allStores: [Store!]!
   allUsers: [User!]!
   availableDeliveries: [Order!]!
+  availablePlans: [PlanInfo!]!
   categoriesByStore(storeId: String!): [Category!]!
   dashboardStats: DashboardStats!
   me: User!
   myDeliveries: [Delivery!]!
   myOrders: [Order!]!
+  myPayments: [Payment!]!
+  myPromotions: [Promotion!]!
   myStores: [Store!]!
   nearbyStores(latitude: Float!, longitude: Float!, radiusKm: Float): [Store!]!
   notificationLogs: [NotificationLog!]!
@@ -290,6 +351,7 @@ type User {
   orders: [Order!]
   pendingRole: String
   phone: String!
+  planExpiresAt: DateTime
   profilePhotoUrl: String
   rejectedAt: DateTime
   rejectionReason: String
@@ -298,6 +360,7 @@ type User {
   updatedAt: DateTime!
   vehiclePlate: String
   vehicleType: String
+  vendorPlan: VendorPlan
 }
 
 enum UserRole {
@@ -306,4 +369,10 @@ enum UserRole {
   DELIVERER
   SUPERADMIN
   VENDOR
+}
+
+enum VendorPlan {
+  FREE
+  PREMIUM
+  PRO
 }

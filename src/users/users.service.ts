@@ -5,7 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import { User } from './entities/user.entity';
 import { RegisterInput } from '../auth/dto/register.input';
 import { RegisterDelivererInput } from './dto/register-deliverer.input';
-import { UserRole } from '../common/enums';
+import { UserRole, VendorPlan } from '../common/enums';
 import { MailService } from '../mail/mail.service';
 
 @Injectable()
@@ -80,6 +80,7 @@ export class UsersService {
       user.isDeliverer = true;
     } else if (user.pendingRole === 'VENDOR') {
       user.role = UserRole.VENDOR;
+      user.vendorPlan = VendorPlan.FREE;
     }
     // Contas antigas sem pendingRole: apenas marca como aprovada
 
@@ -157,6 +158,25 @@ export class UsersService {
 
   async totalCount(): Promise<number> {
     return this.usersRepository.count();
+  }
+
+  async updateVendorPlan(id: string, plan: VendorPlan, durationMonths: number): Promise<User> {
+    const user = await this.usersRepository.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('Usuario nao encontrado');
+    if (user.role !== UserRole.VENDOR) {
+      throw new BadRequestException('Apenas vendedores podem ter planos');
+    }
+
+    user.vendorPlan = plan;
+    if (plan !== VendorPlan.FREE) {
+      const expiresAt = new Date();
+      expiresAt.setMonth(expiresAt.getMonth() + durationMonths);
+      user.planExpiresAt = expiresAt;
+    } else {
+      user.planExpiresAt = null;
+    }
+
+    return this.usersRepository.save(user);
   }
 
   async pendingCount(): Promise<number> {

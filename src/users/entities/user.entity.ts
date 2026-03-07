@@ -8,7 +8,7 @@ import {
   OneToMany,
   OneToOne,
 } from 'typeorm';
-import { UserRole } from '../../common/enums';
+import { UserRole, VendorPlan } from '../../common/enums';
 import { Store } from '../../stores/entities/store.entity';
 import { Order } from '../../orders/entities/order.entity';
 import { Address } from '../../addresses/entities/address.entity';
@@ -88,6 +88,15 @@ export class User {
   @Field(() => String, { nullable: true })
   @Column({ type: 'varchar', nullable: true })
   rejectionReason: string | null;
+
+  // Plano do vendedor
+  @Field(() => VendorPlan, { nullable: true })
+  @Column({ type: 'enum', enum: VendorPlan, nullable: true })
+  vendorPlan: VendorPlan | null;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  planExpiresAt: Date | null;
 
   @Field(() => [Store], { nullable: true })
   @OneToMany(() => Store, (store) => store.owner)
