@@ -23,9 +23,6 @@ services:
       MAIL_USER: brunomarquesag331@gmail.com
       MAIL_PASS: orxxlexfidnpdlew
       MAIL_FROM: bcmTech <brunomarquesag331@gmail.com>
-      EVOLUTION_API_URL: http://evolution:8080
-      EVOLUTION_API_KEY: bcmtech-evo-key-2026
-      EVOLUTION_INSTANCE: bcmTech Delivery
     depends_on:
       - postgres
       - redis
@@ -50,45 +47,6 @@ services:
     volumes:
       - redis_data:/data
 
-  evolution-postgres:
-    image: postgres:16-alpine
-    container_name: delivery-evolution-postgres
-    environment:
-      POSTGRES_USER: evolution
-      POSTGRES_PASSWORD: evolution123
-      POSTGRES_DB: evolution_db
-    volumes:
-      - evolution_pg_data:/var/lib/postgresql/data
-
-  evolution:
-    image: atendai/evolution-api:v2.2.3
-    restart: unless-stopped
-    container_name: delivery-evolution
-    ports:
-      - '8080:8080'
-    environment:
-      AUTHENTICATION_API_KEY: bcmtech-evo-key-2026
-      SERVER_URL: http://localhost:8080
-      DATABASE_PROVIDER: postgresql
-      DATABASE_CONNECTION_URI: postgresql://evolution:evolution123@evolution-postgres:5432/evolution_db
-      DATABASE_CONNECTION_CLIENT_NAME: evolution
-      CACHE_REDIS_ENABLED: false
-      CACHE_REDIS_URI: ''
-      CACHE_LOCAL_ENABLED: true
-      QRCODE_LIMIT: 10
-      LOG_LEVEL: WARN,ERROR
-      WA_BUSINESS_TOKEN_WEBHOOK: ''
-      LANGUAGE: pt-BR
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
-    depends_on:
-      - evolution-postgres
-    volumes:
-      - evolution_data:/evolution/instances
-
 volumes:
   postgres_data:
   redis_data:
-  evolution_data:
-  evolution_pg_data:

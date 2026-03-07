@@ -10,7 +10,7 @@ export class NotificationLog {
 
   @Field()
   @Column()
-  type: string; // EMAIL, WHATSAPP
+  type: string; // EMAIL
 
   @Field()
   @Column()

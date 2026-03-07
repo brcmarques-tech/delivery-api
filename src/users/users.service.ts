@@ -7,7 +7,6 @@ import { RegisterInput } from '../auth/dto/register.input';
 import { RegisterDelivererInput } from './dto/register-deliverer.input';
 import { UserRole } from '../common/enums';
 import { MailService } from '../mail/mail.service';
-import { WhatsappService } from '../mail/whatsapp.service';
 
 @Injectable()
 export class UsersService {
@@ -15,7 +14,6 @@ export class UsersService {
     @InjectRepository(User)
     private usersRepository: Repository<User>,
     private mailService: MailService,
-    private whatsappService: WhatsappService,
   ) {}
 
   async create(input: RegisterInput): Promise<User> {
@@ -93,7 +91,6 @@ export class UsersService {
     const saved = await this.usersRepository.save(user);
 
     this.mailService.sendApprovalEmail(user.email, user.name, approvedRole);
-    this.whatsappService.sendApproval(user.phone, user.name, approvedRole);
     return saved;
   }
 
@@ -115,7 +112,6 @@ export class UsersService {
     const saved = await this.usersRepository.save(user);
 
     this.mailService.sendRejectionEmail(user.email, user.name, rejectedRole, reason);
-    this.whatsappService.sendRejection(user.phone, user.name, rejectedRole, reason);
     return saved;
   }
 
