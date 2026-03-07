@@ -18,8 +18,9 @@ export class DeliveriesGateway {
   @SubscribeMessage('joinOrder')
   handleJoinOrder(
     @ConnectedSocket() client: Socket,
-    @MessageBody() orderId: string,
+    @MessageBody() data: string | { orderId: string },
   ) {
+    const orderId = typeof data === 'string' ? data : data.orderId;
     client.join(`order:${orderId}`);
   }
 
