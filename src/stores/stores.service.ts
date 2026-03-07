@@ -60,4 +60,22 @@ export class StoresService {
     store.isOpen = !store.isOpen;
     return this.storesRepository.save(store);
   }
+
+  async findAllAdmin(): Promise<Store[]> {
+    return this.storesRepository.find({
+      relations: ['owner', 'products', 'categories'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async toggleActive(id: string): Promise<Store> {
+    const store = await this.storesRepository.findOne({ where: { id } });
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+    store.isActive = !store.isActive;
+    return this.storesRepository.save(store);
+  }
+
+  async totalCount(): Promise<number> {
+    return this.storesRepository.count();
+  }
 }

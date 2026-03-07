@@ -49,13 +49,21 @@ export class OrdersResolver {
     return this.ordersService.findPendingForDelivery();
   }
 
+  @Query(() => [Order])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  allOrders(): Promise<Order[]> {
+    return this.ordersService.findAllAdmin();
+  }
+
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR, UserRole.ADMIN)
   updateOrderStatus(
     @Args('id') id: string,
     @Args('status', { type: () => OrderStatus }) status: OrderStatus,
+    @CurrentUser() user: User,
   ): Promise<Order> {
-    return this.ordersService.updateStatus(id, status);
+    return this.ordersService.updateStatus(id, status, user);
   }
 }

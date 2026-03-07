@@ -59,4 +59,18 @@ export class StoresResolver {
   ): Promise<Store> {
     return this.storesService.toggleOpen(id, user);
   }
+
+  @Query(() => [Store])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  allStores(): Promise<Store[]> {
+    return this.storesService.findAllAdmin();
+  }
+
+  @Mutation(() => Store)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  toggleStoreActive(@Args('id') id: string): Promise<Store> {
+    return this.storesService.toggleActive(id);
+  }
 }

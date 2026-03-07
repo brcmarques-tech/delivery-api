@@ -32,7 +32,7 @@ export class User {
   password: string;
 
   @Field()
-  @Column({ unique: true })
+  @Column()
   phone: string;
 
   @Field(() => UserRole)
@@ -46,6 +46,48 @@ export class User {
   @Field({ nullable: true })
   @Column({ nullable: true })
   avatarUrl: string;
+
+  // Campos de entregador
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  cpf: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  vehicleType: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  vehiclePlate: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  profilePhotoUrl: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  identityPhotoUrl: string;
+
+  @Field()
+  @Column({ default: false })
+  isDeliverer: boolean;
+
+  // Sistema de aprovacao
+  @Field(() => String, { nullable: true })
+  @Column({ type: 'varchar', nullable: true })
+  pendingRole: string | null;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  approvedAt: Date | null;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  rejectedAt: Date | null;
+
+  @Field(() => String, { nullable: true })
+  @Column({ type: 'varchar', nullable: true })
+  rejectionReason: string | null;
 
   @Field(() => [Store], { nullable: true })
   @OneToMany(() => Store, (store) => store.owner)

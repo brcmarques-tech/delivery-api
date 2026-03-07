@@ -71,6 +71,16 @@ input CreateStoreInput {
   zipCode: String!
 }
 
+type DashboardStats {
+  ordersByStatus: [StatusCount!]!
+  pendingApprovals: Int!
+  totalOrders: Int!
+  totalRevenue: Float!
+  totalStores: Int!
+  totalUsers: Int!
+  usersByRole: [RoleCount!]!
+}
+
 """
 A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
 """
@@ -95,6 +105,7 @@ input LoginInput {
 
 type Mutation {
   acceptDelivery(orderId: String!): Delivery!
+  approveUser(id: String!): User!
   confirmDelivery(deliveryId: String!): Delivery!
   confirmPickup(deliveryId: String!): Delivery!
   createCategory(name: String!, storeId: String!): Category!
@@ -103,9 +114,26 @@ type Mutation {
   createStore(input: CreateStoreInput!): Store!
   login(input: LoginInput!): AuthResponse!
   register(input: RegisterInput!): AuthResponse!
+  registerAsDeliverer(input: RegisterDelivererInput!): User!
+  rejectUser(id: String!, reason: String!): User!
   toggleProductAvailability(id: String!): Product!
+  toggleStoreActive(id: String!): Store!
   toggleStoreOpen(id: String!): Store!
+  toggleUserActive(id: String!): User!
   updateOrderStatus(id: String!, status: OrderStatus!): Order!
+  updateUserRole(id: String!, role: UserRole!): User!
+}
+
+type NotificationLog {
+  createdAt: DateTime!
+  error: String
+  id: ID!
+  message: String!
+  subject: String!
+  success: Boolean!
+  to: String!
+  type: String!
+  userName: String!
 }
 
 type Order {
@@ -172,19 +200,32 @@ type Product {
 }
 
 type Query {
+  allOrders: [Order!]!
+  allStores: [Store!]!
+  allUsers: [User!]!
   availableDeliveries: [Order!]!
   categoriesByStore(storeId: String!): [Category!]!
+  dashboardStats: DashboardStats!
   me: User!
   myDeliveries: [Delivery!]!
   myOrders: [Order!]!
   myStores: [Store!]!
   nearbyStores(latitude: Float!, longitude: Float!, radiusKm: Float): [Store!]!
+  notificationLogs: [NotificationLog!]!
   order(id: String!): Order!
+  pendingApprovals: [User!]!
   product(id: String!): Product!
   productsByStore(storeId: String!): [Product!]!
   store(id: String!): Store!
   storeOrders(storeId: String!): [Order!]!
   stores: [Store!]!
+}
+
+input RegisterDelivererInput {
+  cpf: String!
+  identityPhotoUrl: String
+  vehiclePlate: String
+  vehicleType: String!
 }
 
 input RegisterInput {
@@ -193,6 +234,16 @@ input RegisterInput {
   password: String!
   phone: String!
   role: UserRole
+}
+
+type RoleCount {
+  count: Int!
+  role: String!
+}
+
+type StatusCount {
+  count: Int!
+  status: String!
 }
 
 type Store {
@@ -225,22 +276,33 @@ type Store {
 
 type User {
   addresses: [Address!]
+  approvedAt: DateTime
   avatarUrl: String
+  cpf: String
   createdAt: DateTime!
   email: String!
   id: ID!
+  identityPhotoUrl: String
   isActive: Boolean!
+  isDeliverer: Boolean!
   name: String!
   orders: [Order!]
+  pendingRole: String
   phone: String!
+  profilePhotoUrl: String
+  rejectedAt: DateTime
+  rejectionReason: String
   role: UserRole!
   stores: [Store!]
   updatedAt: DateTime!
+  vehiclePlate: String
+  vehicleType: String
 }
 
 enum UserRole {
   ADMIN
   CUSTOMER
   DELIVERER
+  SUPERADMIN
   VENDOR
 }

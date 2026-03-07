@@ -21,6 +21,13 @@ export class SeedService implements OnModuleInit {
   private async seedUsers() {
     const users = [
       {
+        name: 'Super Admin',
+        email: 'superadmin@bcmtech.com',
+        password: 'super123',
+        phone: '11900000000',
+        role: UserRole.SUPERADMIN,
+      },
+      {
         name: 'Admin',
         email: 'admin@bcmtech.com',
         password: 'admin123',

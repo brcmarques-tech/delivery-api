@@ -18,6 +18,10 @@ export class RolesGuard implements CanActivate {
 
     const ctx = GqlExecutionContext.create(context);
     const user = ctx.getContext().req.user;
+
+    // SUPERADMIN tem acesso a tudo
+    if (user.role === UserRole.SUPERADMIN) return true;
+
     return requiredRoles.includes(user.role);
   }
 }
