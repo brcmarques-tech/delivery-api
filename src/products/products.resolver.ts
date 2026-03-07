@@ -3,6 +3,7 @@ import { UseGuards } from '@nestjs/common';
 import { Product } from './entities/product.entity';
 import { ProductsService } from './products.service';
 import { CreateProductInput } from './dto/create-product.input';
+import { UpdateProductInput } from './dto/update-product.input';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -14,7 +15,7 @@ export class ProductsResolver {
 
   @Mutation(() => Product)
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.VENDOR, UserRole.ADMIN)
+  @Roles(UserRole.VENDOR)
   createProduct(@Args('input') input: CreateProductInput): Promise<Product> {
     return this.productsService.create(input);
   }
@@ -32,7 +33,21 @@ export class ProductsResolver {
   @Mutation(() => Product)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
+  updateProduct(@Args('input') input: UpdateProductInput): Promise<Product> {
+    return this.productsService.update(input);
+  }
+
+  @Mutation(() => Product)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
   toggleProductAvailability(@Args('id') id: string): Promise<Product> {
     return this.productsService.toggleAvailability(id);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  deleteProduct(@Args('id') id: string): Promise<boolean> {
+    return this.productsService.delete(id);
   }
 }

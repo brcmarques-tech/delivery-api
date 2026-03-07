@@ -8,10 +8,12 @@ import { CreateOrderInput } from './dto/create-order.input';
 import { User } from '../users/entities/user.entity';
 import { ProductsService } from '../products/products.service';
 import { StoresService } from '../stores/stores.service';
+import { PaymentsService } from '../payments/payments.service';
 import { OrderStatus } from '../common/enums';
 import { getPlanConfig } from '../common/plan-config';
 
 const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
+  [OrderStatus.AWAITING_PAYMENT]: [OrderStatus.PENDING, OrderStatus.CANCELLED],
   [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
@@ -33,6 +35,7 @@ export class OrdersService {
     private deliveriesRepository: Repository<Delivery>,
     private productsService: ProductsService,
     private storesService: StoresService,
+    private paymentsService: PaymentsService,
   ) {}
 
   async create(input: CreateOrderInput, customer: User): Promise<Order> {
@@ -66,6 +69,9 @@ export class OrdersService {
     const platformCommission = Math.round(subtotal * planConfig.commissionRate * 100) / 100;
     const platformDeliveryFee = planConfig.platformDeliveryFee;
 
+    const paymentMethod = input.paymentMethod || 'ON_DELIVERY';
+    const needsPayment = paymentMethod !== 'ON_DELIVERY';
+
     const order = this.ordersRepository.create({
       orderNumber: `ORD-${Date.now()}`,
       customer,
@@ -80,9 +86,32 @@ export class OrdersService {
       deliveryLatitude: input.deliveryLatitude,
       deliveryLongitude: input.deliveryLongitude,
       notes: input.notes,
+      paymentMethod,
+      status: needsPayment ? OrderStatus.AWAITING_PAYMENT : OrderStatus.PENDING,
     });
 
-    return this.ordersRepository.save(order);
+    const savedOrder = await this.ordersRepository.save(order);
+
+    if (paymentMethod === 'MERCADO_PAGO') {
+      const { checkoutUrl, preferenceId } = await this.paymentsService.createOrderCheckout(savedOrder, customer);
+      savedOrder.checkoutUrl = checkoutUrl;
+      savedOrder.mpPreferenceId = preferenceId;
+      await this.ordersRepository.save(savedOrder);
+    } else if (paymentMethod === 'PIX') {
+      try {
+        const { qrCode, qrCodeBase64 } = await this.paymentsService.createOrderPix(savedOrder, customer);
+        savedOrder.pixQrCode = qrCode;
+        savedOrder.pixQrCodeBase64 = qrCodeBase64;
+        await this.ordersRepository.save(savedOrder);
+      } catch (err: any) {
+        // PIX nao funciona no sandbox do Mercado Pago, so em producao
+        throw new BadRequestException(
+          'PIX nao disponivel no momento. Em ambiente de teste, use Mercado Pago ou pagamento na entrega.',
+        );
+      }
+    }
+
+    return savedOrder;
   }
 
   async findById(id: string): Promise<Order> {

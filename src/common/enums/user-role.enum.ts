@@ -4,8 +4,9 @@ export enum UserRole {
   CUSTOMER = 'CUSTOMER',
   VENDOR = 'VENDOR',
   DELIVERER = 'DELIVERER',
-  ADMIN = 'ADMIN',
   SUPERADMIN = 'SUPERADMIN',
+  /** @deprecated Mantido apenas para compatibilidade com o banco. Usar VENDOR. */
+  ADMIN = 'ADMIN',
 }
 
 registerEnumType(UserRole, { name: 'UserRole' });

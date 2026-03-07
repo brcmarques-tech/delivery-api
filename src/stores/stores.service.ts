@@ -39,7 +39,7 @@ export class StoresService {
   async findById(id: string): Promise<Store> {
     const store = await this.storesRepository.findOne({
       where: { id },
-      relations: ['owner', 'products', 'categories'],
+      relations: ['owner', 'products', 'products.category', 'categories'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
     return store;
@@ -48,7 +48,7 @@ export class StoresService {
   async findByOwner(ownerId: string): Promise<Store[]> {
     return this.storesRepository.find({
       where: { owner: { id: ownerId } },
-      relations: ['products', 'categories'],
+      relations: ['products', 'products.category', 'categories'],
     });
   }
 
@@ -75,7 +75,7 @@ export class StoresService {
 
   async findAllAdmin(): Promise<Store[]> {
     return this.storesRepository.find({
-      relations: ['owner', 'products', 'categories'],
+      relations: ['owner', 'products', 'products.category', 'categories'],
       order: { createdAt: 'DESC' },
     });
   }

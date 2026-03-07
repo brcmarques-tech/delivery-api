@@ -53,6 +53,26 @@ export class Order {
 
   @Field({ nullable: true })
   @Column({ nullable: true })
+  paymentMethod: string; // 'MERCADO_PAGO' | 'PIX' | 'ON_DELIVERY'
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  checkoutUrl: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  mpPreferenceId: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  pixQrCode: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  pixQrCodeBase64: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
   notes: string;
 
   @Field()

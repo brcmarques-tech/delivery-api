@@ -58,7 +58,7 @@ export class OrdersResolver {
 
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.VENDOR, UserRole.ADMIN)
+  @Roles(UserRole.VENDOR)
   updateOrderStatus(
     @Args('id') id: string,
     @Args('status', { type: () => OrderStatus }) status: OrderStatus,

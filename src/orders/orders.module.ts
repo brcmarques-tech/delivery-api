@@ -7,12 +7,14 @@ import { OrdersService } from './orders.service';
 import { OrdersResolver } from './orders.resolver';
 import { ProductsModule } from '../products/products.module';
 import { StoresModule } from '../stores/stores.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Order, OrderItem, Delivery]),
     ProductsModule,
     StoresModule,
+    PaymentsModule,
   ],
   providers: [OrdersService, OrdersResolver],
   exports: [OrdersService],

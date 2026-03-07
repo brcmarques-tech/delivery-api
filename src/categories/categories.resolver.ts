@@ -13,7 +13,7 @@ export class CategoriesResolver {
 
   @Mutation(() => Category)
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.VENDOR, UserRole.ADMIN)
+  @Roles(UserRole.VENDOR)
   createCategory(
     @Args('name') name: string,
     @Args('storeId') storeId: string,
@@ -24,5 +24,12 @@ export class CategoriesResolver {
   @Query(() => [Category])
   categoriesByStore(@Args('storeId') storeId: string): Promise<Category[]> {
     return this.categoriesService.findByStore(storeId);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  deleteCategory(@Args('id') id: string): Promise<boolean> {
+    return this.categoriesService.delete(id);
   }
 }

@@ -40,6 +40,7 @@ input CreateOrderInput {
   deliveryLongitude: Float!
   items: [OrderItemInput!]!
   notes: String
+  paymentMethod: String = "ON_DELIVERY"
   storeId: String!
 }
 
@@ -125,6 +126,8 @@ type Mutation {
   createProduct(input: CreateProductInput!): Product!
   createPromotion(input: CreatePromotionInput!): Promotion!
   createStore(input: CreateStoreInput!): Store!
+  deleteCategory(id: String!): Boolean!
+  deleteProduct(id: String!): Boolean!
   login(input: LoginInput!): AuthResponse!
   markPromotionPaid(id: String!): Promotion!
   register(input: RegisterInput!): AuthResponse!
@@ -136,6 +139,7 @@ type Mutation {
   toggleStoreOpen(id: String!): Store!
   toggleUserActive(id: String!): User!
   updateOrderStatus(id: String!, status: OrderStatus!): Order!
+  updateProduct(input: UpdateProductInput!): Product!
   updateUserRole(id: String!, role: UserRole!): User!
   updateVendorPlan(durationMonths: Int! = 1, id: String!, plan: VendorPlan!): User!
   uploadImage(base64: String!, folder: String): String!
@@ -154,6 +158,7 @@ type NotificationLog {
 }
 
 type Order {
+  checkoutUrl: String
   createdAt: DateTime!
   customer: User!
   delivery: Delivery
@@ -163,8 +168,12 @@ type Order {
   deliveryLongitude: Float!
   id: ID!
   items: [OrderItem!]!
+  mpPreferenceId: String
   notes: String
   orderNumber: String!
+  paymentMethod: String
+  pixQrCode: String
+  pixQrCodeBase64: String
   platformCommission: Float!
   platformDeliveryFee: Float!
   status: OrderStatus!
@@ -192,6 +201,7 @@ input OrderItemInput {
 
 enum OrderStatus {
   ACCEPTED
+  AWAITING_PAYMENT
   CANCELLED
   DELIVERED
   DELIVERING
@@ -334,6 +344,16 @@ type Store {
   street: String!
   updatedAt: DateTime!
   zipCode: String!
+}
+
+input UpdateProductInput {
+  categoryId: String
+  description: String
+  id: String!
+  imageUrl: String
+  name: String
+  price: Float
+  unit: String
 }
 
 type User {

@@ -32,7 +32,7 @@ export class SeedService implements OnModuleInit {
         email: 'admin@bcmtech.com',
         password: 'admin123',
         phone: '11900000001',
-        role: UserRole.ADMIN,
+        role: UserRole.VENDOR,
       },
       {
         name: 'Vendedor',
@@ -70,6 +70,10 @@ export class SeedService implements OnModuleInit {
         });
         await this.usersRepository.save(user);
         this.logger.log(`Seed: usuario ${userData.email} criado (${userData.role})`);
+      } else if (exists.role === ('ADMIN' as any)) {
+        exists.role = UserRole.VENDOR;
+        await this.usersRepository.save(exists);
+        this.logger.log(`Seed: usuario ${userData.email} migrado de ADMIN para VENDOR`);
       }
     }
   }

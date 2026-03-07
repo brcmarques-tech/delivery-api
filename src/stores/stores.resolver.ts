@@ -16,7 +16,7 @@ export class StoresResolver {
 
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.VENDOR, UserRole.ADMIN)
+  @Roles(UserRole.VENDOR)
   createStore(
     @Args('input') input: CreateStoreInput,
     @CurrentUser() user: User,

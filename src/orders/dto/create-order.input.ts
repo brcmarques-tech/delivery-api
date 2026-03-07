@@ -31,4 +31,7 @@ export class CreateOrderInput {
 
   @Field({ nullable: true })
   notes?: string;
+
+  @Field({ nullable: true, defaultValue: 'ON_DELIVERY' })
+  paymentMethod?: string;
 }

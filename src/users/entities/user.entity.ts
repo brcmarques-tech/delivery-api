@@ -98,6 +98,10 @@ export class User {
   @Column({ type: 'timestamp', nullable: true })
   planExpiresAt: Date | null;
 
+  // Mercado Pago customer ID para cartoes salvos
+  @Column({ nullable: true })
+  mpCustomerId: string;
+
   @Field(() => [Store], { nullable: true })
   @OneToMany(() => Store, (store) => store.owner)
   stores: Store[];

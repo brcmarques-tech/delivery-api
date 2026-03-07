@@ -187,4 +187,8 @@ export class UsersService {
       ],
     });
   }
+
+  async updateMpCustomerId(id: string, mpCustomerId: string): Promise<void> {
+    await this.usersRepository.update(id, { mpCustomerId });
+  }
 }
