@@ -23,6 +23,9 @@ services:
       MAIL_USER: brunomarquesag331@gmail.com
       MAIL_PASS: orxxlexfidnpdlew
       MAIL_FROM: bcmTech <brunomarquesag331@gmail.com>
+      CLOUDINARY_CLOUD_NAME: dgbavxge6
+      CLOUDINARY_API_KEY: 279355333423469
+      CLOUDINARY_API_SECRET: lILGnp653qtQQmOGV0uQVDn4Uew
     depends_on:
       - postgres
       - redis

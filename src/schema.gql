@@ -122,6 +122,7 @@ type Mutation {
   toggleUserActive(id: String!): User!
   updateOrderStatus(id: String!, status: OrderStatus!): Order!
   updateUserRole(id: String!, role: UserRole!): User!
+  uploadImage(base64: String!, folder: String): String!
 }
 
 type NotificationLog {

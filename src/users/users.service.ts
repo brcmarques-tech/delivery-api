@@ -119,7 +119,7 @@ export class UsersService {
     const user = await this.usersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     user.role = role;
-    if (role === UserRole.DELIVERER) user.isDeliverer = true;
+    user.isDeliverer = role === UserRole.DELIVERER;
     return this.usersRepository.save(user);
   }
 
@@ -150,6 +150,8 @@ export class UsersService {
     user.vehiclePlate = input.vehiclePlate ?? '';
     user.identityPhotoUrl = input.identityPhotoUrl ?? '';
     user.pendingRole = 'DELIVERER';
+    user.rejectedAt = null;
+    user.rejectionReason = null;
     return this.usersRepository.save(user);
   }
 

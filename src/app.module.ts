@@ -15,6 +15,7 @@ import { AddressesModule } from './addresses/addresses.module';
 import { DatabaseModule } from './database/database.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { MailModule } from './mail/mail.module';
+import { UploadModule } from './upload/upload.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { MailModule } from './mail/mail.module';
     DatabaseModule,
     DashboardModule,
     MailModule,
+    UploadModule,
   ],
 })
 export class AppModule {}
