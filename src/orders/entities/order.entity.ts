@@ -71,20 +71,24 @@ export class Order {
   @Column({ nullable: true })
   pixQrCodeBase64: string;
 
+  @Field()
+  @Column({ default: false })
+  isPickup: boolean;
+
   @Field({ nullable: true })
   @Column({ nullable: true })
   notes: string;
 
-  @Field()
-  @Column()
+  @Field({ nullable: true })
+  @Column({ nullable: true })
   deliveryAddress: string;
 
-  @Field(() => Float)
-  @Column('decimal', { precision: 10, scale: 7 })
+  @Field(() => Float, { nullable: true })
+  @Column('decimal', { precision: 10, scale: 7, nullable: true })
   deliveryLatitude: number;
 
-  @Field(() => Float)
-  @Column('decimal', { precision: 10, scale: 7 })
+  @Field(() => Float, { nullable: true })
+  @Column('decimal', { precision: 10, scale: 7, nullable: true })
   deliveryLongitude: number;
 
   @Field(() => User)
@@ -102,6 +106,10 @@ export class Order {
   @Field(() => Delivery, { nullable: true })
   @OneToOne(() => Delivery, (delivery) => delivery.order)
   delivery: Delivery;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  customerConfirmedAt: Date;
 
   @Field()
   @CreateDateColumn()

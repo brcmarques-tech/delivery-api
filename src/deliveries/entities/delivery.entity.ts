@@ -44,6 +44,30 @@ export class Delivery {
   @JoinColumn()
   order: Order;
 
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  payoutStatus: string; // 'pending_confirmation' | 'completed' | 'failed'
+
+  @Field(() => Float, { nullable: true })
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  payoutAmount: number;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  payoutMpId: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  vendorPayoutStatus: string; // 'completed' | 'failed'
+
+  @Field(() => Float, { nullable: true })
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  vendorPayoutAmount: number;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  vendorPayoutMpId: string;
+
   @Field()
   @CreateDateColumn()
   createdAt: Date;

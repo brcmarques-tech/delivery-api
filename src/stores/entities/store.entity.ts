@@ -83,6 +83,14 @@ export class Store {
   @Column({ default: true })
   isActive: boolean;
 
+  @Field()
+  @Column({ default: false })
+  hasOwnDelivery: boolean;
+
+  @Field()
+  @Column({ default: false })
+  freeDelivery: boolean;
+
   @Field(() => Float)
   @Column('decimal', { precision: 10, scale: 2, default: 0 })
   deliveryFee: number;
@@ -95,6 +103,18 @@ export class Store {
   @Column('decimal', { precision: 10, scale: 2, default: 0 })
   minimumOrder: number;
 
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  deliveryStartTime: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  deliveryEndTime: string;
+
+  @Field(() => Float, { nullable: true })
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  freeDeliveryAbove: number;
+
   @Field(() => User)
   @ManyToOne(() => User, (user) => user.stores)
   owner: User;
@@ -106,6 +126,9 @@ export class Store {
   @Field(() => [Category], { nullable: true })
   @OneToMany(() => Category, (category) => category.store)
   categories: Category[];
+
+  @Field(() => Boolean)
+  ownerMpConnected: boolean;
 
   @Field()
   @CreateDateColumn()

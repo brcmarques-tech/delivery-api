@@ -1,4 +1,5 @@
 import { InputType, Field, Float, Int } from '@nestjs/graphql';
+import { IsOptional } from 'class-validator';
 
 @InputType()
 export class OrderItemInput {
@@ -20,14 +21,21 @@ export class CreateOrderInput {
   @Field(() => [OrderItemInput])
   items: OrderItemInput[];
 
-  @Field()
-  deliveryAddress: string;
+  @Field({ nullable: true, defaultValue: false })
+  @IsOptional()
+  isPickup?: boolean;
 
-  @Field(() => Float)
-  deliveryLatitude: number;
+  @Field({ nullable: true })
+  @IsOptional()
+  deliveryAddress?: string;
 
-  @Field(() => Float)
-  deliveryLongitude: number;
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  deliveryLatitude?: number;
+
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  deliveryLongitude?: number;
 
   @Field({ nullable: true })
   notes?: string;

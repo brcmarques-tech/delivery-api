@@ -1,7 +1,9 @@
-import { Resolver, Mutation, Query, Args, Float } from '@nestjs/graphql';
+import { Resolver, Mutation, Query, Args, Float, Int } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { Delivery } from './entities/delivery.entity';
 import { DeliveriesService } from './deliveries.service';
+import { DelivererTrackerService } from './deliverer-tracker.service';
+import { DeliveriesGateway } from './deliveries.gateway';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -11,7 +13,11 @@ import { UserRole } from '../common/enums';
 
 @Resolver(() => Delivery)
 export class DeliveriesResolver {
-  constructor(private deliveriesService: DeliveriesService) {}
+  constructor(
+    private deliveriesService: DeliveriesService,
+    private delivererTracker: DelivererTrackerService,
+    private gateway: DeliveriesGateway,
+  ) {}
 
   @Mutation(() => Delivery)
   @UseGuards(GqlAuthGuard, RolesGuard)
@@ -33,8 +39,18 @@ export class DeliveriesResolver {
   @Mutation(() => Delivery)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.DELIVERER)
-  confirmDelivery(@Args('deliveryId') deliveryId: string): Promise<Delivery> {
-    return this.deliveriesService.confirmDelivery(deliveryId);
+  async confirmDelivery(@Args('deliveryId') deliveryId: string): Promise<Delivery> {
+    const delivery = await this.deliveriesService.confirmDelivery(deliveryId);
+
+    // Notify customer to confirm receipt (10-min timer)
+    if (delivery.order?.id && delivery.deliveredAt) {
+      this.gateway.emitDeliveryConfirmationRequired(
+        delivery.order.id,
+        delivery.deliveredAt.toISOString(),
+      );
+    }
+
+    return delivery;
   }
 
   @Query(() => [Delivery])
@@ -42,5 +58,19 @@ export class DeliveriesResolver {
   @Roles(UserRole.DELIVERER)
   myDeliveries(@CurrentUser() user: User): Promise<Delivery[]> {
     return this.deliveriesService.findByDeliverer(user.id);
+  }
+
+  @Query(() => [Delivery])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  allDeliveries(): Promise<Delivery[]> {
+    return this.deliveriesService.findAllAdmin();
+  }
+
+  @Query(() => Int)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  onlineDeliverersCount(): number {
+    return this.delivererTracker.getOnlineCount();
   }
 }

@@ -35,4 +35,20 @@ export class PaymentsResolver {
   allPayments(): Promise<Payment[]> {
     return this.paymentsService.findAll();
   }
+
+  @Query(() => String)
+  @UseGuards(GqlAuthGuard)
+  mpConnectUrl(
+    @CurrentUser() user: User,
+    @Args('source', { nullable: true, defaultValue: 'web' }) source: string,
+  ): string {
+    return this.paymentsService.getMpConnectUrl(user.id, source);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  async disconnectMercadoPago(@CurrentUser() user: User): Promise<boolean> {
+    await this.paymentsService.disconnectMp(user.id);
+    return true;
+  }
 }

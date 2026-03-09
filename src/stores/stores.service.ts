@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Store } from './entities/store.entity';
@@ -9,10 +9,46 @@ import { getPlanConfig } from '../common/plan-config';
 
 @Injectable()
 export class StoresService {
+  private readonly logger = new Logger(StoresService.name);
+
   constructor(
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
   ) {}
+
+  /**
+   * Geocode an address to lat/lng using Nominatim (OpenStreetMap).
+   * Tries progressively simpler queries if the full address fails.
+   */
+  private async geocodeAddress(input: CreateStoreInput): Promise<{ latitude: number; longitude: number }> {
+    const queries = [
+      `${input.street}, ${input.number}, ${input.neighborhood}, ${input.city}, ${input.state}, Brazil`,
+      `${input.street}, ${input.number}, ${input.city}, ${input.state}, Brazil`,
+      `${input.street}, ${input.city}, ${input.state}, Brazil`,
+      `${input.neighborhood}, ${input.city}, ${input.state}, Brazil`,
+      `${input.city}, ${input.state}, Brazil`,
+    ];
+
+    for (const query of queries) {
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
+        const res = await fetch(url, {
+          headers: { 'User-Agent': 'bcmTech-Delivery/1.0' },
+        });
+        const data = await res.json();
+        if (data.length > 0) {
+          this.logger.log(`Geocoded with query: "${query}"`);
+          return { latitude: parseFloat(data[0].lat), longitude: parseFloat(data[0].lon) };
+        }
+      } catch (err) {
+        this.logger.warn(`Geocoding attempt failed for: ${query}`, err);
+      }
+    }
+
+    throw new BadRequestException(
+      'Nao foi possivel localizar o endereco. Verifique os dados e tente novamente.',
+    );
+  }
 
   async create(input: CreateStoreInput, owner: User): Promise<Store> {
     const planConfig = getPlanConfig(owner.vendorPlan);
@@ -24,6 +60,13 @@ export class StoresService {
       throw new BadRequestException(
         `Seu plano permite no maximo ${planConfig.maxStores} loja(s). Faca upgrade para criar mais.`,
       );
+    }
+
+    // Geocode address if lat/lng not provided
+    if (!input.latitude || !input.longitude) {
+      const coords = await this.geocodeAddress(input);
+      input.latitude = coords.latitude;
+      input.longitude = coords.longitude;
     }
 
     const store = this.storesRepository.create({ ...input, owner });
@@ -49,15 +92,15 @@ export class StoresService {
   async findByOwner(ownerId: string): Promise<Store[]> {
     return this.storesRepository.find({
       where: { owner: { id: ownerId } },
-      relations: ['products', 'products.category', 'categories'],
+      relations: ['owner', 'products', 'products.category', 'categories'],
     });
   }
 
   async findNearby(lat: number, lng: number, radiusKm: number = 10): Promise<Store[]> {
     return this.storesRepository
       .createQueryBuilder('store')
+      .leftJoinAndSelect('store.owner', 'owner')
       .where('store.isActive = :active', { active: true })
-      .andWhere('store.isOpen = :open', { open: true })
       .andWhere(
         `(6371 * acos(cos(radians(:lat)) * cos(radians(store.latitude)) * cos(radians(store.longitude) - radians(:lng)) + sin(radians(:lat)) * sin(radians(store.latitude)))) <= :radius`,
         { lat, lng, radius: radiusKm },

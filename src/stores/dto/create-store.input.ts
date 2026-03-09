@@ -36,11 +36,13 @@ export class CreateStoreInput {
   @Field()
   zipCode: string;
 
-  @Field(() => Float)
-  latitude: number;
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  latitude?: number;
 
-  @Field(() => Float)
-  longitude: number;
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  longitude?: number;
 
   @Field(() => Float, { nullable: true })
   @IsOptional()
@@ -53,6 +55,26 @@ export class CreateStoreInput {
   @Field(() => Float, { nullable: true })
   @IsOptional()
   minimumOrder?: number;
+
+  @Field({ nullable: true, defaultValue: false })
+  @IsOptional()
+  hasOwnDelivery?: boolean;
+
+  @Field({ nullable: true, defaultValue: false })
+  @IsOptional()
+  freeDelivery?: boolean;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  deliveryStartTime?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  deliveryEndTime?: string;
+
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  freeDeliveryAbove?: number;
 
   @Field({ nullable: true })
   @IsOptional()

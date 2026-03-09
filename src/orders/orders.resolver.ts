@@ -1,7 +1,8 @@
 import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { UseGuards, Inject, forwardRef } from '@nestjs/common';
 import { Order } from './entities/order.entity';
 import { OrdersService } from './orders.service';
+import { DeliveriesService } from '../deliveries/deliveries.service';
 import { CreateOrderInput } from './dto/create-order.input';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -12,7 +13,11 @@ import { UserRole, OrderStatus } from '../common/enums';
 
 @Resolver(() => Order)
 export class OrdersResolver {
-  constructor(private ordersService: OrdersService) {}
+  constructor(
+    private ordersService: OrdersService,
+    @Inject(forwardRef(() => DeliveriesService))
+    private deliveriesService: DeliveriesService,
+  ) {}
 
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard)
@@ -54,6 +59,24 @@ export class OrdersResolver {
   @Roles(UserRole.SUPERADMIN)
   allOrders(): Promise<Order[]> {
     return this.ordersService.findAllAdmin();
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard)
+  async confirmReceipt(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: User,
+  ): Promise<Order> {
+    const order = await this.ordersService.confirmReceipt(orderId, user.id);
+
+    // Trigger deliverer payout after customer confirmation
+    if (order.delivery?.id) {
+      this.deliveriesService
+        .processDelivererPayout(order.delivery.id)
+        .catch((err) => console.error('Payout after confirmation failed:', err));
+    }
+
+    return order;
   }
 
   @Mutation(() => Order)

@@ -157,7 +157,23 @@ export class PaymentsService {
 
   async createOrderCheckout(order: Order, customer: User): Promise<{ checkoutUrl: string; preferenceId: string }> {
     const mpCustomerId = await this.getOrCreateMpCustomer(customer);
-    const preference = new Preference(this.mpClient);
+
+    // Determine payment flow:
+    // - Own delivery / pickup + vendor has MP: marketplace split (vendor gets paid immediately)
+    // - App deliverer: platform receives everything (escrow), pays vendor on pickup, deliverer on customer confirmation
+    const store = order.store;
+    const vendorToken = store?.owner?.mpAccessToken;
+    const hasOwnDelivery = store?.hasOwnDelivery;
+    const isAppDeliverer = !hasOwnDelivery && !order.isPickup;
+
+    // Only use marketplace split for own-delivery/pickup orders
+    const useMarketplace = !!vendorToken && !isAppDeliverer;
+    const client = useMarketplace
+      ? new MercadoPagoConfig({ accessToken: vendorToken })
+      : this.mpClient;
+
+    const preference = new Preference(client);
+
     const result = await preference.create({
       body: {
         items: order.items.map((item) => ({
@@ -181,7 +197,18 @@ export class PaymentsService {
   }
 
   async createOrderPix(order: Order, customer: User): Promise<{ qrCode: string; qrCodeBase64: string }> {
-    const mpPayment = new MpPayment(this.mpClient);
+    // Same escrow logic as checkout: app deliverer orders go through platform account
+    const store = order.store;
+    const vendorToken = store?.owner?.mpAccessToken;
+    const hasOwnDelivery = store?.hasOwnDelivery;
+    const isAppDeliverer = !hasOwnDelivery && !order.isPickup;
+
+    const useMarketplace = !!vendorToken && !isAppDeliverer;
+    const client = useMarketplace
+      ? new MercadoPagoConfig({ accessToken: vendorToken })
+      : this.mpClient;
+
+    const mpPayment = new MpPayment(client);
     const result = await mpPayment.create({
       body: {
         transaction_amount: Number(order.total),
@@ -201,6 +228,49 @@ export class PaymentsService {
     const qrCodeBase64 = (result as any).point_of_interaction?.transaction_data?.qr_code_base64 || '';
 
     return { qrCode, qrCodeBase64 };
+  }
+
+  getMpConnectUrl(userId: string, source: string = 'web'): string {
+    const appId = this.configService.get('MP_APP_ID');
+    const webhookUrl = this.configService.get('WEBHOOK_URL') || 'http://localhost:3000';
+    const redirectUri = `${webhookUrl}/payments/mp/callback`;
+    const state = `${userId}:${source}`;
+    return `https://auth.mercadopago.com.br/authorization?client_id=${appId}&response_type=code&platform_id=mp&state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  }
+
+  async handleMpOAuthCallback(code: string, userId: string): Promise<void> {
+    const body = {
+      client_secret: this.configService.get('MP_CLIENT_SECRET'),
+      client_id: this.configService.get('MP_APP_ID'),
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/mp/callback`,
+    };
+    console.log('MP OAuth request:', JSON.stringify({ ...body, client_secret: body.client_secret?.substring(0, 20) + '...' }));
+    const response = await fetch('https://api.mercadopago.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const data = await response.json();
+    console.log('MP OAuth response:', JSON.stringify(data));
+
+    if (data.access_token) {
+      await this.usersService.updateMpCredentials(
+        userId,
+        data.access_token,
+        data.refresh_token,
+        String(data.user_id),
+      );
+      console.log('MP credentials saved for user:', userId);
+    } else {
+      console.error('MP OAuth failed:', data);
+    }
+  }
+
+  async disconnectMp(userId: string): Promise<void> {
+    await this.usersService.disconnectMp(userId);
   }
 
   async handleWebhook(body: any): Promise<void> {
@@ -300,6 +370,104 @@ export class PaymentsService {
     }
   }
 
+  async transferToVendor(vendorId: string, amount: number, orderId: string): Promise<{ success: boolean; mpId?: string }> {
+    const vendor = await this.usersService.findById(vendorId);
+    if (!vendor?.mpUserId) {
+      return { success: false };
+    }
+
+    try {
+      const response = await fetch('https://api.mercadopago.com/v1/payments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.configService.get('MP_ACCESS_TOKEN')}`,
+        },
+        body: JSON.stringify({
+          transaction_amount: amount,
+          description: `Pagamento pedido ${orderId}`,
+          payment_method_id: 'account_money',
+          payer: {
+            email: 'platform@bcmtech.com',
+          },
+          collector_id: Number(vendor.mpUserId),
+          external_reference: `vendor-payout:${orderId}:${vendorId}`,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.id && (data.status === 'approved' || data.status === 'pending')) {
+        const payment = this.paymentsRepository.create({
+          type: 'VENDOR_PAYOUT',
+          description: `Repasse vendedor - Pedido ${orderId}`,
+          amount,
+          status: data.status,
+          mpPaymentId: String(data.id),
+          user: vendor,
+        });
+        await this.paymentsRepository.save(payment);
+        return { success: true, mpId: String(data.id) };
+      }
+
+      return { success: false };
+    } catch (err) {
+      console.error('Failed to transfer to vendor:', err);
+      return { success: false };
+    }
+  }
+
+  async transferToDeliverer(delivererId: string, amount: number, orderId: string): Promise<{ success: boolean; mpId?: string }> {
+    // Fetch the deliverer to get mpUserId
+    const deliverer = await this.usersService.findById(delivererId);
+    if (!deliverer?.mpUserId) {
+      return { success: false };
+    }
+
+    try {
+      // Use MP API to transfer from platform to deliverer
+      const response = await fetch('https://api.mercadopago.com/v1/payments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.configService.get('MP_ACCESS_TOKEN')}`,
+        },
+        body: JSON.stringify({
+          transaction_amount: amount,
+          description: `Entrega do pedido ${orderId}`,
+          payment_method_id: 'account_money',
+          payer: {
+            email: 'platform@bcmtech.com',
+          },
+          collector_id: Number(deliverer.mpUserId),
+          external_reference: `payout:${orderId}:${delivererId}`,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.id && (data.status === 'approved' || data.status === 'pending')) {
+        // Save payment record for audit
+        const payment = this.paymentsRepository.create({
+          type: 'DELIVERER_PAYOUT',
+          description: `Repasse entrega - Pedido ${orderId}`,
+          amount,
+          status: data.status,
+          mpPaymentId: String(data.id),
+          user: deliverer,
+        });
+        await this.paymentsRepository.save(payment);
+
+        return { success: true, mpId: String(data.id) };
+      }
+
+      return { success: false };
+    } catch (err) {
+      console.error('Failed to transfer to deliverer:', err);
+      return { success: false };
+    }
+  }
+
   async findByUser(userId: string): Promise<Payment[]> {
     return this.paymentsRepository.find({
       where: { user: { id: userId } },
@@ -312,5 +480,15 @@ export class PaymentsService {
       relations: ['user'],
       order: { createdAt: 'DESC' },
     });
+  }
+
+  async platformRevenue(): Promise<number> {
+    const result = await this.paymentsRepository
+      .createQueryBuilder('payment')
+      .select('COALESCE(SUM(payment.amount), 0)', 'total')
+      .where('payment.status = :status', { status: 'approved' })
+      .andWhere('payment.type IN (:...types)', { types: ['PLAN_UPGRADE', 'PROMOTION'] })
+      .getRawOne();
+    return parseFloat(result.total);
   }
 }

@@ -191,4 +191,22 @@ export class UsersService {
   async updateMpCustomerId(id: string, mpCustomerId: string): Promise<void> {
     await this.usersRepository.update(id, { mpCustomerId });
   }
+
+  async updateMpCredentials(id: string, accessToken: string, refreshToken: string, mpUserId: string): Promise<void> {
+    await this.usersRepository.update(id, {
+      mpAccessToken: accessToken,
+      mpRefreshToken: refreshToken,
+      mpUserId: mpUserId,
+      mpConnected: true,
+    });
+  }
+
+  async disconnectMp(id: string): Promise<void> {
+    await this.usersRepository.update(id, {
+      mpAccessToken: null as any,
+      mpRefreshToken: null as any,
+      mpUserId: null as any,
+      mpConnected: false,
+    });
+  }
 }

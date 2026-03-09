@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Address } from './entities/address.entity';
 import { User } from '../users/entities/user.entity';
+import { CreateAddressInput } from './dto/create-address.input';
 
 @Injectable()
 export class AddressesService {
@@ -11,7 +12,13 @@ export class AddressesService {
     private addressesRepository: Repository<Address>,
   ) {}
 
-  async create(input: Partial<Address>, user: User): Promise<Address> {
+  async create(input: CreateAddressInput, user: User): Promise<Address> {
+    if (input.isDefault) {
+      await this.addressesRepository.update(
+        { user: { id: user.id } },
+        { isDefault: false },
+      );
+    }
     const address = this.addressesRepository.create({ ...input, user });
     return this.addressesRepository.save(address);
   }
@@ -19,6 +26,7 @@ export class AddressesService {
   async findByUser(userId: string): Promise<Address[]> {
     return this.addressesRepository.find({
       where: { user: { id: userId } },
+      order: { isDefault: 'DESC', createdAt: 'DESC' },
     });
   }
 
@@ -29,5 +37,52 @@ export class AddressesService {
     );
     await this.addressesRepository.update(addressId, { isDefault: true });
     return this.addressesRepository.findOneOrFail({ where: { id: addressId } });
+  }
+
+  async delete(addressId: string, userId: string): Promise<boolean> {
+    const address = await this.addressesRepository.findOne({
+      where: { id: addressId, user: { id: userId } },
+    });
+    if (!address) throw new NotFoundException('Endereco nao encontrado');
+    await this.addressesRepository.remove(address);
+    return true;
+  }
+
+  /**
+   * Save address from a delivery order (avoids duplicates by checking street+number+city).
+   */
+  async saveFromOrder(
+    deliveryAddress: string,
+    latitude: number,
+    longitude: number,
+    user: User,
+  ): Promise<void> {
+    // Check if a similar address already exists for this user
+    const existing = await this.addressesRepository
+      .createQueryBuilder('a')
+      .where('a.userId = :userId', { userId: user.id })
+      .andWhere(
+        'ABS(a.latitude - :lat) < 0.001 AND ABS(a.longitude - :lng) < 0.001',
+        { lat: latitude, lng: longitude },
+      )
+      .getOne();
+
+    if (existing) return; // Already saved
+
+    // Parse what we can from the address string
+    const parts = deliveryAddress.split(',').map((p) => p.trim());
+    const address = this.addressesRepository.create({
+      street: parts[0] || deliveryAddress,
+      number: parts[1] || 'S/N',
+      neighborhood: parts[2] || '',
+      city: parts[3] || '',
+      state: parts[4] || '',
+      zipCode: '',
+      latitude,
+      longitude,
+      isDefault: false,
+      user,
+    });
+    await this.addressesRepository.save(address);
   }
 }

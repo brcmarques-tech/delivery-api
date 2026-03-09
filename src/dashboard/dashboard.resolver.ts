@@ -7,6 +7,9 @@ import { UserRole } from '../common/enums';
 import { UsersService } from '../users/users.service';
 import { StoresService } from '../stores/stores.service';
 import { OrdersService } from '../orders/orders.service';
+import { DeliveriesService } from '../deliveries/deliveries.service';
+import { DelivererTrackerService } from '../deliveries/deliverer-tracker.service';
+import { PaymentsService } from '../payments/payments.service';
 
 @ObjectType()
 class RoleCount {
@@ -51,6 +54,18 @@ class DashboardStats {
 
   @Field(() => Int)
   pendingApprovals: number;
+
+  @Field(() => Int)
+  totalDeliveries: number;
+
+  @Field(() => Int)
+  activeDeliveries: number;
+
+  @Field(() => Int)
+  completedDeliveries: number;
+
+  @Field(() => Int)
+  onlineDeliverers: number;
 }
 
 @Resolver()
@@ -59,23 +74,32 @@ export class DashboardResolver {
     private usersService: UsersService,
     private storesService: StoresService,
     private ordersService: OrdersService,
+    private deliveriesService: DeliveriesService,
+    private delivererTracker: DelivererTrackerService,
+    private paymentsService: PaymentsService,
   ) {}
 
   @Query(() => DashboardStats)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
   async dashboardStats(): Promise<DashboardStats> {
-    const [totalUsers, totalStores, totalOrders, totalRevenue, platformRevenue, usersByRole, ordersByStatus, pendingApprovals] =
-      await Promise.all([
-        this.usersService.totalCount(),
-        this.storesService.totalCount(),
-        this.ordersService.totalCount(),
-        this.ordersService.totalRevenue(),
-        this.ordersService.platformRevenue(),
-        this.usersService.countByRole(),
-        this.ordersService.countByStatus(),
-        this.usersService.pendingCount(),
-      ]);
+    const [
+      totalUsers, totalStores, totalOrders, totalRevenue, platformRevenue,
+      usersByRole, ordersByStatus, pendingApprovals,
+      totalDeliveries, activeDeliveries, completedDeliveries,
+    ] = await Promise.all([
+      this.usersService.totalCount(),
+      this.storesService.totalCount(),
+      this.ordersService.totalCount(),
+      this.ordersService.totalRevenue(),
+      this.paymentsService.platformRevenue(),
+      this.usersService.countByRole(),
+      this.ordersService.countByStatus(),
+      this.usersService.pendingCount(),
+      this.deliveriesService.totalCount(),
+      this.deliveriesService.activeCount(),
+      this.deliveriesService.completedCount(),
+    ]);
 
     return {
       totalUsers,
@@ -86,6 +110,10 @@ export class DashboardResolver {
       usersByRole: usersByRole.map((r) => ({ role: r.role, count: Number(r.count) })),
       ordersByStatus: ordersByStatus.map((s) => ({ status: s.status, count: Number(s.count) })),
       pendingApprovals,
+      totalDeliveries,
+      activeDeliveries,
+      completedDeliveries,
+      onlineDeliverers: this.delivererTracker.getOnlineCount(),
     };
   }
 }

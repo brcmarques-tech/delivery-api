@@ -33,4 +33,14 @@ export class PlatformConfigService {
     const value = await this.get('promo_price_per_day', '1');
     return parseFloat(value);
   }
+
+  async getDeliveryPricePerKm(): Promise<number> {
+    const value = await this.get('delivery_price_per_km', '1.50');
+    return parseFloat(value);
+  }
+
+  async getDeliveryBasePrice(): Promise<number> {
+    const value = await this.get('delivery_base_price', '3.00');
+    return parseFloat(value);
+  }
 }

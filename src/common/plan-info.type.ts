@@ -9,12 +9,6 @@ export class PlanInfo {
   @Field(() => Int)
   maxStores: number;
 
-  @Field(() => Float)
-  commissionRate: number;
-
-  @Field(() => Float)
-  platformDeliveryFee: number;
-
   @Field()
   canPromote: boolean;
 

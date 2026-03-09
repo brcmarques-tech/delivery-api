@@ -23,6 +23,30 @@ export class PlatformConfigResolver {
     return this.configService.set('promo_price_per_day', String(price));
   }
 
+  @Query(() => Float)
+  deliveryPricePerKm(): Promise<number> {
+    return this.configService.getDeliveryPricePerKm();
+  }
+
+  @Query(() => Float)
+  deliveryBasePrice(): Promise<number> {
+    return this.configService.getDeliveryBasePrice();
+  }
+
+  @Mutation(() => PlatformConfig)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  setDeliveryPricePerKm(@Args('price', { type: () => Float }) price: number): Promise<PlatformConfig> {
+    return this.configService.set('delivery_price_per_km', String(price));
+  }
+
+  @Mutation(() => PlatformConfig)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  setDeliveryBasePrice(@Args('price', { type: () => Float }) price: number): Promise<PlatformConfig> {
+    return this.configService.set('delivery_base_price', String(price));
+  }
+
   @Query(() => [PlatformConfig])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)

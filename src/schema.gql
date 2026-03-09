@@ -34,10 +34,24 @@ type Category {
   store: Store!
 }
 
+input CreateAddressInput {
+  city: String!
+  complement: String
+  isDefault: Boolean = false
+  latitude: Float!
+  longitude: Float!
+  neighborhood: String!
+  number: String!
+  state: String!
+  street: String!
+  zipCode: String!
+}
+
 input CreateOrderInput {
-  deliveryAddress: String!
-  deliveryLatitude: Float!
-  deliveryLongitude: Float!
+  deliveryAddress: String
+  deliveryLatitude: Float
+  deliveryLongitude: Float
+  isPickup: Boolean = false
   items: [OrderItemInput!]!
   notes: String
   paymentMethod: String = "ON_DELIVERY"
@@ -69,12 +83,17 @@ input CreateStoreInput {
   bannerUrl: String
   city: String!
   complement: String
+  deliveryEndTime: String
   deliveryFee: Float
+  deliveryStartTime: String
   description: String
   estimatedDeliveryMinutes: Float
-  latitude: Float!
+  freeDelivery: Boolean = false
+  freeDeliveryAbove: Float
+  hasOwnDelivery: Boolean = false
+  latitude: Float
   logoUrl: String
-  longitude: Float!
+  longitude: Float
   minimumOrder: Float
   name: String!
   neighborhood: String!
@@ -86,9 +105,13 @@ input CreateStoreInput {
 }
 
 type DashboardStats {
+  activeDeliveries: Int!
+  completedDeliveries: Int!
+  onlineDeliverers: Int!
   ordersByStatus: [StatusCount!]!
   pendingApprovals: Int!
   platformRevenue: Float!
+  totalDeliveries: Int!
   totalOrders: Int!
   totalRevenue: Float!
   totalStores: Int!
@@ -109,8 +132,14 @@ type Delivery {
   deliverer: User!
   id: ID!
   order: Order!
+  payoutAmount: Float
+  payoutMpId: String
+  payoutStatus: String
   pickedUpAt: DateTime
   updatedAt: DateTime!
+  vendorPayoutAmount: Float
+  vendorPayoutMpId: String
+  vendorPayoutStatus: String
 }
 
 input LoginInput {
@@ -123,20 +152,27 @@ type Mutation {
   approveUser(id: String!): User!
   confirmDelivery(deliveryId: String!): Delivery!
   confirmPickup(deliveryId: String!): Delivery!
+  confirmReceipt(orderId: String!): Order!
+  createAddress(input: CreateAddressInput!): Address!
   createCategory(name: String!, storeId: String!): Category!
   createOrder(input: CreateOrderInput!): Order!
   createPlanUpgrade(plan: VendorPlan!): Payment!
   createProduct(input: CreateProductInput!): Product!
   createPromotion(input: CreatePromotionInput!): Promotion!
   createStore(input: CreateStoreInput!): Store!
+  deleteAddress(id: String!): Boolean!
   deleteCategory(id: String!): Boolean!
   deleteProduct(id: String!): Boolean!
   deletePromotion(id: String!): Boolean!
+  disconnectMercadoPago: Boolean!
   login(input: LoginInput!): AuthResponse!
   markPromotionPaid(id: String!): Promotion!
   register(input: RegisterInput!): AuthResponse!
   registerAsDeliverer(input: RegisterDelivererInput!): User!
   rejectUser(id: String!, reason: String!): User!
+  setDefaultAddress(id: String!): Address!
+  setDeliveryBasePrice(price: Float!): PlatformConfig!
+  setDeliveryPricePerKm(price: Float!): PlatformConfig!
   setPromoPricePerDay(price: Float!): PlatformConfig!
   swapPromotionProduct(id: String!, productId: String!, promotionalPrice: Float!, title: String!): Promotion!
   toggleProductAvailability(id: String!): Product!
@@ -169,12 +205,14 @@ type Order {
   checkoutUrl: String
   createdAt: DateTime!
   customer: User!
+  customerConfirmedAt: DateTime
   delivery: Delivery
-  deliveryAddress: String!
+  deliveryAddress: String
   deliveryFee: Float!
-  deliveryLatitude: Float!
-  deliveryLongitude: Float!
+  deliveryLatitude: Float
+  deliveryLongitude: Float
   id: ID!
+  isPickup: Boolean!
   items: [OrderItem!]!
   mpPreferenceId: String
   notes: String
@@ -234,11 +272,9 @@ type Payment {
 
 type PlanInfo {
   canPromote: Boolean!
-  commissionRate: Float!
   maxStores: Int!
   monthlyPrice: Float!
   plan: VendorPlan!
-  platformDeliveryFee: Float!
 }
 
 type PlatformConfig {
@@ -286,6 +322,7 @@ type Promotion {
 
 type Query {
   activePromotions: [Promotion!]!
+  allDeliveries: [Delivery!]!
   allOrders: [Order!]!
   allPayments: [Payment!]!
   allPromotions: [Promotion!]!
@@ -293,9 +330,15 @@ type Query {
   allUsers: [User!]!
   availableDeliveries: [Order!]!
   availablePlans: [PlanInfo!]!
+  calculateDeliveryFee(customerLatitude: Float!, customerLongitude: Float!, storeId: String!): Float!
   categoriesByStore(storeId: String!): [Category!]!
   dashboardStats: DashboardStats!
+  deliveryBasePrice: Float!
+  deliveryPricePerKm: Float!
+  estimatedDeliveryTime(customerLatitude: Float!, customerLongitude: Float!, storeId: String!): Float!
   me: User!
+  mpConnectUrl(source: String = "web"): String!
+  myAddresses: [Address!]!
   myDeliveries: [Delivery!]!
   myOrders: [Order!]!
   myPayments: [Payment!]!
@@ -303,6 +346,7 @@ type Query {
   myStores: [Store!]!
   nearbyStores(latitude: Float!, longitude: Float!, radiusKm: Float): [Store!]!
   notificationLogs: [NotificationLog!]!
+  onlineDeliverersCount: Int!
   order(id: String!): Order!
   pendingApprovals: [User!]!
   platformConfigs: [PlatformConfig!]!
@@ -346,9 +390,14 @@ type Store {
   city: String!
   complement: String
   createdAt: DateTime!
+  deliveryEndTime: String
   deliveryFee: Float!
+  deliveryStartTime: String
   description: String
   estimatedDeliveryMinutes: Float!
+  freeDelivery: Boolean!
+  freeDeliveryAbove: Float
+  hasOwnDelivery: Boolean!
   id: ID!
   isActive: Boolean!
   isOpen: Boolean!
@@ -360,6 +409,7 @@ type Store {
   neighborhood: String!
   number: String!
   owner: User!
+  ownerMpConnected: Boolean!
   phone: String!
   products: [Product!]
   state: String!
@@ -382,9 +432,14 @@ input UpdateStoreInput {
   bannerUrl: String
   city: String
   complement: String
+  deliveryEndTime: String
   deliveryFee: Float
+  deliveryStartTime: String
   description: String
   estimatedDeliveryMinutes: Float
+  freeDelivery: Boolean
+  freeDeliveryAbove: Float
+  hasOwnDelivery: Boolean
   id: String!
   logoUrl: String
   minimumOrder: Float
@@ -408,6 +463,7 @@ type User {
   identityPhotoUrl: String
   isActive: Boolean!
   isDeliverer: Boolean!
+  mpConnected: Boolean!
   name: String!
   orders: [Order!]
   pendingRole: String

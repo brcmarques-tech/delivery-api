@@ -9,15 +9,19 @@ import { User } from '../users/entities/user.entity';
 import { ProductsService } from '../products/products.service';
 import { StoresService } from '../stores/stores.service';
 import { PaymentsService } from '../payments/payments.service';
+import { PlatformConfigService } from '../config/platform-config.service';
+import { AddressesService } from '../addresses/addresses.service';
 import { OrderStatus } from '../common/enums';
-import { getPlanConfig } from '../common/plan-config';
+
+// Callback type for when order becomes READY
+type OnOrderReadyCallback = (order: Order) => void;
 
 const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.AWAITING_PAYMENT]: [OrderStatus.PENDING, OrderStatus.CANCELLED],
   [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
-  [OrderStatus.READY]: [OrderStatus.PICKED_UP, OrderStatus.CANCELLED],
+  [OrderStatus.READY]: [OrderStatus.PICKED_UP, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
   [OrderStatus.PICKED_UP]: [OrderStatus.DELIVERING],
   [OrderStatus.DELIVERING]: [OrderStatus.DELIVERED],
   [OrderStatus.DELIVERED]: [],
@@ -36,10 +40,23 @@ export class OrdersService {
     private productsService: ProductsService,
     private storesService: StoresService,
     private paymentsService: PaymentsService,
+    private platformConfigService: PlatformConfigService,
+    private addressesService: AddressesService,
   ) {}
+
+  private onOrderReadyCallback: OnOrderReadyCallback | null = null;
+
+  onOrderReady(callback: OnOrderReadyCallback) {
+    this.onOrderReadyCallback = callback;
+  }
 
   async create(input: CreateOrderInput, customer: User): Promise<Order> {
     const store = await this.storesService.findById(input.storeId);
+    const isPickup = input.isPickup || false;
+
+    if (!isPickup && !input.deliveryAddress) {
+      throw new BadRequestException('Informe o endereco de entrega');
+    }
 
     let subtotal = 0;
     const items: OrderItem[] = [];
@@ -60,16 +77,62 @@ export class OrdersService {
       items.push(orderItem);
     }
 
-    const deliveryFee = Number(store.deliveryFee);
+    let deliveryFee = 0;
+
+    if (!isPickup && input.deliveryLatitude && input.deliveryLongitude) {
+      // Check free delivery conditions
+      const storeFreeDelivery = store.freeDelivery;
+      const freeAbove = store.freeDeliveryAbove ? Number(store.freeDeliveryAbove) : null;
+
+      if (storeFreeDelivery || (freeAbove && subtotal >= freeAbove)) {
+        deliveryFee = 0;
+      } else {
+        // Calculate delivery fee based on distance
+        const pricePerKm = await this.platformConfigService.getDeliveryPricePerKm();
+        const basePrice = await this.platformConfigService.getDeliveryBasePrice();
+        const R = 6371;
+        const dLat = (input.deliveryLatitude - Number(store.latitude)) * Math.PI / 180;
+        const dLng = (input.deliveryLongitude - Number(store.longitude)) * Math.PI / 180;
+        const a =
+          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(Number(store.latitude) * Math.PI / 180) *
+            Math.cos(input.deliveryLatitude * Math.PI / 180) *
+            Math.sin(dLng / 2) * Math.sin(dLng / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const distanceKm = R * c;
+        deliveryFee = Math.round((basePrice + distanceKm * pricePerKm) * 100) / 100;
+      }
+    }
+
     const total = subtotal + deliveryFee;
 
-    // Calcula comissao da plataforma baseado no plano do vendedor
     const storeOwner = store.owner;
-    const planConfig = getPlanConfig(storeOwner?.vendorPlan);
-    const platformCommission = Math.round(subtotal * planConfig.commissionRate * 100) / 100;
-    const platformDeliveryFee = planConfig.platformDeliveryFee;
 
     const paymentMethod = input.paymentMethod || 'ON_DELIVERY';
+
+    const vendorMpConnected = storeOwner?.mpConnected ?? false;
+
+    // Vendedor sem MP conectado: só aceita pagamento na entrega
+    if (!vendorMpConnected && paymentMethod !== 'ON_DELIVERY') {
+      throw new BadRequestException(
+        'Esta loja ainda nao aceita pagamentos online. Escolha pagamento na entrega ou retirada.',
+      );
+    }
+
+    // Vendedor sem MP + sem entrega propria: só permite retirada
+    if (!vendorMpConnected && !store.hasOwnDelivery && !isPickup) {
+      throw new BadRequestException(
+        'Esta loja so aceita retirada no local no momento.',
+      );
+    }
+
+    // Pagamento na entrega só é permitido para lojas com entrega própria ou retirada
+    if (paymentMethod === 'ON_DELIVERY' && !isPickup && !store.hasOwnDelivery) {
+      throw new BadRequestException(
+        'Pagamento na entrega nao disponivel para esta loja. Use PIX ou cartao.',
+      );
+    }
+
     const needsPayment = paymentMethod !== 'ON_DELIVERY';
 
     const order = this.ordersRepository.create({
@@ -80,17 +143,29 @@ export class OrdersService {
       subtotal,
       deliveryFee,
       total,
-      platformCommission,
-      platformDeliveryFee,
-      deliveryAddress: input.deliveryAddress,
-      deliveryLatitude: input.deliveryLatitude,
-      deliveryLongitude: input.deliveryLongitude,
+      isPickup,
+      platformCommission: 0,
+      platformDeliveryFee: 0,
+      deliveryAddress: isPickup
+        ? `${store.street}, ${store.number} - ${store.neighborhood}, ${store.city}`
+        : input.deliveryAddress,
+      deliveryLatitude: isPickup ? Number(store.latitude) : input.deliveryLatitude,
+      deliveryLongitude: isPickup ? Number(store.longitude) : input.deliveryLongitude,
       notes: input.notes,
       paymentMethod,
       status: needsPayment ? OrderStatus.AWAITING_PAYMENT : OrderStatus.PENDING,
     });
 
     const savedOrder = await this.ordersRepository.save(order);
+    // Ensure store with owner relation is available for payment methods (marketplace split)
+    savedOrder.store = store;
+
+    // Auto-save delivery address for future use
+    if (!isPickup && input.deliveryAddress && input.deliveryLatitude && input.deliveryLongitude) {
+      this.addressesService
+        .saveFromOrder(input.deliveryAddress, input.deliveryLatitude, input.deliveryLongitude, customer)
+        .catch(() => {}); // Don't fail the order if address save fails
+    }
 
     if (paymentMethod === 'MERCADO_PAGO') {
       const { checkoutUrl, preferenceId } = await this.paymentsService.createOrderCheckout(savedOrder, customer);
@@ -188,6 +263,26 @@ export class OrdersService {
       .getRawMany();
   }
 
+  async confirmReceipt(orderId: string, customerId: string): Promise<Order> {
+    const order = await this.ordersRepository.findOne({
+      where: { id: orderId },
+      relations: ['customer', 'delivery', 'delivery.deliverer'],
+    });
+    if (!order) throw new NotFoundException('Pedido nao encontrado');
+    if (order.customer.id !== customerId) {
+      throw new BadRequestException('Voce nao pode confirmar este pedido');
+    }
+    if (order.status !== OrderStatus.DELIVERED) {
+      throw new BadRequestException('Pedido ainda nao foi entregue');
+    }
+    if (order.customerConfirmedAt) {
+      throw new BadRequestException('Recebimento ja confirmado');
+    }
+
+    order.customerConfirmedAt = new Date();
+    return this.ordersRepository.save(order);
+  }
+
   async updateStatus(id: string, status: OrderStatus, user?: User): Promise<Order> {
     const order = await this.findById(id);
 
@@ -217,6 +312,15 @@ export class OrdersService {
     }
 
     order.status = status;
-    return this.ordersRepository.save(order);
+    const saved = await this.ordersRepository.save(order);
+
+    // Trigger delivery offer when order is ready (skip for pickup orders)
+    if (status === OrderStatus.READY && this.onOrderReadyCallback && !order.isPickup) {
+      // Reload with store relation for coordinates
+      const full = await this.findById(saved.id);
+      this.onOrderReadyCallback(full);
+    }
+
+    return saved;
   }
 }

@@ -102,6 +102,20 @@ export class User {
   @Column({ nullable: true })
   mpCustomerId: string;
 
+  // Mercado Pago Marketplace OAuth
+  @Field()
+  @Column({ default: false })
+  mpConnected: boolean;
+
+  @Column({ nullable: true })
+  mpAccessToken: string;
+
+  @Column({ nullable: true })
+  mpRefreshToken: string;
+
+  @Column({ nullable: true })
+  mpUserId: string;
+
   @Field(() => [Store], { nullable: true })
   @OneToMany(() => Store, (store) => store.owner)
   stores: Store[];

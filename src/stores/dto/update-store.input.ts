@@ -60,6 +60,26 @@ export class UpdateStoreInput {
 
   @Field({ nullable: true })
   @IsOptional()
+  hasOwnDelivery?: boolean;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  freeDelivery?: boolean;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  deliveryStartTime?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  deliveryEndTime?: string;
+
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  freeDeliveryAbove?: number;
+
+  @Field({ nullable: true })
+  @IsOptional()
   logoUrl?: string;
 
   @Field({ nullable: true })
