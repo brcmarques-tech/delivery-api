@@ -89,6 +89,16 @@ export class UsersResolver {
     return this.usersService.updateVendorPlan(id, plan, durationMonths);
   }
 
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  async registerPushToken(
+    @Args('token') token: string,
+    @CurrentUser() user: User,
+  ): Promise<boolean> {
+    await this.usersService.updatePushToken(user.id, token);
+    return true;
+  }
+
   @Query(() => [PlanInfo])
   availablePlans(): PlanInfo[] {
     return Object.entries(PLAN_CONFIGS).map(([plan, config]) => ({

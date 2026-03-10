@@ -29,4 +29,8 @@ export class UpdateProductInput {
   @Field({ nullable: true })
   @IsOptional()
   categoryId?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  stock?: number;
 }

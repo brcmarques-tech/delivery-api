@@ -11,6 +11,7 @@ import { DeliveryConfirmationScheduler } from './delivery-confirmation.scheduler
 import { OrdersModule } from '../orders/orders.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { UsersModule } from '../users/users.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { UsersModule } from '../users/users.module';
     forwardRef(() => OrdersModule),
     PaymentsModule,
     UsersModule,
+    NotificationsModule,
   ],
   providers: [
     DeliveriesService,

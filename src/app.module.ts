@@ -19,6 +19,7 @@ import { UploadModule } from './upload/upload.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { PaymentsModule } from './payments/payments.module';
 import { PlatformConfigModule } from './config/platform-config.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { PlatformConfigModule } from './config/platform-config.module';
     PromotionsModule,
     PaymentsModule,
     PlatformConfigModule,
+    NotificationsModule,
   ],
 })
 export class AppModule {}

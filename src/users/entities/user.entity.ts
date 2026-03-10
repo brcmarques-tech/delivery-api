@@ -98,6 +98,10 @@ export class User {
   @Column({ type: 'timestamp', nullable: true })
   planExpiresAt: Date | null;
 
+  // Push notifications
+  @Column({ nullable: true })
+  expoPushToken: string;
+
   // Mercado Pago customer ID para cartoes salvos
   @Column({ nullable: true })
   mpCustomerId: string;

@@ -11,6 +11,7 @@ import { DeliveriesModule } from '../deliveries/deliveries.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { PlatformConfigModule } from '../config/platform-config.module';
 import { AddressesModule } from '../addresses/addresses.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { AddressesModule } from '../addresses/addresses.module';
     PaymentsModule,
     PlatformConfigModule,
     AddressesModule,
+    NotificationsModule,
   ],
   providers: [OrdersService, OrdersResolver],
   exports: [OrdersService],

@@ -11,6 +11,7 @@ import { StoresService } from '../stores/stores.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { AddressesService } from '../addresses/addresses.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStatus } from '../common/enums';
 
 // Callback type for when order becomes READY
@@ -42,6 +43,7 @@ export class OrdersService {
     private paymentsService: PaymentsService,
     private platformConfigService: PlatformConfigService,
     private addressesService: AddressesService,
+    private notificationsService: NotificationsService,
   ) {}
 
   private onOrderReadyCallback: OnOrderReadyCallback | null = null;
@@ -60,6 +62,17 @@ export class OrdersService {
 
     let subtotal = 0;
     const items: OrderItem[] = [];
+
+    // Validate stock for all items before processing
+    // stock = 0 means untracked (unlimited). stock > 0 means tracked.
+    for (const itemInput of input.items) {
+      const product = await this.productsService.findById(itemInput.productId);
+      if (product.stock > 0 && product.stock < itemInput.quantity) {
+        throw new BadRequestException(
+          `Estoque insuficiente para "${product.name}". Disponivel: ${product.stock}`,
+        );
+      }
+    }
 
     for (const itemInput of input.items) {
       const product = await this.productsService.findById(itemInput.productId);
@@ -144,8 +157,6 @@ export class OrdersService {
       deliveryFee,
       total,
       isPickup,
-      platformCommission: 0,
-      platformDeliveryFee: 0,
       deliveryAddress: isPickup
         ? `${store.street}, ${store.number} - ${store.neighborhood}, ${store.city}`
         : input.deliveryAddress,
@@ -159,6 +170,13 @@ export class OrdersService {
     const savedOrder = await this.ordersRepository.save(order);
     // Ensure store with owner relation is available for payment methods (marketplace split)
     savedOrder.store = store;
+
+    // Decrement stock for tracked products (stock > 0)
+    for (const item of items) {
+      if (item.product.stock > 0) {
+        await this.productsService.decrementStock(item.product.id, item.quantity);
+      }
+    }
 
     // Auto-save delivery address for future use
     if (!isPickup && input.deliveryAddress && input.deliveryLatitude && input.deliveryLongitude) {
@@ -184,6 +202,16 @@ export class OrdersService {
           'PIX nao disponivel no momento. Em ambiente de teste, use Mercado Pago ou pagamento na entrega.',
         );
       }
+    }
+
+    // Notify store owner about new order
+    if (store.owner?.id) {
+      this.notificationsService.sendToUser(
+        store.owner.id,
+        'Novo pedido!',
+        `Pedido #${savedOrder.orderNumber} - R$ ${total.toFixed(2)}`,
+        { type: 'NEW_ORDER', orderId: savedOrder.id },
+      ).catch(() => {});
     }
 
     return savedOrder;
@@ -237,18 +265,6 @@ export class OrdersService {
     const result = await this.ordersRepository
       .createQueryBuilder('order')
       .select('COALESCE(SUM(order.total), 0)', 'total')
-      .where('order.status = :status', { status: OrderStatus.DELIVERED })
-      .getRawOne();
-    return parseFloat(result.total);
-  }
-
-  async platformRevenue(): Promise<number> {
-    const result = await this.ordersRepository
-      .createQueryBuilder('order')
-      .select(
-        'COALESCE(SUM(order.platformCommission), 0) + COALESCE(SUM(order.platformDeliveryFee), 0)',
-        'total',
-      )
       .where('order.status = :status', { status: OrderStatus.DELIVERED })
       .getRawOne();
     return parseFloat(result.total);
@@ -311,8 +327,35 @@ export class OrdersService {
       await this.deliveriesRepository.save(order.delivery);
     }
 
+    // Restore stock when order is cancelled
+    if (status === OrderStatus.CANCELLED) {
+      for (const item of order.items) {
+        await this.productsService.restoreStock(item.product.id, item.quantity);
+      }
+    }
+
     order.status = status;
     const saved = await this.ordersRepository.save(order);
+
+    // Notify customer about status change
+    const statusMessages: Record<string, string> = {
+      [OrderStatus.ACCEPTED]: 'Seu pedido foi aceito!',
+      [OrderStatus.PREPARING]: 'Seu pedido esta sendo preparado',
+      [OrderStatus.READY]: 'Seu pedido esta pronto!',
+      [OrderStatus.PICKED_UP]: 'Entregador saiu com seu pedido',
+      [OrderStatus.DELIVERING]: 'Seu pedido esta a caminho!',
+      [OrderStatus.DELIVERED]: 'Seu pedido foi entregue!',
+      [OrderStatus.CANCELLED]: 'Seu pedido foi cancelado',
+    };
+
+    if (statusMessages[status] && order.customer?.id) {
+      this.notificationsService.sendToUser(
+        order.customer.id,
+        `Pedido #${order.orderNumber}`,
+        statusMessages[status],
+        { type: 'ORDER_STATUS', orderId: order.id, status },
+      ).catch(() => {});
+    }
 
     // Trigger delivery offer when order is ready (skip for pickup orders)
     if (status === OrderStatus.READY && this.onOrderReadyCallback && !order.isPickup) {

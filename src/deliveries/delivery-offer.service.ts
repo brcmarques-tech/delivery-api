@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DelivererTrackerService } from './deliverer-tracker.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const OFFER_TIMEOUT_MS = 30_000; // 30 seconds per deliverer
 
@@ -27,7 +28,10 @@ export class DeliveryOfferService {
   private emitToSocket: ((socketId: string, event: string, data: any) => void) | null = null;
   private emitToAll: ((event: string, data: any) => void) | null = null;
 
-  constructor(private trackerService: DelivererTrackerService) {}
+  constructor(
+    private trackerService: DelivererTrackerService,
+    private notificationsService: NotificationsService,
+  ) {}
 
   setEmitters(
     emitToSocket: (socketId: string, event: string, data: any) => void,
@@ -120,6 +124,14 @@ export class DeliveryOfferService {
         timeoutSeconds: OFFER_TIMEOUT_MS / 1000,
       });
     }
+
+    // Push notification to deliverer
+    this.notificationsService.sendToUser(
+      deliverer.userId,
+      'Nova entrega disponivel!',
+      `Pedido #${offer.orderNumber} - R$ ${offer.deliveryFee.toFixed(2)}`,
+      { type: 'DELIVERY_OFFER', orderId: offer.orderId },
+    ).catch(() => {});
 
     // Set timeout — if no response, move to next
     offer.timer = setTimeout(() => {

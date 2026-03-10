@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Product } from './entities/product.entity';
@@ -19,6 +19,7 @@ export class ProductsService {
       price: input.price,
       imageUrl: input.imageUrl,
       unit: input.unit,
+      stock: input.stock ?? 0,
       store: { id: input.storeId } as any,
       category: input.categoryId ? ({ id: input.categoryId } as any) : undefined,
     });
@@ -51,6 +52,7 @@ export class ProductsService {
     if (input.categoryId !== undefined) {
       product.category = input.categoryId ? ({ id: input.categoryId } as any) : null;
     }
+    if (input.stock !== undefined) product.stock = input.stock;
     return this.productsRepository.save(product);
   }
 
@@ -58,6 +60,30 @@ export class ProductsService {
     const product = await this.findById(id);
     product.isAvailable = !product.isAvailable;
     return this.productsRepository.save(product);
+  }
+
+  async decrementStock(id: string, quantity: number): Promise<void> {
+    const product = await this.findById(id);
+    if (product.stock < quantity) {
+      throw new BadRequestException(
+        `Estoque insuficiente para "${product.name}". Disponivel: ${product.stock}, solicitado: ${quantity}`,
+      );
+    }
+    product.stock -= quantity;
+    if (product.stock === 0) {
+      product.isAvailable = false;
+    }
+    await this.productsRepository.save(product);
+  }
+
+  async restoreStock(id: string, quantity: number): Promise<void> {
+    const product = await this.productsRepository.findOne({ where: { id } });
+    if (!product) return;
+    product.stock += quantity;
+    if (product.stock > 0 && !product.isAvailable) {
+      product.isAvailable = true;
+    }
+    await this.productsRepository.save(product);
   }
 
   async delete(id: string): Promise<boolean> {

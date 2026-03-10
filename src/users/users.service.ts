@@ -201,6 +201,10 @@ export class UsersService {
     });
   }
 
+  async updatePushToken(id: string, token: string): Promise<void> {
+    await this.usersRepository.update(id, { expoPushToken: token });
+  }
+
   async disconnectMp(id: string): Promise<void> {
     await this.usersRepository.update(id, {
       mpAccessToken: null as any,

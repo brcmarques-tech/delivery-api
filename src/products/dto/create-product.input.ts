@@ -28,4 +28,8 @@ export class CreateProductInput {
   @Field({ nullable: true })
   @IsOptional()
   categoryId?: string;
+
+  @Field({ nullable: true, defaultValue: 0 })
+  @IsOptional()
+  stock?: number;
 }

@@ -43,14 +43,6 @@ export class Order {
   @Column('decimal', { precision: 10, scale: 2 })
   total: number;
 
-  @Field(() => Float)
-  @Column('decimal', { precision: 10, scale: 2, default: 0 })
-  platformCommission: number;
-
-  @Field(() => Float)
-  @Column('decimal', { precision: 10, scale: 2, default: 0 })
-  platformDeliveryFee: number;
-
   @Field({ nullable: true })
   @Column({ nullable: true })
   paymentMethod: string; // 'MERCADO_PAGO' | 'PIX' | 'ON_DELIVERY'
