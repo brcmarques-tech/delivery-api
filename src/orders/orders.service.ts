@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { Delivery } from '../deliveries/entities/delivery.entity';
@@ -13,6 +14,7 @@ import { PlatformConfigService } from '../config/platform-config.service';
 import { AddressesService } from '../addresses/addresses.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStatus } from '../common/enums';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 // Callback type for when order becomes READY
 type OnOrderReadyCallback = (order: Order) => void;
@@ -44,6 +46,7 @@ export class OrdersService {
     private platformConfigService: PlatformConfigService,
     private addressesService: AddressesService,
     private notificationsService: NotificationsService,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   private onOrderReadyCallback: OnOrderReadyCallback | null = null;
@@ -214,6 +217,10 @@ export class OrdersService {
       ).catch(() => {});
     }
 
+    // Publish subscription events
+    this.pubSub.publish('orderCreated', { orderCreated: savedOrder });
+    this.pubSub.publish('orderUpdated', { orderUpdated: savedOrder });
+
     return savedOrder;
   }
 
@@ -296,7 +303,9 @@ export class OrdersService {
     }
 
     order.customerConfirmedAt = new Date();
-    return this.ordersRepository.save(order);
+    const saved = await this.ordersRepository.save(order);
+    this.pubSub.publish('orderUpdated', { orderUpdated: saved });
+    return saved;
   }
 
   async updateStatus(id: string, status: OrderStatus, user?: User): Promise<Order> {
@@ -356,6 +365,9 @@ export class OrdersService {
         { type: 'ORDER_STATUS', orderId: order.id, status },
       ).catch(() => {});
     }
+
+    // Publish subscription event
+    this.pubSub.publish('orderUpdated', { orderUpdated: saved });
 
     // Trigger delivery offer when order is ready (skip for pickup orders)
     if (status === OrderStatus.READY && this.onOrderReadyCallback && !order.isPickup) {

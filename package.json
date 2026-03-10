@@ -40,6 +40,8 @@
     "class-validator": "^0.14.4",
     "cloudinary": "^2.9.0",
     "graphql": "^16.13.1",
+    "graphql-subscriptions": "^3.0.0",
+    "graphql-ws": "^6.0.7",
     "ioredis": "^5.10.0",
     "mercadopago": "^2.12.0",
     "nodemailer": "^8.0.1",

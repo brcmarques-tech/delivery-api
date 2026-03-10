@@ -1,5 +1,6 @@
-import { Resolver, Query, Mutation, Args, Float } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { Resolver, Query, Mutation, Args, Float, Subscription } from '@nestjs/graphql';
+import { UseGuards, Inject } from '@nestjs/common';
+import { PubSub } from 'graphql-subscriptions';
 import { Promotion } from './entities/promotion.entity';
 import { PromotionsService } from './promotions.service';
 import { CreatePromotionInput } from './dto/create-promotion.input';
@@ -10,12 +11,14 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../users/entities/user.entity';
 import { UserRole } from '../common/enums';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Resolver(() => Promotion)
 export class PromotionsResolver {
   constructor(
     private promotionsService: PromotionsService,
     private paymentsService: PaymentsService,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   @Mutation(() => Promotion)
@@ -95,5 +98,10 @@ export class PromotionsResolver {
     @CurrentUser() user: User,
   ): Promise<boolean> {
     return this.promotionsService.delete(id, user.id);
+  }
+
+  @Subscription(() => Promotion)
+  promotionUpdated() {
+    return this.pubSub.asyncIterableIterator('promotionUpdated');
   }
 }

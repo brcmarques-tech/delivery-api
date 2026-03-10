@@ -1,12 +1,14 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, IsNull } from 'typeorm';
+import { PubSub } from 'graphql-subscriptions';
 import { Delivery } from './entities/delivery.entity';
 import { User } from '../users/entities/user.entity';
 import { OrdersService } from '../orders/orders.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { PaymentsService } from '../payments/payments.service';
 import { OrderStatus } from '../common/enums';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
 export class DeliveriesService implements OnModuleInit {
@@ -16,6 +18,7 @@ export class DeliveriesService implements OnModuleInit {
     private ordersService: OrdersService,
     private offerService: DeliveryOfferService,
     private paymentsService: PaymentsService,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   onModuleInit() {
@@ -51,7 +54,9 @@ export class DeliveriesService implements OnModuleInit {
     });
 
     await this.ordersService.updateStatus(orderId, OrderStatus.PICKED_UP);
-    return this.deliveriesRepository.save(delivery);
+    const saved = await this.deliveriesRepository.save(delivery);
+    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+    return saved;
   }
 
   async updateLocation(
@@ -67,7 +72,9 @@ export class DeliveriesService implements OnModuleInit {
 
     delivery.currentLatitude = latitude;
     delivery.currentLongitude = longitude;
-    return this.deliveriesRepository.save(delivery);
+    const saved = await this.deliveriesRepository.save(delivery);
+    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+    return saved;
   }
 
   async confirmPickup(deliveryId: string): Promise<Delivery> {
@@ -80,6 +87,7 @@ export class DeliveriesService implements OnModuleInit {
     delivery.pickedUpAt = new Date();
     await this.ordersService.updateStatus(delivery.order.id, OrderStatus.DELIVERING);
     const savedDelivery = await this.deliveriesRepository.save(delivery);
+    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
 
     // For app deliverer orders with online payment: pay vendor now (escrow release)
     const order = delivery.order;
@@ -122,7 +130,9 @@ export class DeliveriesService implements OnModuleInit {
       }
     }
 
-    return this.deliveriesRepository.save(delivery);
+    const savedDelivery2 = await this.deliveriesRepository.save(delivery);
+    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery2 });
+    return savedDelivery2;
   }
 
   /** Called when customer confirms receipt or after 10-min auto-confirm */

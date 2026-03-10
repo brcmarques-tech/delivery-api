@@ -1,15 +1,18 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { PubSub } from 'graphql-subscriptions';
 import { Product } from './entities/product.entity';
 import { CreateProductInput } from './dto/create-product.input';
 import { UpdateProductInput } from './dto/update-product.input';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
 export class ProductsService {
   constructor(
     @InjectRepository(Product)
     private productsRepository: Repository<Product>,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   async create(input: CreateProductInput): Promise<Product> {
@@ -23,7 +26,9 @@ export class ProductsService {
       store: { id: input.storeId } as any,
       category: input.categoryId ? ({ id: input.categoryId } as any) : undefined,
     });
-    return this.productsRepository.save(product);
+    const saved = await this.productsRepository.save(product);
+    this.pubSub.publish('productUpdated', { productUpdated: saved });
+    return saved;
   }
 
   async findByStore(storeId: string): Promise<Product[]> {
@@ -53,13 +58,17 @@ export class ProductsService {
       product.category = input.categoryId ? ({ id: input.categoryId } as any) : null;
     }
     if (input.stock !== undefined) product.stock = input.stock;
-    return this.productsRepository.save(product);
+    const saved = await this.productsRepository.save(product);
+    this.pubSub.publish('productUpdated', { productUpdated: saved });
+    return saved;
   }
 
   async toggleAvailability(id: string): Promise<Product> {
     const product = await this.findById(id);
     product.isAvailable = !product.isAvailable;
-    return this.productsRepository.save(product);
+    const saved = await this.productsRepository.save(product);
+    this.pubSub.publish('productUpdated', { productUpdated: saved });
+    return saved;
   }
 
   async decrementStock(id: string, quantity: number): Promise<void> {
@@ -73,7 +82,8 @@ export class ProductsService {
     if (product.stock === 0) {
       product.isAvailable = false;
     }
-    await this.productsRepository.save(product);
+    const savedProduct = await this.productsRepository.save(product);
+    this.pubSub.publish('productUpdated', { productUpdated: savedProduct });
   }
 
   async restoreStock(id: string, quantity: number): Promise<void> {
@@ -83,12 +93,16 @@ export class ProductsService {
     if (product.stock > 0 && !product.isAvailable) {
       product.isAvailable = true;
     }
-    await this.productsRepository.save(product);
+    const savedProduct = await this.productsRepository.save(product);
+    this.pubSub.publish('productUpdated', { productUpdated: savedProduct });
   }
 
   async delete(id: string): Promise<boolean> {
     const product = await this.findById(id);
+    const storeId = product.store?.id;
     await this.productsRepository.remove(product);
+    // Publish with the id so clients can remove it
+    this.pubSub.publish('productDeleted', { productDeleted: { id, storeId } });
     return true;
   }
 }

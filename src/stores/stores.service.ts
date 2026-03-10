@@ -1,11 +1,13 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
 import { User } from '../users/entities/user.entity';
 import { getPlanConfig } from '../common/plan-config';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
 export class StoresService {
@@ -14,6 +16,7 @@ export class StoresService {
   constructor(
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   /**
@@ -70,7 +73,9 @@ export class StoresService {
     }
 
     const store = this.storesRepository.create({ ...input, owner });
-    return this.storesRepository.save(store);
+    const saved = await this.storesRepository.save(store);
+    this.pubSub.publish('storeUpdated', { storeUpdated: saved });
+    return saved;
   }
 
   async findAll(): Promise<Store[]> {
@@ -117,7 +122,9 @@ export class StoresService {
     Object.entries(updates).forEach(([key, value]) => {
       if (value !== undefined) (store as any)[key] = value;
     });
-    return this.storesRepository.save(store);
+    const saved = await this.storesRepository.save(store);
+    this.pubSub.publish('storeUpdated', { storeUpdated: saved });
+    return saved;
   }
 
   async toggleOpen(id: string, owner: User): Promise<Store> {
@@ -126,7 +133,9 @@ export class StoresService {
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
     store.isOpen = !store.isOpen;
-    return this.storesRepository.save(store);
+    const saved = await this.storesRepository.save(store);
+    this.pubSub.publish('storeUpdated', { storeUpdated: saved });
+    return saved;
   }
 
   async findAllAdmin(): Promise<Store[]> {
@@ -140,7 +149,9 @@ export class StoresService {
     const store = await this.storesRepository.findOne({ where: { id } });
     if (!store) throw new NotFoundException('Loja nao encontrada');
     store.isActive = !store.isActive;
-    return this.storesRepository.save(store);
+    const saved = await this.storesRepository.save(store);
+    this.pubSub.publish('storeUpdated', { storeUpdated: saved });
+    return saved;
   }
 
   async totalCount(): Promise<number> {

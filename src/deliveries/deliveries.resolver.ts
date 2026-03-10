@@ -1,5 +1,6 @@
-import { Resolver, Mutation, Query, Args, Float, Int } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { Resolver, Mutation, Query, Args, Float, Int, Subscription } from '@nestjs/graphql';
+import { UseGuards, Inject } from '@nestjs/common';
+import { PubSub } from 'graphql-subscriptions';
 import { Delivery } from './entities/delivery.entity';
 import { DeliveriesService } from './deliveries.service';
 import { DelivererTrackerService } from './deliverer-tracker.service';
@@ -10,6 +11,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../users/entities/user.entity';
 import { UserRole } from '../common/enums';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Resolver(() => Delivery)
 export class DeliveriesResolver {
@@ -17,6 +19,7 @@ export class DeliveriesResolver {
     private deliveriesService: DeliveriesService,
     private delivererTracker: DelivererTrackerService,
     private gateway: DeliveriesGateway,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   @Mutation(() => Delivery)
@@ -72,5 +75,13 @@ export class DeliveriesResolver {
   @Roles(UserRole.SUPERADMIN)
   onlineDeliverersCount(): number {
     return this.delivererTracker.getOnlineCount();
+  }
+
+  @Subscription(() => Delivery, {
+    filter: (payload, variables) =>
+      !variables.orderId || payload.deliveryUpdated.order?.id === variables.orderId,
+  })
+  deliveryUpdated(@Args('orderId', { nullable: true }) orderId?: string) {
+    return this.pubSub.asyncIterableIterator('deliveryUpdated');
   }
 }

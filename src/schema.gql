@@ -64,6 +64,7 @@ input CreateProductInput {
   imageUrl: String
   name: String!
   price: Float!
+  stock: Float = 0
   storeId: String!
   unit: String
 }
@@ -169,6 +170,7 @@ type Mutation {
   markPromotionPaid(id: String!): Promotion!
   register(input: RegisterInput!): AuthResponse!
   registerAsDeliverer(input: RegisterDelivererInput!): User!
+  registerPushToken(token: String!): Boolean!
   rejectUser(id: String!, reason: String!): User!
   setDefaultAddress(id: String!): Address!
   setDeliveryBasePrice(price: Float!): PlatformConfig!
@@ -220,8 +222,6 @@ type Order {
   paymentMethod: String
   pixQrCode: String
   pixQrCodeBase64: String
-  platformCommission: Float!
-  platformDeliveryFee: Float!
   status: OrderStatus!
   store: Store!
   subtotal: Float!
@@ -299,6 +299,11 @@ type Product {
   store: Store!
   unit: String
   updatedAt: DateTime!
+}
+
+type ProductDeletedPayload {
+  id: ID!
+  storeId: String
 }
 
 type Promotion {
@@ -418,6 +423,16 @@ type Store {
   zipCode: String!
 }
 
+type Subscription {
+  deliveryUpdated(orderId: String): Delivery!
+  orderCreated(storeId: String): Order!
+  orderUpdated(orderId: String, storeId: String): Order!
+  productDeleted(storeId: String): ProductDeletedPayload!
+  productUpdated(storeId: String): Product!
+  promotionUpdated: Promotion!
+  storeUpdated(storeId: String): Store!
+}
+
 input UpdateProductInput {
   categoryId: String
   description: String
@@ -425,6 +440,7 @@ input UpdateProductInput {
   imageUrl: String
   name: String
   price: Float
+  stock: Float
   unit: String
 }
 

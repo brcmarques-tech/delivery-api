@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThanOrEqual, MoreThanOrEqual, LessThan } from 'typeorm';
+import { PubSub } from 'graphql-subscriptions';
 import { Promotion } from './entities/promotion.entity';
 import { CreatePromotionInput } from './dto/create-promotion.input';
 import { StoresService } from '../stores/stores.service';
@@ -8,6 +9,7 @@ import { PlatformConfigService } from '../config/platform-config.service';
 import { Product } from '../products/entities/product.entity';
 import { User } from '../users/entities/user.entity';
 import { getPlanConfig } from '../common/plan-config';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
 export class PromotionsService implements OnModuleInit {
@@ -20,6 +22,7 @@ export class PromotionsService implements OnModuleInit {
     private productsRepository: Repository<Product>,
     private storesService: StoresService,
     private platformConfigService: PlatformConfigService,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   onModuleInit() {
@@ -95,7 +98,9 @@ export class PromotionsService implements OnModuleInit {
     promotion.adCost = adCost;
     promotion.store = store;
     if (product) promotion.product = product;
-    return this.promotionsRepository.save(promotion);
+    const saved = await this.promotionsRepository.save(promotion);
+    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+    return saved;
   }
 
   async saveCheckoutUrl(id: string, checkoutUrl: string): Promise<void> {
@@ -143,7 +148,9 @@ export class PromotionsService implements OnModuleInit {
     const promotion = await this.promotionsRepository.findOne({ where: { id } });
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
     promotion.isActive = !promotion.isActive;
-    return this.promotionsRepository.save(promotion);
+    const saved = await this.promotionsRepository.save(promotion);
+    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+    return saved;
   }
 
   async markAsPaid(id: string): Promise<Promotion> {
@@ -154,6 +161,7 @@ export class PromotionsService implements OnModuleInit {
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
     promotion.isPaid = true;
     const saved = await this.promotionsRepository.save(promotion);
+    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
     // Apply promotional price to the product
     if (promotion.product && promotion.promotionalPrice) {
       const now = new Date();
@@ -190,6 +198,7 @@ export class PromotionsService implements OnModuleInit {
     promotion.title = title;
     if (product.imageUrl) promotion.imageUrl = product.imageUrl;
     const saved = await this.promotionsRepository.save(promotion);
+    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
     // Apply new promotional price if promotion is active
     if (promotion.isPaid) {
       const now = new Date();

@@ -1,5 +1,6 @@
-import { Resolver, Query, Mutation, Args, Float, ResolveField, Parent } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { Resolver, Query, Mutation, Args, Float, ResolveField, Parent, Subscription } from '@nestjs/graphql';
+import { UseGuards, Inject } from '@nestjs/common';
+import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
 import { StoresService } from './stores.service';
 import { CreateStoreInput } from './dto/create-store.input';
@@ -18,6 +19,7 @@ import {
   PREPARATION_TIME_MINUTES,
   ROAD_FACTOR,
 } from '../common/delivery-constants';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Resolver(() => Store)
 export class StoresResolver {
@@ -25,6 +27,7 @@ export class StoresResolver {
     private storesService: StoresService,
     private platformConfigService: PlatformConfigService,
     private delivererTracker: DelivererTrackerService,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   @Mutation(() => Store)
@@ -166,5 +169,13 @@ export class StoresResolver {
   @ResolveField(() => Boolean)
   ownerMpConnected(@Parent() store: Store): boolean {
     return store.owner?.mpConnected ?? false;
+  }
+
+  @Subscription(() => Store, {
+    filter: (payload, variables) =>
+      !variables.storeId || payload.storeUpdated.id === variables.storeId,
+  })
+  storeUpdated(@Args('storeId', { nullable: true }) storeId?: string) {
+    return this.pubSub.asyncIterableIterator('storeUpdated');
   }
 }

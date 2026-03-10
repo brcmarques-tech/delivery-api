@@ -1,5 +1,6 @@
-import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Subscription } from '@nestjs/graphql';
 import { UseGuards, Inject, forwardRef } from '@nestjs/common';
+import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrdersService } from './orders.service';
 import { DeliveriesService } from '../deliveries/deliveries.service';
@@ -10,6 +11,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../users/entities/user.entity';
 import { UserRole, OrderStatus } from '../common/enums';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Resolver(() => Order)
 export class OrdersResolver {
@@ -17,6 +19,7 @@ export class OrdersResolver {
     private ordersService: OrdersService,
     @Inject(forwardRef(() => DeliveriesService))
     private deliveriesService: DeliveriesService,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   @Mutation(() => Order)
@@ -88,5 +91,28 @@ export class OrdersResolver {
     @CurrentUser() user: User,
   ): Promise<Order> {
     return this.ordersService.updateStatus(id, status, user);
+  }
+
+  @Subscription(() => Order, {
+    filter: (payload, variables) =>
+      !variables.storeId || payload.orderCreated.store?.id === variables.storeId,
+  })
+  orderCreated(@Args('storeId', { nullable: true }) storeId?: string) {
+    return this.pubSub.asyncIterableIterator('orderCreated');
+  }
+
+  @Subscription(() => Order, {
+    filter: (payload, variables) => {
+      const order = payload.orderUpdated;
+      if (variables.storeId && order.store?.id !== variables.storeId) return false;
+      if (variables.orderId && order.id !== variables.orderId) return false;
+      return true;
+    },
+  })
+  orderUpdated(
+    @Args('storeId', { nullable: true }) storeId?: string,
+    @Args('orderId', { nullable: true }) orderId?: string,
+  ) {
+    return this.pubSub.asyncIterableIterator('orderUpdated');
   }
 }
