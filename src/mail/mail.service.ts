@@ -15,10 +15,6 @@ export class MailService {
     @InjectRepository(NotificationLog)
     private logRepository: Repository<NotificationLog>,
   ) {
-    // Force Node.js to prefer IPv4 globally (Render free tier doesn't support IPv6)
-    const dns = require('dns');
-    dns.setDefaultResultOrder('ipv4first');
-
     this.transporter = nodemailer.createTransport({
       host: this.configService.get('MAIL_HOST', 'smtp.gmail.com'),
       port: this.configService.get('MAIL_PORT', 587),
@@ -27,8 +23,7 @@ export class MailService {
         user: this.configService.get('MAIL_USER'),
         pass: this.configService.get('MAIL_PASS'),
       },
-      tls: { rejectUnauthorized: false },
-    } as any);
+    });
   }
 
   private get from(): string {
