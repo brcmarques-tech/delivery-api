@@ -3,11 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
-import * as dns from 'dns';
 import { NotificationLog } from './entities/notification-log.entity';
-
-// Force IPv4 globally - Render free tier doesn't support IPv6
-dns.setDefaultResultOrder('ipv4first');
 
 @Injectable()
 export class MailService implements OnModuleInit {
@@ -19,14 +15,20 @@ export class MailService implements OnModuleInit {
     @InjectRepository(NotificationLog)
     private logRepository: Repository<NotificationLog>,
   ) {
-    this.transporter = nodemailer.createTransport({
-      host: this.configService.get('MAIL_HOST', 'smtp.gmail.com'),
-      port: this.configService.get('MAIL_PORT', 587),
-      secure: false,
-      auth: {
-        user: this.configService.get('MAIL_USER'),
-        pass: this.configService.get('MAIL_PASS'),
-      },
+    // Resolve smtp.gmail.com to IPv4 manually to avoid IPv6 issues on Render
+    const dns = require('dns');
+    dns.resolve4('smtp.gmail.com', (err: any, addresses: string[]) => {
+      const host = err ? 'smtp.gmail.com' : addresses[0];
+      this.logger.log(`SMTP host resolved to: ${host}`);
+      this.transporter = nodemailer.createTransport({
+        host,
+        port: 465,
+        secure: true,
+        auth: {
+          user: this.configService.get('MAIL_USER'),
+          pass: this.configService.get('MAIL_PASS'),
+        },
+      });
     });
   }
 
