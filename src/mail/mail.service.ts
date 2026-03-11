@@ -120,4 +120,34 @@ export class MailService {
       await this.saveLog({ type: 'EMAIL', to, userName: name, subject, message: `Cadastro como ${roleLabel} rejeitado. Motivo: ${reason}`, success: false, error: String(error) });
     }
   }
+
+  async resendEmail(to: string, userName: string, subject: string, message: string): Promise<void> {
+    try {
+      await this.transporter.sendMail({
+        from: this.from,
+        to,
+        subject,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+              <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+            </div>
+            <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+              <h2 style="color: #2D3436;">Ola, ${userName}!</h2>
+              <p style="color: #555; font-size: 16px; line-height: 1.6;">${message}</p>
+              <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
+                Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
+              </p>
+            </div>
+          </div>
+        `,
+      });
+      this.logger.log(`Email reenviado para ${to}`);
+      await this.saveLog({ type: 'EMAIL', to, userName, subject, message: `[Reenvio] ${message}`, success: true, error: null });
+    } catch (error) {
+      this.logger.error(`Erro ao reenviar email para ${to}`, error);
+      await this.saveLog({ type: 'EMAIL', to, userName, subject, message: `[Reenvio] ${message}`, success: false, error: String(error) });
+      throw error;
+    }
+  }
 }
