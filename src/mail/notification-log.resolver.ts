@@ -36,7 +36,6 @@ export class NotificationLogResolver {
     const log = await this.logRepository.findOne({ where: { id } });
     if (!log) return false;
 
-    await this.mailService.resendEmail(log.to, log.userName, log.subject, log.message);
-    return true;
+    return this.mailService.resendEmail(log);
   }
 }

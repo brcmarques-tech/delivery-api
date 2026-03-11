@@ -37,6 +37,10 @@ export class NotificationLog {
   error: string | null;
 
   @Field()
+  @Column({ default: 0 })
+  retryCount: number;
+
+  @Field()
   @CreateDateColumn()
   createdAt: Date;
 }

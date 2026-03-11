@@ -126,20 +126,20 @@ export class MailService {
     }
   }
 
-  async resendEmail(to: string, userName: string, subject: string, message: string): Promise<void> {
+  async resendEmail(log: NotificationLog): Promise<boolean> {
     try {
       await this.transporter.sendMail({
         from: this.from,
-        to,
-        subject,
+        to: log.to,
+        subject: log.subject,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
             <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
               <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
             </div>
             <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
-              <h2 style="color: #2D3436;">Ola, ${userName}!</h2>
-              <p style="color: #555; font-size: 16px; line-height: 1.6;">${message}</p>
+              <h2 style="color: #2D3436;">Ola, ${log.userName}!</h2>
+              <p style="color: #555; font-size: 16px; line-height: 1.6;">${log.message}</p>
               <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
                 Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
               </p>
@@ -147,12 +147,35 @@ export class MailService {
           </div>
         `,
       });
-      this.logger.log(`Email reenviado para ${to}`);
-      await this.saveLog({ type: 'EMAIL', to, userName, subject, message: `[Reenvio] ${message}`, success: true, error: null });
+      this.logger.log(`Email reenviado para ${log.to}`);
+      // Mark original log as success
+      log.success = true;
+      log.error = null;
+      log.retryCount = (log.retryCount || 0) + 1;
+      await this.logRepository.save(log);
+      return true;
     } catch (error) {
-      this.logger.error(`Erro ao reenviar email para ${to}`, error);
-      await this.saveLog({ type: 'EMAIL', to, userName, subject, message: `[Reenvio] ${message}`, success: false, error: String(error) });
-      throw error;
+      this.logger.error(`Erro ao reenviar email para ${log.to}`, error);
+      log.retryCount = (log.retryCount || 0) + 1;
+      log.error = String(error);
+      await this.logRepository.save(log);
+      return false;
+    }
+  }
+
+  async retryFailedEmails(): Promise<void> {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const failedLogs = await this.logRepository.find({
+      where: { success: false },
+    });
+
+    for (const log of failedLogs) {
+      // Only auto-retry once, and only if created more than 1 hour ago
+      if (log.retryCount >= 1) continue;
+      if (log.createdAt > oneHourAgo) continue;
+
+      this.logger.log(`Auto-retry email para ${log.to}`);
+      await this.resendEmail(log);
     }
   }
 }

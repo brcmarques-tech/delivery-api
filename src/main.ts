@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { json } from 'express';
 import { AppModule } from './app.module';
+import { MailService } from './mail/mail.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -13,6 +14,12 @@ async function bootstrap() {
   const port = process.env.PORT || 3000;
   await app.listen(port);
   console.log(`API rodando na porta ${port}`);
+
+  // Auto-retry failed emails every hour (max 1 retry per email)
+  const mailService = app.get(MailService);
+  setInterval(() => {
+    mailService.retryFailedEmails().catch(() => {});
+  }, 60 * 60 * 1000);
 
   // Anti-sleep: ping a cada 14 min para manter todos os serviços do Render acordados
   const selfUrl = process.env.RENDER_EXTERNAL_URL;
