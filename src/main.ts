@@ -12,6 +12,14 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3000;
   await app.listen(port);
-  console.log(`API rodando em http://localhost:${port}/graphql`);
+  console.log(`API rodando na porta ${port}`);
+
+  // Anti-sleep: ping a cada 14 min para manter o Render acordado
+  const selfUrl = process.env.RENDER_EXTERNAL_URL;
+  if (selfUrl) {
+    setInterval(() => {
+      fetch(`${selfUrl}/graphql?query={__typename}`).catch(() => {});
+    }, 14 * 60 * 1000);
+  }
 }
 bootstrap();

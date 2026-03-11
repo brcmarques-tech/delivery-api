@@ -1,0 +1,58 @@
+databases:
+  - name: delivery-db
+    plan: free
+    databaseName: delivery_db
+    user: delivery
+
+services:
+  - type: web
+    name: delivery-api
+    runtime: node
+    plan: free
+    buildCommand: yarn install --frozen-lockfile && yarn build
+    startCommand: node dist/main
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: delivery-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRATION
+        value: 7d
+      - key: PORT
+        value: 3000
+      - key: WEBHOOK_URL
+        sync: false
+      - key: VENDOR_APP_URL
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: MAIL_HOST
+        value: smtp.gmail.com
+      - key: MAIL_PORT
+        value: 587
+      - key: MAIL_USER
+        sync: false
+      - key: MAIL_PASS
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: MP_ACCESS_TOKEN
+        sync: false
+      - key: MP_PUBLIC_KEY
+        sync: false
+      - key: MP_APP_ID
+        sync: false
+      - key: MP_CLIENT_SECRET
+        sync: false
+      - key: SERPAPI_KEY
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
