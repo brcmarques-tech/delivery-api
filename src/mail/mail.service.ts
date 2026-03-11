@@ -19,12 +19,13 @@ export class MailService {
       host: this.configService.get('MAIL_HOST', 'smtp.gmail.com'),
       port: this.configService.get('MAIL_PORT', 587),
       secure: false,
-      family: 4,
       auth: {
         user: this.configService.get('MAIL_USER'),
         pass: this.configService.get('MAIL_PASS'),
       },
-    });
+      tls: { rejectUnauthorized: false },
+      dnsOptions: { family: 4 },
+    } as any);
   }
 
   private get from(): string {
