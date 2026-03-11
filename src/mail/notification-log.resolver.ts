@@ -1,7 +1,7 @@
 import { Resolver, Query, Mutation, Args, ID } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -22,6 +22,7 @@ export class NotificationLogResolver {
   @Roles(UserRole.SUPERADMIN)
   async notificationLogs(): Promise<NotificationLog[]> {
     return this.logRepository.find({
+      where: { deletedAt: IsNull() },
       order: { createdAt: 'DESC' },
       take: 100,
     });
@@ -33,7 +34,7 @@ export class NotificationLogResolver {
   async resendNotification(
     @Args('id', { type: () => ID }) id: string,
   ): Promise<boolean> {
-    const log = await this.logRepository.findOne({ where: { id } });
+    const log = await this.logRepository.findOne({ where: { id, deletedAt: IsNull() } });
     if (!log) return false;
 
     return this.mailService.resendEmail(log);
@@ -45,7 +46,7 @@ export class NotificationLogResolver {
   async deleteNotification(
     @Args('id', { type: () => ID }) id: string,
   ): Promise<boolean> {
-    const result = await this.logRepository.delete(id);
+    const result = await this.logRepository.update(id, { deletedAt: new Date() });
     return (result.affected ?? 0) > 0;
   }
 
@@ -53,7 +54,7 @@ export class NotificationLogResolver {
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
   async clearAllNotifications(): Promise<boolean> {
-    await this.logRepository.clear();
+    await this.logRepository.update({ deletedAt: IsNull() }, { deletedAt: new Date() });
     return true;
   }
 }
