@@ -38,4 +38,22 @@ export class NotificationLogResolver {
 
     return this.mailService.resendEmail(log);
   }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async deleteNotification(
+    @Args('id', { type: () => ID }) id: string,
+  ): Promise<boolean> {
+    const result = await this.logRepository.delete(id);
+    return (result.affected ?? 0) > 0;
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async clearAllNotifications(): Promise<boolean> {
+    await this.logRepository.clear();
+    return true;
+  }
 }
