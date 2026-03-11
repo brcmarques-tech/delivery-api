@@ -1,12 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import * as dns from 'dns';
 import { NotificationLog } from './entities/notification-log.entity';
 
+// Force IPv4 globally - Render free tier doesn't support IPv6
+dns.setDefaultResultOrder('ipv4first');
+
 @Injectable()
-export class MailService {
+export class MailService implements OnModuleInit {
   private transporter: nodemailer.Transporter;
   private readonly logger = new Logger(MailService.name);
 
@@ -24,6 +28,16 @@ export class MailService {
         pass: this.configService.get('MAIL_PASS'),
       },
     });
+  }
+
+  async onModuleInit() {
+    try {
+      await this.transporter.verify();
+      this.logger.log('SMTP connection verified successfully');
+    } catch (error) {
+      this.logger.error('SMTP connection failed', error);
+    }
+  }
   }
 
   private get from(): string {
