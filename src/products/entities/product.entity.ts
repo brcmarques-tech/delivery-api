@@ -6,6 +6,7 @@ import {
   ManyToOne,
   CreateDateColumn,
   UpdateDateColumn,
+  DeleteDateColumn,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { Category } from '../../categories/entities/category.entity';
@@ -53,6 +54,10 @@ export class Product {
   @Column({ nullable: true })
   unit: string; // kg, un, lt, etc.
 
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  barcode: string;
+
   @Field(() => Store)
   @ManyToOne(() => Store, (store) => store.products)
   store: Store;
@@ -68,4 +73,8 @@ export class Product {
   @Field()
   @UpdateDateColumn()
   updatedAt: Date;
+
+  @Field({ nullable: true })
+  @DeleteDateColumn()
+  deletedAt: Date;
 }

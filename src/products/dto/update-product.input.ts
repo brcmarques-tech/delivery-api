@@ -33,4 +33,8 @@ export class UpdateProductInput {
   @Field({ nullable: true })
   @IsOptional()
   stock?: number;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  barcode?: string;
 }

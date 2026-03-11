@@ -1,8 +1,8 @@
-import { InputType, Field, Float } from '@nestjs/graphql';
+import { InputType, Field, Float, ObjectType, Int } from '@nestjs/graphql';
 import { IsNotEmpty, IsOptional } from 'class-validator';
 
 @InputType()
-export class CreateProductInput {
+export class BulkProductItem {
   @Field()
   @IsNotEmpty()
   name: string;
@@ -22,9 +22,6 @@ export class CreateProductInput {
   @IsOptional()
   unit?: string;
 
-  @Field()
-  storeId: string;
-
   @Field({ nullable: true })
   @IsOptional()
   categoryId?: string;
@@ -36,4 +33,22 @@ export class CreateProductInput {
   @Field({ nullable: true })
   @IsOptional()
   barcode?: string;
+}
+
+@InputType()
+export class BulkCreateProductsInput {
+  @Field()
+  storeId: string;
+
+  @Field(() => [BulkProductItem])
+  products: BulkProductItem[];
+}
+
+@ObjectType()
+export class BulkImportResult {
+  @Field(() => Int)
+  created: number;
+
+  @Field(() => [String])
+  errors: string[];
 }

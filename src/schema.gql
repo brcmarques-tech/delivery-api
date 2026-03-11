@@ -23,6 +23,36 @@ type AuthResponse {
   user: User!
 }
 
+type BarcodeLookupResult {
+  barcode: String!
+  brand: String
+  description: String
+  imageUrl: String
+  name: String
+  quantity: String
+}
+
+input BulkCreateProductsInput {
+  products: [BulkProductItem!]!
+  storeId: String!
+}
+
+type BulkImportResult {
+  created: Int!
+  errors: [String!]!
+}
+
+input BulkProductItem {
+  barcode: String
+  categoryId: String
+  description: String
+  imageUrl: String
+  name: String!
+  price: Float!
+  stock: Float = 0
+  unit: String
+}
+
 type Category {
   createdAt: DateTime!
   id: ID!
@@ -59,6 +89,7 @@ input CreateOrderInput {
 }
 
 input CreateProductInput {
+  barcode: String
   categoryId: String
   description: String
   imageUrl: String
@@ -151,6 +182,7 @@ input LoginInput {
 type Mutation {
   acceptDelivery(orderId: String!): Delivery!
   approveUser(id: String!): User!
+  bulkCreateProducts(input: BulkCreateProductsInput!): BulkImportResult!
   confirmDelivery(deliveryId: String!): Delivery!
   confirmPickup(deliveryId: String!): Delivery!
   confirmReceipt(orderId: String!): Order!
@@ -172,11 +204,13 @@ type Mutation {
   registerAsDeliverer(input: RegisterDelivererInput!): User!
   registerPushToken(token: String!): Boolean!
   rejectUser(id: String!, reason: String!): User!
+  restoreProduct(id: String!): Product!
   setDefaultAddress(id: String!): Address!
   setDeliveryBasePrice(price: Float!): PlatformConfig!
   setDeliveryPricePerKm(price: Float!): PlatformConfig!
   setPromoPricePerDay(price: Float!): PlatformConfig!
   swapPromotionProduct(id: String!, productId: String!, promotionalPrice: Float!, title: String!): Promotion!
+  toggleProductActive(id: String!): Product!
   toggleProductAvailability(id: String!): Product!
   togglePromotionActive(id: String!): Promotion!
   toggleStoreActive(id: String!): Store!
@@ -285,8 +319,10 @@ type PlatformConfig {
 }
 
 type Product {
+  barcode: String
   category: Category
   createdAt: DateTime!
+  deletedAt: DateTime
   description: String
   id: ID!
   imageUrl: String
@@ -338,9 +374,11 @@ type Query {
   calculateDeliveryFee(customerLatitude: Float!, customerLongitude: Float!, storeId: String!): Float!
   categoriesByStore(storeId: String!): [Category!]!
   dashboardStats: DashboardStats!
+  deletedProductsByStore(storeId: String!): [Product!]!
   deliveryBasePrice: Float!
   deliveryPricePerKm: Float!
   estimatedDeliveryTime(customerLatitude: Float!, customerLongitude: Float!, storeId: String!): Float!
+  lookupBarcode(barcode: String!): BarcodeLookupResult!
   me: User!
   mpConnectUrl(source: String = "web"): String!
   myAddresses: [Address!]!
@@ -357,7 +395,9 @@ type Query {
   platformConfigs: [PlatformConfig!]!
   product(id: String!): Product!
   productsByStore(storeId: String!): [Product!]!
+  productsByStoreAll(storeId: String!): [Product!]!
   promoPricePerDay: Float!
+  searchCatalog(limit: Int = 20, query: String!): [Product!]!
   searchProductImages(query: String!): [String!]!
   store(id: String!): Store!
   storeOrders(storeId: String!): [Order!]!
@@ -434,6 +474,7 @@ type Subscription {
 }
 
 input UpdateProductInput {
+  barcode: String
   categoryId: String
   description: String
   id: String!
