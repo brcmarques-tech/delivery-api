@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import * as dns from 'dns';
 import { NotificationLog } from './entities/notification-log.entity';
 
 @Injectable()
@@ -15,11 +16,29 @@ export class MailService implements OnModuleInit {
     @InjectRepository(NotificationLog)
     private logRepository: Repository<NotificationLog>,
   ) {
-    // Resolve smtp.gmail.com to IPv4 manually to avoid IPv6 issues on Render
-    const dns = require('dns');
-    dns.resolve4('smtp.gmail.com', (err: any, addresses: string[]) => {
-      const host = err ? 'smtp.gmail.com' : addresses[0];
-      this.logger.log(`SMTP host resolved to: ${host}`);
+    // Create a temporary transporter; will be replaced in onModuleInit with IPv4-resolved host
+    this.transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: {
+        user: this.configService.get('MAIL_USER'),
+        pass: this.configService.get('MAIL_PASS'),
+      },
+    });
+  }
+
+  async onModuleInit() {
+    // Resolve smtp.gmail.com to IPv4 to avoid IPv6 issues on Render
+    try {
+      const addresses = await new Promise<string[]>((resolve, reject) => {
+        dns.resolve4('smtp.gmail.com', (err, addrs) => {
+          if (err) reject(err);
+          else resolve(addrs);
+        });
+      });
+      const host = addresses[0];
+      this.logger.log(`SMTP host resolved to IPv4: ${host}`);
       this.transporter = nodemailer.createTransport({
         host,
         port: 465,
@@ -29,17 +48,11 @@ export class MailService implements OnModuleInit {
           pass: this.configService.get('MAIL_PASS'),
         },
       });
-    });
-  }
-
-  async onModuleInit() {
-    try {
       await this.transporter.verify();
       this.logger.log('SMTP connection verified successfully');
     } catch (error) {
-      this.logger.error('SMTP connection failed', error);
+      this.logger.error('SMTP setup failed', error);
     }
-  }
   }
 
   private get from(): string {
@@ -159,7 +172,6 @@ export class MailService implements OnModuleInit {
         `,
       });
       this.logger.log(`Email reenviado para ${log.to}`);
-      // Mark original log as success
       log.success = true;
       log.error = null;
       log.retryCount = (log.retryCount || 0) + 1;
@@ -181,7 +193,6 @@ export class MailService implements OnModuleInit {
     });
 
     for (const log of failedLogs) {
-      // Only auto-retry once, and only if created more than 1 hour ago
       if (log.retryCount >= 1) continue;
       if (log.createdAt > oneHourAgo) continue;
 
