@@ -14,11 +14,15 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`API rodando na porta ${port}`);
 
-  // Anti-sleep: ping a cada 14 min para manter o Render acordado
+  // Anti-sleep: ping a cada 14 min para manter todos os serviços do Render acordados
   const selfUrl = process.env.RENDER_EXTERNAL_URL;
+  const vendorUrl = process.env.VENDOR_PANEL_URL;
+  const superadminUrl = process.env.SUPERADMIN_URL;
   if (selfUrl) {
     setInterval(() => {
       fetch(`${selfUrl}/graphql?query={__typename}`).catch(() => {});
+      if (vendorUrl) fetch(`${vendorUrl}/api/health`).catch(() => {});
+      if (superadminUrl) fetch(`${superadminUrl}/api/health`).catch(() => {});
     }, 14 * 60 * 1000);
   }
 }
