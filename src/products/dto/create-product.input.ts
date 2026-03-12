@@ -36,4 +36,8 @@ export class CreateProductInput {
   @Field({ nullable: true })
   @IsOptional()
   barcode?: string;
+
+  @Field({ nullable: true, defaultValue: false })
+  @IsOptional()
+  isVariableWeight?: boolean;
 }

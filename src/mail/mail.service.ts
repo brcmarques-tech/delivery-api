@@ -7,7 +7,7 @@ import { NotificationLog } from './entities/notification-log.entity';
 
 @Injectable()
 export class MailService {
-  private resend: Resend;
+  private resend: Resend | null;
   private readonly logger = new Logger(MailService.name);
 
   constructor(
@@ -15,7 +15,11 @@ export class MailService {
     @InjectRepository(NotificationLog)
     private logRepository: Repository<NotificationLog>,
   ) {
-    this.resend = new Resend(this.configService.get('RESEND_API_KEY'));
+    const apiKey = this.configService.get('RESEND_API_KEY');
+    if (!apiKey) {
+      this.logger.warn('RESEND_API_KEY não configurada - emails desabilitados');
+    }
+    this.resend = apiKey ? new Resend(apiKey) : null;
   }
 
   private get from(): string {
@@ -31,6 +35,7 @@ export class MailService {
   }
 
   private async sendEmail(to: string, subject: string, html: string): Promise<void> {
+    if (!this.resend) throw new Error('Email desabilitado: RESEND_API_KEY não configurada');
     const { error } = await this.resend.emails.send({
       from: this.from,
       to,

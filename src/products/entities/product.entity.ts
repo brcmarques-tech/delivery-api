@@ -58,6 +58,10 @@ export class Product {
   @Column({ nullable: true })
   barcode: string;
 
+  @Field()
+  @Column({ default: false })
+  isVariableWeight: boolean;
+
   @Field(() => Store)
   @ManyToOne(() => Store, (store) => store.products)
   store: Store;

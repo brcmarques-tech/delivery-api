@@ -21,14 +21,17 @@ export class ProductsService {
   ) {}
 
   async create(input: CreateProductInput): Promise<Product> {
+    const isVariableWeight = input.isVariableWeight ?? false;
+    const unit = input.unit ?? (isVariableWeight ? 'kg' : undefined);
     const product = this.productsRepository.create({
       name: input.name,
       description: input.description,
       price: input.price,
       imageUrl: input.imageUrl,
-      unit: input.unit,
+      unit,
       stock: input.stock ?? 0,
       barcode: input.barcode,
+      isVariableWeight,
       store: { id: input.storeId } as any,
       category: input.categoryId ? ({ id: input.categoryId } as any) : undefined,
     });
@@ -72,6 +75,7 @@ export class ProductsService {
     }
     if (input.stock !== undefined) product.stock = input.stock;
     if (input.barcode !== undefined) product.barcode = input.barcode;
+    if (input.isVariableWeight !== undefined) product.isVariableWeight = input.isVariableWeight;
     const saved = await this.productsRepository.save(product);
     this.pubSub.publish('productUpdated', { productUpdated: saved });
     return saved;
@@ -202,14 +206,17 @@ export class ProductsService {
     for (let i = 0; i < input.products.length; i++) {
       const item = input.products[i];
       try {
+        const itemIsVariableWeight = item.isVariableWeight ?? false;
+        const itemUnit = item.unit ?? (itemIsVariableWeight ? 'kg' : undefined);
         const product = this.productsRepository.create({
           name: item.name,
           description: item.description,
           price: item.price,
           imageUrl: item.imageUrl,
-          unit: item.unit,
+          unit: itemUnit,
           stock: item.stock ?? 0,
           barcode: item.barcode,
+          isVariableWeight: itemIsVariableWeight,
           store: { id: input.storeId } as any,
           category: item.categoryId ? ({ id: item.categoryId } as any) : undefined,
         });

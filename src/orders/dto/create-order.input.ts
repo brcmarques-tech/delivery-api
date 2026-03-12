@@ -11,6 +11,9 @@ export class OrderItemInput {
 
   @Field({ nullable: true })
   notes?: string;
+
+  @Field(() => Int, { nullable: true })
+  weightGrams?: number;
 }
 
 @InputType()

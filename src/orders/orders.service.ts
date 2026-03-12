@@ -80,15 +80,29 @@ export class OrdersService {
     for (const itemInput of input.items) {
       const product = await this.productsService.findById(itemInput.productId);
       const unitPrice = Number(product.promotionalPrice || product.price);
-      const totalPrice = unitPrice * itemInput.quantity;
+
+      let totalPrice: number;
+      let quantity: number;
+      let weightGrams: number | undefined;
+
+      if (product.isVariableWeight && itemInput.weightGrams) {
+        totalPrice = (unitPrice * itemInput.weightGrams) / 1000;
+        quantity = 1;
+        weightGrams = itemInput.weightGrams;
+      } else {
+        totalPrice = unitPrice * itemInput.quantity;
+        quantity = itemInput.quantity;
+      }
+
       subtotal += totalPrice;
 
       const orderItem = this.orderItemsRepository.create({
         product,
-        quantity: itemInput.quantity,
+        quantity,
         unitPrice,
         totalPrice,
         notes: itemInput.notes,
+        weightGrams,
       });
       items.push(orderItem);
     }
@@ -339,7 +353,9 @@ export class OrdersService {
     // Restore stock when order is cancelled
     if (status === OrderStatus.CANCELLED) {
       for (const item of order.items) {
-        await this.productsService.restoreStock(item.product.id, item.quantity);
+        if (item.product) {
+          await this.productsService.restoreStock(item.product.id, item.quantity);
+        }
       }
     }
 
@@ -376,6 +392,40 @@ export class OrdersService {
       this.onOrderReadyCallback(full);
     }
 
+    return saved;
+  }
+
+  async adjustItemWeight(orderItemId: string, actualWeightGrams: number): Promise<Order> {
+    const item = await this.orderItemsRepository.findOne({
+      where: { id: orderItemId },
+      relations: ['order', 'order.items', 'product'],
+    });
+    if (!item) throw new NotFoundException('Item nao encontrado');
+
+    const order = await this.findById(item.order.id);
+
+    if (order.status !== OrderStatus.PENDING && order.status !== OrderStatus.ACCEPTED) {
+      throw new BadRequestException(
+        'So e possivel ajustar o peso de itens em pedidos PENDING ou ACCEPTED',
+      );
+    }
+
+    if (!item.product.isVariableWeight) {
+      throw new BadRequestException('Este produto nao e de peso variavel');
+    }
+
+    item.totalPrice = (Number(item.unitPrice) * actualWeightGrams) / 1000;
+    item.weightGrams = actualWeightGrams;
+    await this.orderItemsRepository.save(item);
+
+    // Reload full order items to recalculate totals
+    const updatedOrder = await this.findById(order.id);
+    const subtotal = updatedOrder.items.reduce((sum, i) => sum + Number(i.totalPrice), 0);
+    updatedOrder.subtotal = subtotal;
+    updatedOrder.total = subtotal + Number(updatedOrder.deliveryFee);
+    const saved = await this.ordersRepository.save(updatedOrder);
+
+    this.pubSub.publish('orderUpdated', { orderUpdated: saved });
     return saved;
   }
 }

@@ -33,6 +33,10 @@ export class BulkProductItem {
   @Field({ nullable: true })
   @IsOptional()
   barcode?: string;
+
+  @Field({ nullable: true, defaultValue: false })
+  @IsOptional()
+  isVariableWeight?: boolean;
 }
 
 @InputType()

@@ -31,11 +31,15 @@ export class OrderItem {
   @Column({ nullable: true })
   notes: string;
 
+  @Field(() => Int, { nullable: true })
+  @Column({ nullable: true })
+  weightGrams: number;
+
   @Field(() => Order)
   @ManyToOne(() => Order, (order) => order.items)
   order: Order;
 
-  @Field(() => Product)
-  @ManyToOne(() => Product)
+  @Field(() => Product, { nullable: true })
+  @ManyToOne(() => Product, { nullable: true, onDelete: 'SET NULL' })
   product: Product;
 }

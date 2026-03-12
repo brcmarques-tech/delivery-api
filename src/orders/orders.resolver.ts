@@ -1,4 +1,4 @@
-import { Resolver, Query, Mutation, Args, Subscription } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Subscription, Int } from '@nestjs/graphql';
 import { UseGuards, Inject, forwardRef } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
@@ -91,6 +91,16 @@ export class OrdersResolver {
     @CurrentUser() user: User,
   ): Promise<Order> {
     return this.ordersService.updateStatus(id, status, user);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  adjustOrderItemWeight(
+    @Args('orderItemId') orderItemId: string,
+    @Args('actualWeightGrams', { type: () => Int }) actualWeightGrams: number,
+  ): Promise<Order> {
+    return this.ordersService.adjustItemWeight(orderItemId, actualWeightGrams);
   }
 
   @Subscription(() => Order, {

@@ -37,4 +37,8 @@ export class UpdateProductInput {
   @Field({ nullable: true })
   @IsOptional()
   barcode?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  isVariableWeight?: boolean;
 }
