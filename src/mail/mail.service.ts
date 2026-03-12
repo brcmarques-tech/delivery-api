@@ -1,14 +1,13 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
-import * as nodemailer from 'nodemailer';
-import * as dns from 'dns';
+import { Resend } from 'resend';
 import { NotificationLog } from './entities/notification-log.entity';
 
 @Injectable()
-export class MailService implements OnModuleInit {
-  private transporter: nodemailer.Transporter;
+export class MailService {
+  private resend: Resend;
   private readonly logger = new Logger(MailService.name);
 
   constructor(
@@ -16,47 +15,11 @@ export class MailService implements OnModuleInit {
     @InjectRepository(NotificationLog)
     private logRepository: Repository<NotificationLog>,
   ) {
-    // Create a temporary transporter; will be replaced in onModuleInit with IPv4-resolved host
-    this.transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      auth: {
-        user: this.configService.get('MAIL_USER'),
-        pass: this.configService.get('MAIL_PASS'),
-      },
-    });
-  }
-
-  async onModuleInit() {
-    // Resolve smtp.gmail.com to IPv4 to avoid IPv6 issues on Render
-    try {
-      const addresses = await new Promise<string[]>((resolve, reject) => {
-        dns.resolve4('smtp.gmail.com', (err, addrs) => {
-          if (err) reject(err);
-          else resolve(addrs);
-        });
-      });
-      const host = addresses[0];
-      this.logger.log(`SMTP host resolved to IPv4: ${host}`);
-      this.transporter = nodemailer.createTransport({
-        host,
-        port: 465,
-        secure: true,
-        auth: {
-          user: this.configService.get('MAIL_USER'),
-          pass: this.configService.get('MAIL_PASS'),
-        },
-      });
-      await this.transporter.verify();
-      this.logger.log('SMTP connection verified successfully');
-    } catch (error) {
-      this.logger.error('SMTP setup failed', error);
-    }
+    this.resend = new Resend(this.configService.get('RESEND_API_KEY'));
   }
 
   private get from(): string {
-    return this.configService.get('MAIL_FROM', 'bcmTech <bcmtechdev@gmail.com>');
+    return this.configService.get('MAIL_FROM', 'BCM TECH DELIVERY AG <onboarding@resend.dev>');
   }
 
   private async saveLog(data: Partial<NotificationLog>): Promise<void> {
@@ -67,41 +30,47 @@ export class MailService implements OnModuleInit {
     }
   }
 
+  private async sendEmail(to: string, subject: string, html: string): Promise<void> {
+    const { error } = await this.resend.emails.send({
+      from: this.from,
+      to,
+      subject,
+      html,
+    });
+    if (error) throw new Error(error.message);
+  }
+
   async sendApprovalEmail(to: string, name: string, role: string): Promise<void> {
     const roleLabel = role === 'DELIVERER' ? 'Entregador' : 'Vendedor';
     const subject = 'bcmTech - Cadastro aprovado!';
-    try {
-      await this.transporter.sendMail({
-        from: this.from,
-        to,
-        subject,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-              <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
-            </div>
-            <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
-              <h2 style="color: #2D3436;">Parabens, ${name}!</h2>
-              <p style="color: #555; font-size: 16px; line-height: 1.6;">
-                Seu cadastro como <strong>${roleLabel}</strong> foi <span style="color: #27AE60; font-weight: bold;">aprovado</span> na plataforma bcmTech Delivery.
-              </p>
-              <p style="color: #555; font-size: 16px; line-height: 1.6;">
-                ${role === 'DELIVERER'
-                  ? 'Voce ja pode acessar a aba de Entregas no aplicativo e comecar a fazer entregas!'
-                  : 'Voce ja pode acessar o Painel do Vendedor e cadastrar sua loja e produtos!'}
-              </p>
-              <div style="text-align: center; margin-top: 30px;">
-                <div style="display: inline-block; background: #27AE60; color: white; padding: 12px 30px; border-radius: 8px; font-size: 16px; font-weight: bold;">
-                  Aprovado &#10003;
-                </div>
-              </div>
-              <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
-                Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
-              </p>
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+          <h2 style="color: #2D3436;">Parabens, ${name}!</h2>
+          <p style="color: #555; font-size: 16px; line-height: 1.6;">
+            Seu cadastro como <strong>${roleLabel}</strong> foi <span style="color: #27AE60; font-weight: bold;">aprovado</span> na plataforma bcmTech Delivery.
+          </p>
+          <p style="color: #555; font-size: 16px; line-height: 1.6;">
+            ${role === 'DELIVERER'
+              ? 'Voce ja pode acessar a aba de Entregas no aplicativo e comecar a fazer entregas!'
+              : 'Voce ja pode acessar o Painel do Vendedor e cadastrar sua loja e produtos!'}
+          </p>
+          <div style="text-align: center; margin-top: 30px;">
+            <div style="display: inline-block; background: #27AE60; color: white; padding: 12px 30px; border-radius: 8px; font-size: 16px; font-weight: bold;">
+              Aprovado &#10003;
             </div>
           </div>
-        `,
-      });
+          <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
+            Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
+          </p>
+        </div>
+      </div>
+    `;
+    try {
+      await this.sendEmail(to, subject, html);
       this.logger.log(`Email de aprovacao enviado para ${to}`);
       await this.saveLog({ type: 'EMAIL', to, userName: name, subject, message: `Cadastro como ${roleLabel} aprovado`, success: true, error: null });
     } catch (error) {
@@ -113,35 +82,31 @@ export class MailService implements OnModuleInit {
   async sendRejectionEmail(to: string, name: string, role: string, reason: string): Promise<void> {
     const roleLabel = role === 'DELIVERER' ? 'Entregador' : 'Vendedor';
     const subject = 'bcmTech - Cadastro nao aprovado';
-    try {
-      await this.transporter.sendMail({
-        from: this.from,
-        to,
-        subject,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-              <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
-            </div>
-            <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
-              <h2 style="color: #2D3436;">Ola, ${name}</h2>
-              <p style="color: #555; font-size: 16px; line-height: 1.6;">
-                Infelizmente seu cadastro como <strong>${roleLabel}</strong> nao foi aprovado na plataforma bcmTech Delivery.
-              </p>
-              <div style="background: #fff3f3; border-left: 4px solid #E74C3C; padding: 15px; margin: 20px 0; border-radius: 0 8px 8px 0;">
-                <p style="color: #E74C3C; font-weight: bold; margin: 0 0 5px 0;">Motivo:</p>
-                <p style="color: #555; margin: 0;">${reason}</p>
-              </div>
-              <p style="color: #555; font-size: 16px; line-height: 1.6;">
-                Voce ainda pode usar a plataforma como cliente normalmente. Se acredita que houve um engano, entre em contato com nosso suporte.
-              </p>
-              <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
-                Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
-              </p>
-            </div>
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+          <h2 style="color: #2D3436;">Ola, ${name}</h2>
+          <p style="color: #555; font-size: 16px; line-height: 1.6;">
+            Infelizmente seu cadastro como <strong>${roleLabel}</strong> nao foi aprovado na plataforma bcmTech Delivery.
+          </p>
+          <div style="background: #fff3f3; border-left: 4px solid #E74C3C; padding: 15px; margin: 20px 0; border-radius: 0 8px 8px 0;">
+            <p style="color: #E74C3C; font-weight: bold; margin: 0 0 5px 0;">Motivo:</p>
+            <p style="color: #555; margin: 0;">${reason}</p>
           </div>
-        `,
-      });
+          <p style="color: #555; font-size: 16px; line-height: 1.6;">
+            Voce ainda pode usar a plataforma como cliente normalmente. Se acredita que houve um engano, entre em contato com nosso suporte.
+          </p>
+          <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
+            Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
+          </p>
+        </div>
+      </div>
+    `;
+    try {
+      await this.sendEmail(to, subject, html);
       this.logger.log(`Email de rejeicao enviado para ${to}`);
       await this.saveLog({ type: 'EMAIL', to, userName: name, subject, message: `Cadastro como ${roleLabel} rejeitado. Motivo: ${reason}`, success: true, error: null });
     } catch (error) {
@@ -151,26 +116,22 @@ export class MailService implements OnModuleInit {
   }
 
   async resendEmail(log: NotificationLog): Promise<boolean> {
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+          <h2 style="color: #2D3436;">Ola, ${log.userName}!</h2>
+          <p style="color: #555; font-size: 16px; line-height: 1.6;">${log.message}</p>
+          <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
+            Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
+          </p>
+        </div>
+      </div>
+    `;
     try {
-      await this.transporter.sendMail({
-        from: this.from,
-        to: log.to,
-        subject: log.subject,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-              <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
-            </div>
-            <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
-              <h2 style="color: #2D3436;">Ola, ${log.userName}!</h2>
-              <p style="color: #555; font-size: 16px; line-height: 1.6;">${log.message}</p>
-              <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
-                Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
-              </p>
-            </div>
-          </div>
-        `,
-      });
+      await this.sendEmail(log.to, log.subject, html);
       this.logger.log(`Email reenviado para ${log.to}`);
       log.success = true;
       log.error = null;
