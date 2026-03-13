@@ -39,33 +39,10 @@ export class UsersService {
     return true;
   }
 
-  private async validateCpfOnline(cpf: string): Promise<{ valid: boolean; name?: string }> {
-    const digits = cpf.replace(/\D/g, '');
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(`https://brasilapi.com.br/api/v1/cpf/${digits}`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      if (!res.ok) return { valid: false };
-      const data = await res.json();
-      return { valid: true, name: data.nome };
-    } catch {
-      // API fora do ar ou timeout — aceita normalmente
-      return { valid: true };
-    }
-  }
-
   async create(input: RegisterInput): Promise<User> {
     if (input.cpf) {
       if (!this.validateCpf(input.cpf)) {
         throw new BadRequestException('CPF invalido');
-      }
-      // Tenta validar online (se a API estiver disponível)
-      const online = await this.validateCpfOnline(input.cpf);
-      if (!online.valid) {
-        throw new BadRequestException('CPF nao encontrado na base da Receita Federal');
       }
     }
 
