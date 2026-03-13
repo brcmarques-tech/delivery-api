@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Inject } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
@@ -12,6 +12,7 @@ import { BarcodeLookupResult } from './dto/barcode-lookup-result';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { Store } from '../stores/entities/store.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { VerificationService } from '../stores/verification.service';
 
 @Injectable()
 export class ProductsService {
@@ -23,6 +24,8 @@ export class ProductsService {
     @Inject(PUB_SUB) private pubSub: PubSub,
     private httpService: HttpService,
     private platformConfigService: PlatformConfigService,
+    @Inject(forwardRef(() => VerificationService))
+    private verificationService: VerificationService,
   ) {}
 
   private async checkProductLimit(storeId: string): Promise<void> {
@@ -62,6 +65,7 @@ export class ProductsService {
     });
     const saved = await this.productsRepository.save(product);
     this.pubSub.publish('productUpdated', { productUpdated: saved });
+    this.verificationService.onProductAdded(input.storeId).catch(() => {});
     return saved;
   }
 

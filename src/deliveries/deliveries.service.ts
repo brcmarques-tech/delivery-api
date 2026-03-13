@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, IsNull } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
@@ -15,8 +15,10 @@ export class DeliveriesService implements OnModuleInit {
   constructor(
     @InjectRepository(Delivery)
     private deliveriesRepository: Repository<Delivery>,
+    @Inject(forwardRef(() => OrdersService))
     private ordersService: OrdersService,
     private offerService: DeliveryOfferService,
+    @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}

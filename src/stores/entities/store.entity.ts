@@ -1,4 +1,4 @@
-import { ObjectType, Field, ID, Float } from '@nestjs/graphql';
+import { ObjectType, Field, ID, Float, Int } from '@nestjs/graphql';
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -11,6 +11,7 @@ import {
 import { User } from '../../users/entities/user.entity';
 import { Product } from '../../products/entities/product.entity';
 import { Category } from '../../categories/entities/category.entity';
+import { VerificationLevel } from '../../common/enums/verification-level.enum';
 
 @ObjectType()
 @Entity('stores')
@@ -114,6 +115,42 @@ export class Store {
   @Field(() => Float, { nullable: true })
   @Column('decimal', { precision: 10, scale: 2, nullable: true })
   freeDeliveryAbove: number;
+
+  @Field(() => VerificationLevel)
+  @Column({ type: 'varchar', default: VerificationLevel.NONE })
+  verificationLevel: VerificationLevel;
+
+  @Field(() => Int)
+  @Column({ default: 0 })
+  verificationScore: number;
+
+  @Field(() => Int)
+  @Column({ default: 0 })
+  totalSales: number;
+
+  @Field(() => Int)
+  @Column({ default: 0 })
+  totalProducts: number;
+
+  @Field(() => Int)
+  @Column({ default: 0 })
+  badgeClaimCount: number;
+
+  @Field(() => Int)
+  @Column({ default: 0 })
+  lastClaimedScore: number;
+
+  @Field(() => Int)
+  @Column({ default: 0 })
+  freePromoDaysCredit: number;
+
+  @Field(() => Float)
+  @Column('decimal', { precision: 5, scale: 2, default: 0 })
+  commissionReductionPercent: number;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  commissionReductionExpiresAt: Date | null;
 
   @Field(() => User)
   @ManyToOne(() => User, (user) => user.stores)

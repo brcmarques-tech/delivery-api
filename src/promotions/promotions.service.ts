@@ -44,6 +44,7 @@ export class PromotionsService implements OnModuleInit {
       for (const promo of expired) {
         if (promo.product?.promotionalPrice) {
           await this.productsRepository.update(promo.product.id, { promotionalPrice: null as any });
+          this.pubSub.publish('productUpdated', { productUpdated: { ...promo.product, promotionalPrice: null } });
         }
       }
       if (expired.length > 0) {
@@ -55,36 +56,40 @@ export class PromotionsService implements OnModuleInit {
   }
 
   async create(input: CreatePromotionInput, user: User): Promise<Promotion> {
-    const planConfig = await this.platformConfigService.getPlanConfig(user.vendorPlan || 'FREE');
-
-    if (planConfig.freePromosPerWeek <= 0) {
-      throw new BadRequestException(
-        'Seu plano nao permite criar promocoes. Faca upgrade para o plano Pro ou superior.',
-      );
-    }
-
-    // Count promotions created this week by this user
-    const now = new Date();
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - now.getDay());
-    startOfWeek.setHours(0, 0, 0, 0);
-
-    const promosThisWeek = await this.promotionsRepository.count({
-      where: {
-        store: { owner: { id: user.id } },
-        createdAt: MoreThan(startOfWeek),
-      },
-    });
-
-    if (promosThisWeek >= planConfig.freePromosPerWeek) {
-      throw new BadRequestException(
-        `Seu plano permite no maximo ${planConfig.freePromosPerWeek} promocao(oes) por semana. Faca upgrade para criar mais.`,
-      );
-    }
-
     const store = await this.storesService.findById(input.storeId);
     if (store.owner.id !== user.id) {
       throw new BadRequestException('Voce nao e o dono dessa loja.');
+    }
+
+    const hasBadgeCredit = store.freePromoDaysCredit > 0;
+    const planConfig = await this.platformConfigService.getPlanConfig(user.vendorPlan || 'FREE');
+
+    // Skip plan restriction if store has badge free promo days credit
+    if (!hasBadgeCredit) {
+      if (planConfig.freePromosPerWeek <= 0) {
+        throw new BadRequestException(
+          'Seu plano nao permite criar promocoes. Faca upgrade para o plano Pro ou superior.',
+        );
+      }
+
+      // Count promotions created this week by this user
+      const now = new Date();
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay());
+      startOfWeek.setHours(0, 0, 0, 0);
+
+      const promosThisWeek = await this.promotionsRepository.count({
+        where: {
+          store: { owner: { id: user.id } },
+          createdAt: MoreThan(startOfWeek),
+        },
+      });
+
+      if (promosThisWeek >= planConfig.freePromosPerWeek) {
+        throw new BadRequestException(
+          `Seu plano permite no maximo ${planConfig.freePromosPerWeek} promocao(oes) por semana. Faca upgrade para criar mais.`,
+        );
+      }
     }
 
     let product: Product | null = null;
@@ -99,12 +104,21 @@ export class PromotionsService implements OnModuleInit {
     const pricePerDay = await this.platformConfigService.getPromoPricePerDay();
     const start = new Date(input.startDate);
     const end = new Date(input.endDate);
-    const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const totalDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
+
+    // Apply badge free promo days credit
+    let paidDays = totalDays;
+    let usedFreeDays = 0;
+    if (store.freePromoDaysCredit > 0) {
+      usedFreeDays = Math.min(store.freePromoDaysCredit, totalDays);
+      paidDays = totalDays - usedFreeDays;
+    }
+
     let discount = 0;
-    if (days >= 365) discount = 0.30;
-    else if (days >= 30) discount = 0.20;
-    else if (days >= 7) discount = 0.10;
-    const adCost = days > 0 ? days * pricePerDay * (1 - discount) : 0;
+    if (paidDays >= 365) discount = 0.30;
+    else if (paidDays >= 30) discount = 0.20;
+    else if (paidDays >= 7) discount = 0.10;
+    const adCost = paidDays > 0 ? paidDays * pricePerDay * (1 - discount) : 0;
 
     const promotion = new Promotion();
     promotion.title = input.title;
@@ -119,6 +133,13 @@ export class PromotionsService implements OnModuleInit {
     if (product) promotion.product = product;
     const saved = await this.promotionsRepository.save(promotion);
     this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+
+    // Deduct used free promo days from store credit
+    if (usedFreeDays > 0) {
+      store.freePromoDaysCredit = Math.max(0, store.freePromoDaysCredit - usedFreeDays);
+      await this.storesService.saveStore(store);
+    }
+
     return saved;
   }
 
@@ -175,7 +196,7 @@ export class PromotionsService implements OnModuleInit {
   async markAsPaid(id: string): Promise<Promotion> {
     const promotion = await this.promotionsRepository.findOne({
       where: { id },
-      relations: ['product'],
+      relations: ['product', 'product.store', 'store'],
     });
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
     promotion.isPaid = true;
@@ -190,6 +211,15 @@ export class PromotionsService implements OnModuleInit {
         await this.productsRepository.update(promotion.product.id, {
           promotionalPrice: promotion.promotionalPrice,
         });
+        this.logger.log(`Applied promotionalPrice ${promotion.promotionalPrice} to product ${promotion.product.id}`);
+        // Notify subscribers so store page refreshes immediately
+        const updatedProduct = await this.productsRepository.findOne({
+          where: { id: promotion.product.id },
+          relations: ['category', 'store'],
+        });
+        if (updatedProduct) {
+          this.pubSub.publish('productUpdated', { productUpdated: updatedProduct });
+        }
       }
     }
     return saved;

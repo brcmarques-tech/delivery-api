@@ -1,25 +1,32 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { MercadoPagoConfig, Preference, Payment as MpPayment, Customer } from 'mercadopago';
 import { Payment } from './entities/payment.entity';
 import { User } from '../users/entities/user.entity';
+import { Store } from '../stores/entities/store.entity';
 import { Order } from '../orders/entities/order.entity';
 import { Promotion } from '../promotions/entities/promotion.entity';
 import { UsersService } from '../users/users.service';
+import { PlatformConfigService } from '../config/platform-config.service';
 import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
 
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
   private mpClient: MercadoPagoConfig;
 
   constructor(
     @InjectRepository(Payment)
     private paymentsRepository: Repository<Payment>,
+    @InjectRepository(Store)
+    private storesRepository: Repository<Store>,
     private configService: ConfigService,
+    @Inject(forwardRef(() => UsersService))
     private usersService: UsersService,
+    private platformConfigService: PlatformConfigService,
   ) {
     this.mpClient = new MercadoPagoConfig({
       accessToken: this.configService.get('MP_ACCESS_TOKEN') || '',
@@ -46,6 +53,24 @@ export class PaymentsService {
     };
 
     const billing = billingMap[billingPeriod] || billingMap.monthly;
+
+    // Apply badge subscription discount (only from 2nd claim onwards)
+    let badgeDiscount = 0;
+    const stores = await this.storesRepository.find({
+      where: { owner: { id: user.id } },
+    });
+    for (const store of stores) {
+      if (store.badgeClaimCount >= 2) {
+        const rewards = await this.platformConfigService.getBadgeRewards(store.verificationLevel);
+        if (rewards.subscriptionDiscount > badgeDiscount) {
+          badgeDiscount = rewards.subscriptionDiscount;
+        }
+      }
+    }
+    if (badgeDiscount > 0) {
+      billing.price = Math.round(billing.price * (1 - badgeDiscount / 100) * 100) / 100;
+      this.logger.log(`Applied ${badgeDiscount}% badge subscription discount for user ${user.id}`);
+    }
 
     // Max installments based on billing period
     const maxInstallments = billing.months >= 12 ? 12 : billing.months >= 6 ? 6 : billing.months >= 3 ? 3 : 1;

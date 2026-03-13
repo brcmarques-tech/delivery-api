@@ -1,4 +1,4 @@
-import { Injectable, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, ConflictException, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -7,6 +7,7 @@ import { RegisterInput } from '../auth/dto/register.input';
 import { RegisterDelivererInput } from './dto/register-deliverer.input';
 import { UserRole, VendorPlan } from '../common/enums';
 import { MailService } from '../mail/mail.service';
+import { VerificationService } from '../stores/verification.service';
 
 @Injectable()
 export class UsersService {
@@ -14,6 +15,8 @@ export class UsersService {
     @InjectRepository(User)
     private usersRepository: Repository<User>,
     private mailService: MailService,
+    @Inject(forwardRef(() => VerificationService))
+    private verificationService: VerificationService,
   ) {}
 
   private validateCpf(cpf: string): boolean {
@@ -236,7 +239,10 @@ export class UsersService {
       user.planExpiresAt = null;
     }
 
-    return this.usersRepository.save(user);
+    const saved = await this.usersRepository.save(user);
+    // Update verification level for all stores of this vendor
+    this.verificationService.onPlanChanged(id, plan).catch(() => {});
+    return saved;
   }
 
   async pendingCount(): Promise<number> {

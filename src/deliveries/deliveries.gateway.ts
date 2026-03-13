@@ -12,6 +12,7 @@ import { DeliveriesService } from './deliveries.service';
 import { DelivererTrackerService } from './deliverer-tracker.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { UsersService } from '../users/users.service';
+import { Inject, forwardRef } from '@nestjs/common';
 
 @WebSocketGateway({ cors: { origin: '*' } })
 export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
@@ -22,6 +23,7 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
     private deliveriesService: DeliveriesService,
     private trackerService: DelivererTrackerService,
     private offerService: DeliveryOfferService,
+    @Inject(forwardRef(() => UsersService))
     private usersService: UsersService,
   ) {}
 

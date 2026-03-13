@@ -30,15 +30,21 @@ export class PromotionsResolver {
   ): Promise<Promotion> {
     const promotion = await this.promotionsService.create(input, user);
 
-    // Generate checkout for payment
-    try {
-      const payment = await this.paymentsService.createPromotionCheckout(promotion, user);
-      if (payment.checkoutUrl) {
-        promotion.checkoutUrl = payment.checkoutUrl;
-        await this.promotionsService.saveCheckoutUrl(promotion.id, payment.checkoutUrl);
+    if (Number(promotion.adCost) === 0) {
+      // Free promotion (fully covered by badge credit) — activate immediately
+      await this.promotionsService.markAsPaid(promotion.id);
+      promotion.isPaid = true;
+    } else {
+      // Generate checkout for payment
+      try {
+        const payment = await this.paymentsService.createPromotionCheckout(promotion, user);
+        if (payment.checkoutUrl) {
+          promotion.checkoutUrl = payment.checkoutUrl;
+          await this.promotionsService.saveCheckoutUrl(promotion.id, payment.checkoutUrl);
+        }
+      } catch {
+        // If MP fails, promotion is created but without checkout — admin can approve manually
       }
-    } catch {
-      // If MP fails, promotion is created but without checkout — admin can approve manually
     }
 
     return promotion;

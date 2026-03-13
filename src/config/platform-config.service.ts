@@ -162,6 +162,58 @@ export class PlatformConfigService {
     }
   }
 
+  // ─── Badge / Verification Config ───
+
+  async getBadgeThresholds(): Promise<Record<string, number>> {
+    const raw = await this.get('badge_thresholds', '');
+    if (raw) return JSON.parse(raw);
+    return { BRONZE: 20, SILVER: 100, GOLD: 300, DIAMOND: 1000 };
+  }
+
+  async setBadgeThresholds(thresholds: Record<string, number>): Promise<void> {
+    await this.set('badge_thresholds', JSON.stringify(thresholds));
+  }
+
+  async getBadgePoints(): Promise<Record<string, number>> {
+    const raw = await this.get('badge_points', '');
+    if (raw) return JSON.parse(raw);
+    return { PER_PRODUCT: 2, PER_SALE: 5, PER_MONTH_ACTIVE: 3 };
+  }
+
+  async setBadgePoints(points: Record<string, number>): Promise<void> {
+    await this.set('badge_points', JSON.stringify(points));
+  }
+
+  async getBadgeRewards(level: string): Promise<Record<string, number>> {
+    const raw = await this.get(`badge_rewards_${level}`, '');
+    if (raw) return JSON.parse(raw);
+    const defaults: Record<string, Record<string, number>> = {
+      BRONZE:  { freePromoDays: 3,  subscriptionDiscount: 5,  commissionReduction: 0, freeTrialDays: 0,  couponValue: 0  },
+      SILVER:  { freePromoDays: 7,  subscriptionDiscount: 10, commissionReduction: 1, freeTrialDays: 7,  couponValue: 10 },
+      GOLD:    { freePromoDays: 15, subscriptionDiscount: 20, commissionReduction: 2, freeTrialDays: 15, couponValue: 25 },
+      DIAMOND: { freePromoDays: 30, subscriptionDiscount: 30, commissionReduction: 3, freeTrialDays: 30, couponValue: 50 },
+    };
+    return defaults[level] || { freePromoDays: 0, subscriptionDiscount: 0, commissionReduction: 0, freeTrialDays: 0, couponValue: 0 };
+  }
+
+  async setBadgeRewards(level: string, rewards: Record<string, number>): Promise<void> {
+    await this.set(`badge_rewards_${level}`, JSON.stringify(rewards));
+  }
+
+  async getAllBadgeConfig(): Promise<{
+    thresholds: Record<string, number>;
+    points: Record<string, number>;
+    rewards: Record<string, Record<string, number>>;
+  }> {
+    const thresholds = await this.getBadgeThresholds();
+    const points = await this.getBadgePoints();
+    const rewards: Record<string, Record<string, number>> = {};
+    for (const level of ['BRONZE', 'SILVER', 'GOLD', 'DIAMOND']) {
+      rewards[level] = await this.getBadgeRewards(level);
+    }
+    return { thresholds, points, rewards };
+  }
+
   async updatePlanConfig(
     plan: string,
     config: PlanConfig,

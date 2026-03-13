@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Inject } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
@@ -14,6 +14,7 @@ import { PlatformConfigService } from '../config/platform-config.service';
 import { AddressesService } from '../addresses/addresses.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CouponsService } from '../coupons/coupons.service';
+import { VerificationService } from '../stores/verification.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
@@ -48,6 +49,8 @@ export class OrdersService {
     private addressesService: AddressesService,
     private notificationsService: NotificationsService,
     private couponsService: CouponsService,
+    @Inject(forwardRef(() => VerificationService))
+    private verificationService: VerificationService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -157,7 +160,17 @@ export class OrdersService {
     const storeOwner = store.owner;
     const vendorPlan = storeOwner?.vendorPlan || 'FREE';
     const planConfig = await this.platformConfigService.getPlanConfig(vendorPlan);
-    const commissionPercent = planConfig.commissionPercent;
+    let commissionPercent = planConfig.commissionPercent;
+
+    // Apply badge commission reduction if active (temporary, 1 week per claim)
+    if (
+      store.commissionReductionPercent > 0 &&
+      store.commissionReductionExpiresAt &&
+      new Date(store.commissionReductionExpiresAt) > new Date()
+    ) {
+      commissionPercent = Math.max(0, commissionPercent - Number(store.commissionReductionPercent));
+    }
+
     const commissionAmount = Math.round(((subtotal - discount) * commissionPercent) / 100 * 100) / 100;
 
     const paymentMethod = input.paymentMethod || 'ON_DELIVERY';
@@ -380,6 +393,10 @@ export class OrdersService {
     if (status === OrderStatus.DELIVERED && order.delivery) {
       order.delivery.deliveredAt = new Date();
       await this.deliveriesRepository.save(order.delivery);
+      // Update store verification score
+      if (order.store?.id) {
+        this.verificationService.onSaleCompleted(order.store.id).catch(() => {});
+      }
     }
 
     // Restore stock when order is cancelled

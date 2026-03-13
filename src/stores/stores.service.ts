@@ -187,4 +187,8 @@ export class StoresService {
   async totalCount(): Promise<number> {
     return this.storesRepository.count();
   }
+
+  async saveStore(store: Store): Promise<Store> {
+    return this.storesRepository.save(store);
+  }
 }

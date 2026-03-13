@@ -78,6 +78,47 @@ export class PlatformConfigResolver {
     return true;
   }
 
+  // ─── Badge / Verification Config ───
+
+  @Query(() => String)
+  async badgeConfig(): Promise<string> {
+    const config = await this.configService.getAllBadgeConfig();
+    return JSON.stringify(config);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async updateBadgeThresholds(
+    @Args('thresholds') thresholds: string,
+  ): Promise<boolean> {
+    await this.configService.setBadgeThresholds(JSON.parse(thresholds));
+    return true;
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async updateBadgePoints(
+    @Args('points') points: string,
+  ): Promise<boolean> {
+    await this.configService.setBadgePoints(JSON.parse(points));
+    return true;
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async updateBadgeRewards(
+    @Args('level') level: string,
+    @Args('rewards') rewards: string,
+  ): Promise<boolean> {
+    await this.configService.setBadgeRewards(level, JSON.parse(rewards));
+    return true;
+  }
+
+  // ─── Plans ───
+
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)

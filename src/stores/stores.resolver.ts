@@ -3,6 +3,7 @@ import { UseGuards, Inject } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
 import { StoresService } from './stores.service';
+import { VerificationService } from './verification.service';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
@@ -10,7 +11,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../users/entities/user.entity';
-import { UserRole } from '../common/enums';
+import { UserRole, VerificationLevel } from '../common/enums';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { DelivererTrackerService } from '../deliveries/deliverer-tracker.service';
 import {
@@ -25,6 +26,7 @@ import { PUB_SUB } from '../pubsub/pubsub.module';
 export class StoresResolver {
   constructor(
     private storesService: StoresService,
+    private verificationService: VerificationService,
     private platformConfigService: PlatformConfigService,
     private delivererTracker: DelivererTrackerService,
     @Inject(PUB_SUB) private pubSub: PubSub,
@@ -164,6 +166,40 @@ export class StoresResolver {
   @Roles(UserRole.SUPERADMIN)
   toggleStoreActive(@Args('id') id: string): Promise<Store> {
     return this.storesService.toggleActive(id);
+  }
+
+  @Mutation(() => Store)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  recalculateVerification(@Args('storeId') storeId: string): Promise<Store> {
+    return this.verificationService.recalculateScore(storeId);
+  }
+
+  @Mutation(() => Store)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  claimBadgeReward(
+    @Args('storeId') storeId: string,
+    @Args('level') level: string,
+    @CurrentUser() user: User,
+  ): Promise<Store> {
+    return this.verificationService.claimBadgeReward(storeId, level, user.id);
+  }
+
+  @Mutation(() => Store)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async setStoreVerification(
+    @Args('storeId') storeId: string,
+    @Args('level', { type: () => VerificationLevel }) level: VerificationLevel,
+    @Args('score', { type: () => Float, nullable: true }) score?: number,
+  ): Promise<Store> {
+    const store = await this.storesService.findById(storeId);
+    store.verificationLevel = level;
+    if (score !== undefined && score !== null) {
+      store.verificationScore = score;
+    }
+    return this.storesService.saveStore(store);
   }
 
   @ResolveField(() => Boolean)
