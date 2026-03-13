@@ -2,6 +2,7 @@ services:
   app:
     build: .
     container_name: delivery-app
+    command: sh -c "yarn install && npx nest start --watch"
     ports:
       - '3000:3000'
     volumes:
