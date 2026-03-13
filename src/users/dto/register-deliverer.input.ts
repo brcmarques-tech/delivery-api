@@ -3,9 +3,6 @@ import { InputType, Field } from '@nestjs/graphql';
 @InputType()
 export class RegisterDelivererInput {
   @Field()
-  cpf: string;
-
-  @Field()
   vehicleType: string;
 
   @Field({ nullable: true })
@@ -13,4 +10,10 @@ export class RegisterDelivererInput {
 
   @Field({ nullable: true })
   identityPhotoUrl?: string;
+
+  @Field()
+  birthDate: string;
+
+  @Field({ nullable: true })
+  cnhNumber?: string;
 }

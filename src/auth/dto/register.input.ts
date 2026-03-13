@@ -18,6 +18,9 @@ export class RegisterInput {
   @Field()
   phone: string;
 
+  @Field()
+  cpf: string;
+
   @Field(() => UserRole, { nullable: true })
   @IsOptional()
   @IsEnum(UserRole)

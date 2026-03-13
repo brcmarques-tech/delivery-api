@@ -9,11 +9,14 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole, VendorPlan } from '../common/enums';
 import { RegisterDelivererInput } from './dto/register-deliverer.input';
 import { PlanInfo } from '../common/plan-info.type';
-import { PLAN_CONFIGS } from '../common/plan-config';
+import { PlatformConfigService } from '../config/platform-config.service';
 
 @Resolver(() => User)
 export class UsersResolver {
-  constructor(private usersService: UsersService) {}
+  constructor(
+    private usersService: UsersService,
+    private platformConfigService: PlatformConfigService,
+  ) {}
 
   @Query(() => User)
   @UseGuards(GqlAuthGuard)
@@ -89,6 +92,30 @@ export class UsersResolver {
     return this.usersService.updateVendorPlan(id, plan, durationMonths);
   }
 
+  @Mutation(() => User)
+  @UseGuards(GqlAuthGuard)
+  updateProfile(
+    @CurrentUser() user: User,
+    @Args('name', { nullable: true }) name?: string,
+    @Args('phone', { nullable: true }) phone?: string,
+    @Args('currentPassword', { nullable: true }) currentPassword?: string,
+    @Args('newPassword', { nullable: true }) newPassword?: string,
+  ): Promise<User> {
+    return this.usersService.updateProfile(user.id, name, phone, currentPassword, newPassword);
+  }
+
+  @Mutation(() => User)
+  @UseGuards(GqlAuthGuard)
+  async acceptTerms(@CurrentUser() user: User): Promise<User> {
+    return this.usersService.acceptTerms(user.id);
+  }
+
+  @Mutation(() => User)
+  @UseGuards(GqlAuthGuard)
+  async acceptSubscriptionTerms(@CurrentUser() user: User): Promise<User> {
+    return this.usersService.acceptSubscriptionTerms(user.id);
+  }
+
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard)
   async registerPushToken(
@@ -100,10 +127,12 @@ export class UsersResolver {
   }
 
   @Query(() => [PlanInfo])
-  availablePlans(): PlanInfo[] {
-    return Object.entries(PLAN_CONFIGS).map(([plan, config]) => ({
-      plan: plan as VendorPlan,
-      ...config,
-    }));
+  async availablePlans(): Promise<PlanInfo[]> {
+    const plans: PlanInfo[] = [];
+    for (const plan of [VendorPlan.FREE, VendorPlan.PRO, VendorPlan.PREMIUM, VendorPlan.ENTERPRISE, VendorPlan.CUSTOM]) {
+      const config = await this.platformConfigService.getPlanConfig(plan);
+      plans.push({ plan, ...config });
+    }
+    return plans;
   }
 }

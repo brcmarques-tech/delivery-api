@@ -16,7 +16,56 @@ export class UsersService {
     private mailService: MailService,
   ) {}
 
+  private validateCpf(cpf: string): boolean {
+    const digits = cpf.replace(/\D/g, '');
+    if (digits.length !== 11) return false;
+    if (/^(\d)\1{10}$/.test(digits)) return false;
+
+    let sum = 0;
+    for (let i = 0; i < 9; i++) sum += parseInt(digits[i]) * (10 - i);
+    let check = 11 - (sum % 11);
+    if (check >= 10) check = 0;
+    if (parseInt(digits[9]) !== check) return false;
+
+    sum = 0;
+    for (let i = 0; i < 10; i++) sum += parseInt(digits[i]) * (11 - i);
+    check = 11 - (sum % 11);
+    if (check >= 10) check = 0;
+    if (parseInt(digits[10]) !== check) return false;
+
+    return true;
+  }
+
+  private async validateCpfOnline(cpf: string): Promise<{ valid: boolean; name?: string }> {
+    const digits = cpf.replace(/\D/g, '');
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(`https://brasilapi.com.br/api/v1/cpf/${digits}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!res.ok) return { valid: false };
+      const data = await res.json();
+      return { valid: true, name: data.nome };
+    } catch {
+      // API fora do ar ou timeout — aceita normalmente
+      return { valid: true };
+    }
+  }
+
   async create(input: RegisterInput): Promise<User> {
+    if (input.cpf) {
+      if (!this.validateCpf(input.cpf)) {
+        throw new BadRequestException('CPF invalido');
+      }
+      // Tenta validar online (se a API estiver disponível)
+      const online = await this.validateCpfOnline(input.cpf);
+      if (!online.valid) {
+        throw new BadRequestException('CPF nao encontrado na base da Receita Federal');
+      }
+    }
+
     const exists = await this.usersRepository.findOne({
       where: { email: input.email },
     });
@@ -146,7 +195,18 @@ export class UsersService {
     if (user.isDeliverer) throw new BadRequestException('Usuario ja e entregador');
     if (user.pendingRole === 'DELIVERER') throw new BadRequestException('Cadastro ja enviado, aguarde aprovacao');
 
-    user.cpf = input.cpf;
+    // Validar maioridade
+    const birth = new Date(input.birthDate);
+    const age = Math.floor((Date.now() - birth.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+    if (age < 18) throw new BadRequestException('Entregador deve ter pelo menos 18 anos');
+
+    // CNH obrigatória para veículos motorizados
+    if ((input.vehicleType === 'MOTO' || input.vehicleType === 'CARRO') && !input.cnhNumber) {
+      throw new BadRequestException('CNH obrigatoria para veiculos motorizados');
+    }
+
+    user.birthDate = input.birthDate;
+    user.cnhNumber = input.cnhNumber ?? '';
     user.vehicleType = input.vehicleType;
     user.vehiclePlate = input.vehiclePlate ?? '';
     user.identityPhotoUrl = input.identityPhotoUrl ?? '';
@@ -205,6 +265,20 @@ export class UsersService {
     await this.usersRepository.update(id, { expoPushToken: token });
   }
 
+  async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string): Promise<User> {
+    const user = await this.usersRepository.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('Usuario nao encontrado');
+    if (name) user.name = name;
+    if (phone) user.phone = phone;
+    if (newPassword) {
+      if (!currentPassword) throw new BadRequestException('Senha atual e obrigatoria para alterar a senha');
+      const valid = await bcrypt.compare(currentPassword, user.password);
+      if (!valid) throw new BadRequestException('Senha atual incorreta');
+      user.password = await bcrypt.hash(newPassword, 10);
+    }
+    return this.usersRepository.save(user);
+  }
+
   async disconnectMp(id: string): Promise<void> {
     await this.usersRepository.update(id, {
       mpAccessToken: null as any,
@@ -212,5 +286,19 @@ export class UsersService {
       mpUserId: null as any,
       mpConnected: false,
     });
+  }
+
+  async acceptTerms(id: string): Promise<User> {
+    const user = await this.findById(id);
+    if (!user) throw new NotFoundException('Usuario nao encontrado');
+    user.acceptedTermsAt = new Date();
+    return this.usersRepository.save(user);
+  }
+
+  async acceptSubscriptionTerms(id: string): Promise<User> {
+    const user = await this.findById(id);
+    if (!user) throw new NotFoundException('Usuario nao encontrado');
+    user.acceptedSubscriptionTermsAt = new Date();
+    return this.usersRepository.save(user);
   }
 }

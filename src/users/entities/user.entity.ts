@@ -68,6 +68,14 @@ export class User {
   @Column({ nullable: true })
   identityPhotoUrl: string;
 
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  birthDate: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  cnhNumber: string;
+
   @Field()
   @Column({ default: false })
   isDeliverer: boolean;
@@ -88,6 +96,16 @@ export class User {
   @Field(() => String, { nullable: true })
   @Column({ type: 'varchar', nullable: true })
   rejectionReason: string | null;
+
+  // Termos de uso aceitos
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  acceptedTermsAt: Date | null;
+
+  // Contrato de assinatura aceito
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  acceptedSubscriptionTermsAt: Date | null;
 
   // Plano do vendedor
   @Field(() => VendorPlan, { nullable: true })
