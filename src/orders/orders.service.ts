@@ -13,6 +13,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { AddressesService } from '../addresses/addresses.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { CouponsService } from '../coupons/coupons.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
@@ -46,6 +47,7 @@ export class OrdersService {
     private platformConfigService: PlatformConfigService,
     private addressesService: AddressesService,
     private notificationsService: NotificationsService,
+    private couponsService: CouponsService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -134,9 +136,29 @@ export class OrdersService {
       }
     }
 
-    const total = subtotal + deliveryFee;
+    // Apply coupon discount if provided
+    let discount = 0;
+    let couponCode: string | undefined;
+    let couponEntity: any = null;
+    if (input.couponCode) {
+      const result = await this.couponsService.validateAndCalculate(
+        input.couponCode,
+        input.storeId,
+        subtotal,
+      );
+      discount = result.discount;
+      couponCode = result.coupon.code;
+      couponEntity = result.coupon;
+    }
 
+    const total = subtotal - discount + deliveryFee;
+
+    // Calculate commission based on vendor's plan
     const storeOwner = store.owner;
+    const vendorPlan = storeOwner?.vendorPlan || 'FREE';
+    const planConfig = await this.platformConfigService.getPlanConfig(vendorPlan);
+    const commissionPercent = planConfig.commissionPercent;
+    const commissionAmount = Math.round(((subtotal - discount) * commissionPercent) / 100 * 100) / 100;
 
     const paymentMethod = input.paymentMethod || 'ON_DELIVERY';
 
@@ -173,6 +195,8 @@ export class OrdersService {
       subtotal,
       deliveryFee,
       total,
+      commissionPercent,
+      commissionAmount,
       isPickup,
       deliveryAddress: isPickup
         ? `${store.street}, ${store.number} - ${store.neighborhood}, ${store.city}`
@@ -181,12 +205,20 @@ export class OrdersService {
       deliveryLongitude: isPickup ? Number(store.longitude) : input.deliveryLongitude,
       notes: input.notes,
       paymentMethod,
+      couponCode,
+      discount,
+      coupon: couponEntity,
       status: needsPayment ? OrderStatus.AWAITING_PAYMENT : OrderStatus.PENDING,
     });
 
     const savedOrder = await this.ordersRepository.save(order);
     // Ensure store with owner relation is available for payment methods (marketplace split)
     savedOrder.store = store;
+
+    // Increment coupon usage
+    if (couponEntity) {
+      await this.couponsService.incrementUsage(couponEntity.id);
+    }
 
     // Decrement stock for tracked products (stock > 0)
     for (const item of items) {

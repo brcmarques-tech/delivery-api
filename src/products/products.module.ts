@@ -4,9 +4,11 @@ import { HttpModule } from '@nestjs/axios';
 import { Product } from './entities/product.entity';
 import { ProductsService } from './products.service';
 import { ProductsResolver } from './products.resolver';
+import { Store } from '../stores/entities/store.entity';
+import { PlatformConfigModule } from '../config/platform-config.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Product]), HttpModule],
+  imports: [TypeOrmModule.forFeature([Product, Store]), HttpModule, PlatformConfigModule],
   providers: [ProductsService, ProductsResolver],
   exports: [ProductsService],
 })

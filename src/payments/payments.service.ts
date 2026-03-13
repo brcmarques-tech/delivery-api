@@ -26,11 +26,29 @@ export class PaymentsService {
     });
   }
 
-  async createPlanUpgrade(user: User, plan: VendorPlan): Promise<Payment> {
+  async createPlanUpgrade(user: User, plan: VendorPlan, billingPeriod: string = 'monthly'): Promise<Payment> {
     const planConfig = PLAN_CONFIGS[plan];
     if (!planConfig || planConfig.monthlyPrice === 0) {
       throw new BadRequestException('Plano invalido para upgrade');
     }
+
+    // Check subscription terms accepted
+    if (!user.acceptedSubscriptionTermsAt) {
+      throw new BadRequestException('Voce precisa aceitar o contrato de assinatura antes de assinar um plano.');
+    }
+
+    // Determine price and duration based on billing period
+    const billingMap: Record<string, { price: number; months: number; label: string }> = {
+      monthly: { price: planConfig.monthlyPrice, months: 1, label: 'Mensal' },
+      quarterly: { price: planConfig.quarterlyPrice, months: 3, label: 'Trimestral' },
+      semiannual: { price: planConfig.semiannualPrice, months: 6, label: 'Semestral' },
+      annual: { price: planConfig.annualPrice, months: 12, label: 'Anual' },
+    };
+
+    const billing = billingMap[billingPeriod] || billingMap.monthly;
+
+    // Max installments based on billing period
+    const maxInstallments = billing.months >= 12 ? 12 : billing.months >= 6 ? 6 : billing.months >= 3 ? 3 : 1;
 
     const mpCustomerId = await this.getOrCreateMpCustomer(user);
     const preference = new Preference(this.mpClient);
@@ -38,11 +56,11 @@ export class PaymentsService {
       body: {
         items: [
           {
-            id: `plan-${plan}`,
-            title: `Plano ${plan} - bcmTech Delivery`,
-            description: `Assinatura mensal do plano ${plan}`,
+            id: `plan-${plan}-${billingPeriod}`,
+            title: `Plano ${plan} ${billing.label} - bcmTech Delivery`,
+            description: `Assinatura ${billing.label.toLowerCase()} do plano ${plan} (${billing.months} meses)`,
             quantity: 1,
-            unit_price: planConfig.monthlyPrice,
+            unit_price: billing.price,
             currency_id: 'BRL',
           },
         ],
@@ -51,6 +69,9 @@ export class PaymentsService {
           name: user.name,
           ...(mpCustomerId ? { id: mpCustomerId } : {}),
         },
+        payment_methods: {
+          installments: maxInstallments,
+        },
         ...(this.configService.get('APP_URL') ? {
           back_urls: {
             success: `${this.configService.get('APP_URL')}/dashboard/plan?status=success`,
@@ -58,19 +79,19 @@ export class PaymentsService {
             pending: `${this.configService.get('APP_URL')}/dashboard/plan?status=pending`,
           },
         } : {}),
-        external_reference: `${user.id}:${plan}:1`,
+        external_reference: `${user.id}:${plan}:${billing.months}`,
         notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
       },
     });
 
     const payment = this.paymentsRepository.create({
       type: 'PLAN_UPGRADE',
-      description: `Upgrade para plano ${plan}`,
-      amount: planConfig.monthlyPrice,
+      description: `Upgrade para plano ${plan} (${billing.label})`,
+      amount: billing.price,
       status: 'pending',
       mpPreferenceId: result.id,
       checkoutUrl: result.init_point,
-      metadata: { plan, durationMonths: 1 },
+      metadata: { plan, durationMonths: billing.months, billingPeriod },
       user,
     });
 

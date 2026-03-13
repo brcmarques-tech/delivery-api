@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThanOrEqual } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { NotificationLog } from './entities/notification-log.entity';
+import { PlatformConfigService } from '../config/platform-config.service';
 
 @Injectable()
 export class MailService {
@@ -14,6 +15,7 @@ export class MailService {
     private configService: ConfigService,
     @InjectRepository(NotificationLog)
     private logRepository: Repository<NotificationLog>,
+    private platformConfigService: PlatformConfigService,
   ) {
     const apiKey = this.configService.get('RESEND_API_KEY');
     if (!apiKey) {
@@ -149,6 +151,50 @@ export class MailService {
       log.error = String(error);
       await this.logRepository.save(log);
       return false;
+    }
+  }
+
+  async getVendorEmailCount(vendorId: string): Promise<number> {
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+    return this.logRepository.count({
+      where: {
+        vendorId,
+        success: true,
+        createdAt: MoreThanOrEqual(startOfMonth),
+      },
+    });
+  }
+
+  async checkVendorEmailLimit(vendorId: string, vendorPlan: string): Promise<void> {
+    const config = await this.platformConfigService.getPlanConfig(vendorPlan);
+    if (config.maxEmailsPerMonth === 0) return; // 0 = ilimitado
+    const sent = await this.getVendorEmailCount(vendorId);
+    if (sent >= config.maxEmailsPerMonth) {
+      throw new BadRequestException(
+        `Limite de emails atingido (${config.maxEmailsPerMonth}/mes). Faca upgrade do seu plano para enviar mais emails.`,
+      );
+    }
+  }
+
+  async sendVendorEmail(
+    vendorId: string,
+    vendorPlan: string,
+    to: string,
+    name: string,
+    subject: string,
+    html: string,
+  ): Promise<void> {
+    await this.checkVendorEmailLimit(vendorId, vendorPlan);
+    try {
+      await this.sendEmail(to, subject, html);
+      this.logger.log(`Email do vendor enviado para ${to}`);
+      await this.saveLog({ type: 'EMAIL', to, userName: name, subject, message: html, success: true, error: null, vendorId });
+    } catch (error) {
+      this.logger.error(`Erro ao enviar email do vendor para ${to}`, error);
+      await this.saveLog({ type: 'EMAIL', to, userName: name, subject, message: html, success: false, error: String(error), vendorId });
+      throw error;
     }
   }
 

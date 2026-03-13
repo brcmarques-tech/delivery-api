@@ -18,9 +18,10 @@ export class PaymentsResolver {
   @Roles(UserRole.VENDOR)
   createPlanUpgrade(
     @Args('plan', { type: () => VendorPlan }) plan: VendorPlan,
+    @Args('billingPeriod', { nullable: true, defaultValue: 'monthly' }) billingPeriod: string,
     @CurrentUser() user: User,
   ): Promise<Payment> {
-    return this.paymentsService.createPlanUpgrade(user, plan);
+    return this.paymentsService.createPlanUpgrade(user, plan, billingPeriod);
   }
 
   @Query(() => [Payment])

@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThanOrEqual, MoreThanOrEqual, LessThan } from 'typeorm';
+import { Repository, LessThanOrEqual, MoreThanOrEqual, LessThan, MoreThan } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
 import { Promotion } from './entities/promotion.entity';
 import { CreatePromotionInput } from './dto/create-promotion.input';
@@ -8,7 +8,6 @@ import { StoresService } from '../stores/stores.service';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { Product } from '../products/entities/product.entity';
 import { User } from '../users/entities/user.entity';
-import { getPlanConfig } from '../common/plan-config';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
@@ -56,10 +55,30 @@ export class PromotionsService implements OnModuleInit {
   }
 
   async create(input: CreatePromotionInput, user: User): Promise<Promotion> {
-    const planConfig = getPlanConfig(user.vendorPlan);
-    if (!planConfig.canPromote) {
+    const planConfig = await this.platformConfigService.getPlanConfig(user.vendorPlan || 'FREE');
+
+    if (planConfig.freePromosPerWeek <= 0) {
       throw new BadRequestException(
-        'Seu plano nao permite criar promocoes. Faca upgrade para o plano Pro ou Premium.',
+        'Seu plano nao permite criar promocoes. Faca upgrade para o plano Pro ou superior.',
+      );
+    }
+
+    // Count promotions created this week by this user
+    const now = new Date();
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay());
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    const promosThisWeek = await this.promotionsRepository.count({
+      where: {
+        store: { owner: { id: user.id } },
+        createdAt: MoreThan(startOfWeek),
+      },
+    });
+
+    if (promosThisWeek >= planConfig.freePromosPerWeek) {
+      throw new BadRequestException(
+        `Seu plano permite no maximo ${planConfig.freePromosPerWeek} promocao(oes) por semana. Faca upgrade para criar mais.`,
       );
     }
 

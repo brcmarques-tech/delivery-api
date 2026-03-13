@@ -6,7 +6,7 @@ import { Store } from './entities/store.entity';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
 import { User } from '../users/entities/user.entity';
-import { getPlanConfig } from '../common/plan-config';
+import { PlatformConfigService } from '../config/platform-config.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
@@ -16,6 +16,7 @@ export class StoresService {
   constructor(
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
+    private platformConfigService: PlatformConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -54,7 +55,7 @@ export class StoresService {
   }
 
   async create(input: CreateStoreInput, owner: User): Promise<Store> {
-    const planConfig = getPlanConfig(owner.vendorPlan);
+    const planConfig = await this.platformConfigService.getPlanConfig(owner.vendorPlan || 'FREE');
     const currentStores = await this.storesRepository.count({
       where: { owner: { id: owner.id } },
     });
@@ -78,11 +79,39 @@ export class StoresService {
     return saved;
   }
 
+  /**
+   * Check if a store is within its highlight days for the current month.
+   */
+  private isWithinHighlightDays(highlightDaysPerMonth: number): boolean {
+    if (highlightDaysPerMonth >= 30) return true;
+    if (highlightDaysPerMonth <= 0) return false;
+    const today = new Date().getDate(); // day of month (1-31)
+    return today <= highlightDaysPerMonth;
+  }
+
+  /**
+   * Sort stores by plan priority: higher priority first, then by highlight active status.
+   */
+  private async sortByPriority(stores: Store[]): Promise<Store[]> {
+    const storesWithPriority = await Promise.all(
+      stores.map(async (store) => {
+        const plan = store.owner?.vendorPlan || 'FREE';
+        const config = await this.platformConfigService.getPlanConfig(plan);
+        const isHighlighted = this.isWithinHighlightDays(config.highlightDaysPerMonth);
+        const effectivePriority = isHighlighted ? config.listingPriority : 0;
+        return { store, effectivePriority };
+      }),
+    );
+    storesWithPriority.sort((a, b) => b.effectivePriority - a.effectivePriority);
+    return storesWithPriority.map((s) => s.store);
+  }
+
   async findAll(): Promise<Store[]> {
-    return this.storesRepository.find({
+    const stores = await this.storesRepository.find({
       where: { isActive: true },
       relations: ['owner', 'categories'],
     });
+    return this.sortByPriority(stores);
   }
 
   async findById(id: string): Promise<Store> {
@@ -102,7 +131,7 @@ export class StoresService {
   }
 
   async findNearby(lat: number, lng: number, radiusKm: number = 10): Promise<Store[]> {
-    return this.storesRepository
+    const stores = await this.storesRepository
       .createQueryBuilder('store')
       .leftJoinAndSelect('store.owner', 'owner')
       .where('store.isActive = :active', { active: true })
@@ -111,6 +140,7 @@ export class StoresService {
         { lat, lng, radius: radiusKm },
       )
       .getMany();
+    return this.sortByPriority(stores);
   }
 
   async update(input: UpdateStoreInput, owner: User): Promise<Store> {

@@ -21,6 +21,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { PlatformConfigModule } from './config/platform-config.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PubSubModule } from './pubsub/pubsub.module';
+import { CouponsModule } from './coupons/coupons.module';
 
 @Module({
   imports: [
@@ -81,6 +82,7 @@ import { PubSubModule } from './pubsub/pubsub.module';
     PaymentsModule,
     PlatformConfigModule,
     NotificationsModule,
+    CouponsModule,
   ],
 })
 export class AppModule {}

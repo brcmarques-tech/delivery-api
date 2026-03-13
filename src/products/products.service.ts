@@ -10,17 +10,42 @@ import { UpdateProductInput } from './dto/update-product.input';
 import { BulkCreateProductsInput, BulkImportResult } from './dto/bulk-create-products.input';
 import { BarcodeLookupResult } from './dto/barcode-lookup-result';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { Store } from '../stores/entities/store.entity';
+import { PlatformConfigService } from '../config/platform-config.service';
 
 @Injectable()
 export class ProductsService {
   constructor(
     @InjectRepository(Product)
     private productsRepository: Repository<Product>,
+    @InjectRepository(Store)
+    private storeRepository: Repository<Store>,
     @Inject(PUB_SUB) private pubSub: PubSub,
     private httpService: HttpService,
+    private platformConfigService: PlatformConfigService,
   ) {}
 
+  private async checkProductLimit(storeId: string): Promise<void> {
+    const store = await this.storeRepository.findOne({
+      where: { id: storeId },
+      relations: ['owner'],
+    });
+    if (!store?.owner) return;
+    const plan = store.owner.vendorPlan || 'FREE';
+    const config = await this.platformConfigService.getPlanConfig(plan);
+    if (config.maxProductsPerStore === 0) return; // 0 = ilimitado
+    const currentCount = await this.productsRepository.count({
+      where: { store: { id: storeId }, isActive: true },
+    });
+    if (currentCount >= config.maxProductsPerStore) {
+      throw new BadRequestException(
+        `Limite de produtos atingido (${config.maxProductsPerStore}). Faca upgrade do seu plano para adicionar mais produtos.`,
+      );
+    }
+  }
+
   async create(input: CreateProductInput): Promise<Product> {
+    await this.checkProductLimit(input.storeId);
     const isVariableWeight = input.isVariableWeight ?? false;
     const unit = input.unit ?? (isVariableWeight ? 'kg' : undefined);
     const product = this.productsRepository.create({
@@ -200,10 +225,34 @@ export class ProductsService {
   }
 
   async bulkCreate(input: BulkCreateProductsInput): Promise<BulkImportResult> {
+    // Check limit before starting bulk import
+    const store = await this.storeRepository.findOne({
+      where: { id: input.storeId },
+      relations: ['owner'],
+    });
+    const plan = store?.owner?.vendorPlan || 'FREE';
+    const config = await this.platformConfigService.getPlanConfig(plan);
+    const currentCount = await this.productsRepository.count({
+      where: { store: { id: input.storeId }, isActive: true },
+    });
+    const maxAllowed = config.maxProductsPerStore === 0 ? Infinity : config.maxProductsPerStore;
+    const slotsLeft = maxAllowed - currentCount;
+
+    if (slotsLeft <= 0 && config.maxProductsPerStore > 0) {
+      return {
+        created: 0,
+        errors: [`Limite de produtos atingido (${config.maxProductsPerStore}). Faca upgrade do seu plano.`],
+      };
+    }
+
     let created = 0;
     const errors: string[] = [];
 
     for (let i = 0; i < input.products.length; i++) {
+      if (created >= slotsLeft) {
+        errors.push(`Linha ${i + 1} (${input.products[i].name}): Limite de produtos atingido (${config.maxProductsPerStore})`);
+        continue;
+      }
       const item = input.products[i];
       try {
         const itemIsVariableWeight = item.isVariableWeight ?? false;

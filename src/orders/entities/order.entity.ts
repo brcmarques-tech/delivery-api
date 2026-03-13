@@ -15,6 +15,7 @@ import { Store } from '../../stores/entities/store.entity';
 import { OrderItem } from './order-item.entity';
 import { Delivery } from '../../deliveries/entities/delivery.entity';
 import { Address } from '../../addresses/entities/address.entity';
+import { Coupon } from '../../coupons/entities/coupon.entity';
 
 @ObjectType()
 @Entity('orders')
@@ -67,6 +68,14 @@ export class Order {
   @Column({ default: false })
   isPickup: boolean;
 
+  @Field(() => Float, { nullable: true })
+  @Column('decimal', { precision: 5, scale: 2, nullable: true })
+  commissionPercent: number;
+
+  @Field(() => Float, { nullable: true })
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  commissionAmount: number;
+
   @Field({ nullable: true })
   @Column({ nullable: true })
   notes: string;
@@ -98,6 +107,18 @@ export class Order {
   @Field(() => Delivery, { nullable: true })
   @OneToOne(() => Delivery, (delivery) => delivery.order)
   delivery: Delivery;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  couponCode: string;
+
+  @Field(() => Float, { nullable: true })
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  discount: number;
+
+  @Field(() => Coupon, { nullable: true })
+  @ManyToOne(() => Coupon, { nullable: true })
+  coupon: Coupon;
 
   @Field({ nullable: true })
   @Column({ nullable: true })

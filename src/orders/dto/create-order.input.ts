@@ -45,4 +45,8 @@ export class CreateOrderInput {
 
   @Field({ nullable: true, defaultValue: 'ON_DELIVERY' })
   paymentMethod?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  couponCode?: string;
 }

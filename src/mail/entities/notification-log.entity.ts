@@ -36,6 +36,10 @@ export class NotificationLog {
   @Column({ type: 'varchar', nullable: true })
   error: string | null;
 
+  @Field(() => String, { nullable: true })
+  @Column({ type: 'varchar', nullable: true })
+  vendorId: string | null;
+
   @Field()
   @Column({ default: 0 })
   retryCount: number;
