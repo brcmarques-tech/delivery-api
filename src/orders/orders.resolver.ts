@@ -9,7 +9,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { User } from '../users/entities/user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole, OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
@@ -26,7 +26,7 @@ export class OrdersResolver {
   @UseGuards(GqlAuthGuard)
   createOrder(
     @Args('input') input: CreateOrderInput,
-    @CurrentUser() user: User,
+    @CurrentUser() user: AppUser,
   ): Promise<Order> {
     return this.ordersService.create(input, user);
   }
@@ -39,7 +39,7 @@ export class OrdersResolver {
 
   @Query(() => [Order])
   @UseGuards(GqlAuthGuard)
-  myOrders(@CurrentUser() user: User): Promise<Order[]> {
+  myOrders(@CurrentUser() user: AppUser): Promise<Order[]> {
     return this.ordersService.findByCustomer(user.id);
   }
 
@@ -68,11 +68,10 @@ export class OrdersResolver {
   @UseGuards(GqlAuthGuard)
   async confirmReceipt(
     @Args('orderId') orderId: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: AppUser,
   ): Promise<Order> {
     const order = await this.ordersService.confirmReceipt(orderId, user.id);
 
-    // Trigger deliverer payout after customer confirmation
     if (order.delivery?.id) {
       this.deliveriesService
         .processDelivererPayout(order.delivery.id)
@@ -88,7 +87,7 @@ export class OrdersResolver {
   updateOrderStatus(
     @Args('id') id: string,
     @Args('status', { type: () => OrderStatus }) status: OrderStatus,
-    @CurrentUser() user: User,
+    @CurrentUser() user: AppUser,
   ): Promise<Order> {
     return this.ordersService.updateStatus(id, status, user);
   }

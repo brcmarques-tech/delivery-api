@@ -10,7 +10,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { User } from '../users/entities/user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole, VerificationLevel } from '../common/enums';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { DelivererTrackerService } from '../deliveries/deliverer-tracker.service';
@@ -37,7 +37,7 @@ export class StoresResolver {
   @Roles(UserRole.VENDOR)
   createStore(
     @Args('input') input: CreateStoreInput,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Store> {
     return this.storesService.create(input, user);
   }
@@ -47,7 +47,7 @@ export class StoresResolver {
   @Roles(UserRole.VENDOR)
   updateStore(
     @Args('input') input: UpdateStoreInput,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Store> {
     return this.storesService.update(input, user);
   }
@@ -74,7 +74,7 @@ export class StoresResolver {
   @Query(() => [Store])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  myStores(@CurrentUser() user: User): Promise<Store[]> {
+  myStores(@CurrentUser() user: VendorUser): Promise<Store[]> {
     return this.storesService.findByOwner(user.id);
   }
 
@@ -83,9 +83,20 @@ export class StoresResolver {
   @Roles(UserRole.VENDOR)
   toggleStoreOpen(
     @Args('id') id: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Store> {
     return this.storesService.toggleOpen(id, user);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  requestVendorStoreDelete(
+    @Args('storeId') storeId: string,
+    @Args('password') password: string,
+    @CurrentUser() user: VendorUser,
+  ): Promise<boolean> {
+    return this.storesService.requestVendorStoreDelete(storeId, user.id, password);
   }
 
   @Query(() => [Store])
@@ -105,7 +116,6 @@ export class StoresResolver {
     const pricePerKm = await this.platformConfigService.getDeliveryPricePerKm();
     const basePrice = await this.platformConfigService.getDeliveryBasePrice();
 
-    // Haversine formula
     const R = 6371;
     const dLat = (customerLat - Number(store.latitude)) * Math.PI / 180;
     const dLng = (customerLng - Number(store.longitude)) * Math.PI / 180;
@@ -129,7 +139,6 @@ export class StoresResolver {
   ): Promise<number> {
     const store = await this.storesService.findById(storeId);
 
-    // Stores with own delivery use their static estimate
     if (store.hasOwnDelivery) {
       return store.estimatedDeliveryMinutes || 30;
     }
@@ -137,7 +146,6 @@ export class StoresResolver {
     const storeLat = Number(store.latitude);
     const storeLng = Number(store.longitude);
 
-    // Store → Customer distance (haversine)
     const R = 6371;
     const dLat1 = (customerLat - storeLat) * Math.PI / 180;
     const dLng1 = (customerLng - storeLng) * Math.PI / 180;
@@ -148,9 +156,8 @@ export class StoresResolver {
         Math.sin(dLng1 / 2) * Math.sin(dLng1 / 2);
     const storeToCustomerKm = R * 2 * Math.atan2(Math.sqrt(a1), Math.sqrt(1 - a1));
 
-    // Try to get nearest deliverer info
     const nearest = this.delivererTracker.getNearestDelivererInfo(storeLat, storeLng);
-    const delivererToStoreKm = nearest ? nearest.distanceKm : 3; // default 3km if no one online
+    const delivererToStoreKm = nearest ? nearest.distanceKm : 3;
     const vehicleType = nearest ? nearest.vehicleType : 'MOTO';
     const speed = VEHICLE_AVG_SPEEDS_KMH[vehicleType] || DEFAULT_AVG_SPEED_KMH;
 
@@ -168,6 +175,17 @@ export class StoresResolver {
     return this.storesService.toggleActive(id);
   }
 
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  requestStoreDelete(
+    @Args('storeId') storeId: string,
+    @Args('password') password: string,
+    @CurrentUser() user: any,
+  ): Promise<boolean> {
+    return this.storesService.requestStoreDelete(storeId, user.id, password);
+  }
+
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
@@ -181,7 +199,7 @@ export class StoresResolver {
   claimBadgeReward(
     @Args('storeId') storeId: string,
     @Args('level') level: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Store> {
     return this.verificationService.claimBadgeReward(storeId, level, user.id);
   }

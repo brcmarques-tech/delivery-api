@@ -9,7 +9,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { User } from '../users/entities/user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
@@ -26,25 +26,21 @@ export class PromotionsResolver {
   @Roles(UserRole.VENDOR)
   async createPromotion(
     @Args('input') input: CreatePromotionInput,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Promotion> {
     const promotion = await this.promotionsService.create(input, user);
 
     if (Number(promotion.adCost) === 0) {
-      // Free promotion (fully covered by badge credit) — activate immediately
       await this.promotionsService.markAsPaid(promotion.id);
       promotion.isPaid = true;
     } else {
-      // Generate checkout for payment
       try {
         const payment = await this.paymentsService.createPromotionCheckout(promotion, user);
         if (payment.checkoutUrl) {
           promotion.checkoutUrl = payment.checkoutUrl;
           await this.promotionsService.saveCheckoutUrl(promotion.id, payment.checkoutUrl);
         }
-      } catch {
-        // If MP fails, promotion is created but without checkout — admin can approve manually
-      }
+      } catch {}
     }
 
     return promotion;
@@ -58,7 +54,7 @@ export class PromotionsResolver {
   @Query(() => [Promotion])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  myPromotions(@CurrentUser() user: User): Promise<Promotion[]> {
+  myPromotions(@CurrentUser() user: VendorUser): Promise<Promotion[]> {
     return this.promotionsService.findByOwner(user.id);
   }
 
@@ -91,7 +87,7 @@ export class PromotionsResolver {
     @Args('productId') productId: string,
     @Args('promotionalPrice', { type: () => Float }) promotionalPrice: number,
     @Args('title') title: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Promotion> {
     return this.promotionsService.swapProduct(id, productId, promotionalPrice, title, user.id);
   }
@@ -101,7 +97,7 @@ export class PromotionsResolver {
   @Roles(UserRole.VENDOR)
   deletePromotion(
     @Args('id') id: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<boolean> {
     return this.promotionsService.delete(id, user.id);
   }

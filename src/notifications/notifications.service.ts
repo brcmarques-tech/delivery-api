@@ -1,7 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
-import { User } from '../users/entities/user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 
 interface ExpoPushMessage {
   to: string;
@@ -16,12 +17,14 @@ export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
   constructor(
-    @InjectRepository(User)
-    private usersRepository: Repository<User>,
+    @InjectRepository(AppUser)
+    private appUsersRepository: Repository<AppUser>,
+    @InjectRepository(VendorUser)
+    private vendorUsersRepository: Repository<VendorUser>,
   ) {}
 
-  async sendToUser(userId: string, title: string, body: string, data?: Record<string, any>): Promise<void> {
-    const user = await this.usersRepository.findOne({ where: { id: userId } });
+  async sendToAppUser(userId: string, title: string, body: string, data?: Record<string, any>): Promise<void> {
+    const user = await this.appUsersRepository.findOne({ where: { id: userId } });
     if (!user?.expoPushToken) return;
 
     await this.sendPushNotifications([{
@@ -33,12 +36,41 @@ export class NotificationsService {
     }]);
   }
 
+  async sendToVendorUser(userId: string, title: string, body: string, data?: Record<string, any>): Promise<void> {
+    const user = await this.vendorUsersRepository.findOne({ where: { id: userId } });
+    if (!user?.expoPushToken) return;
+
+    await this.sendPushNotifications([{
+      to: user.expoPushToken,
+      title,
+      body,
+      data,
+      sound: 'default',
+    }]);
+  }
+
+  async sendToUser(userId: string, title: string, body: string, data?: Record<string, any>): Promise<void> {
+    // Try app user first, then vendor
+    const appUser = await this.appUsersRepository.findOne({ where: { id: userId } });
+    if (appUser?.expoPushToken) {
+      await this.sendPushNotifications([{ to: appUser.expoPushToken, title, body, data, sound: 'default' }]);
+      return;
+    }
+    const vendorUser = await this.vendorUsersRepository.findOne({ where: { id: userId } });
+    if (vendorUser?.expoPushToken) {
+      await this.sendPushNotifications([{ to: vendorUser.expoPushToken, title, body, data, sound: 'default' }]);
+    }
+  }
+
   async sendToUsers(userIds: string[], title: string, body: string, data?: Record<string, any>): Promise<void> {
-    const users = await this.usersRepository.find({
+    const appUsers = await this.appUsersRepository.find({
+      where: { id: In(userIds) },
+    });
+    const vendorUsers = await this.vendorUsersRepository.find({
       where: { id: In(userIds) },
     });
 
-    const messages: ExpoPushMessage[] = users
+    const messages: ExpoPushMessage[] = [...appUsers, ...vendorUsers]
       .filter((u) => u.expoPushToken)
       .map((u) => ({
         to: u.expoPushToken,
@@ -54,7 +86,7 @@ export class NotificationsService {
   }
 
   async sendToStoreOwner(storeOwnerId: string, title: string, body: string, data?: Record<string, any>): Promise<void> {
-    await this.sendToUser(storeOwnerId, title, body, data);
+    await this.sendToVendorUser(storeOwnerId, title, body, data);
   }
 
   private async sendPushNotifications(messages: ExpoPushMessage[]): Promise<void> {

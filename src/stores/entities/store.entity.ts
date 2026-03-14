@@ -8,7 +8,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { User } from '../../users/entities/user.entity';
+import { VendorUser } from '../../users/entities/vendor-user.entity';
 import { Product } from '../../products/entities/product.entity';
 import { Category } from '../../categories/entities/category.entity';
 import { VerificationLevel } from '../../common/enums/verification-level.enum';
@@ -152,9 +152,16 @@ export class Store {
   @Column({ type: 'timestamp', nullable: true })
   commissionReductionExpiresAt: Date | null;
 
-  @Field(() => User)
-  @ManyToOne(() => User, (user) => user.stores)
-  owner: User;
+  // Token para confirmacao de exclusao
+  @Column({ nullable: true })
+  deleteToken: string;
+
+  @Column({ type: 'timestamp', nullable: true })
+  deleteTokenExpires: Date;
+
+  @Field(() => VendorUser)
+  @ManyToOne(() => VendorUser, (user) => user.stores)
+  owner: VendorUser;
 
   @Field(() => [Product], { nullable: true })
   @OneToMany(() => Product, (product) => product.store)

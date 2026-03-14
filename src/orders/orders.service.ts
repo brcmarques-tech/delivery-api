@@ -6,7 +6,7 @@ import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { Delivery } from '../deliveries/entities/delivery.entity';
 import { CreateOrderInput } from './dto/create-order.input';
-import { User } from '../users/entities/user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
 import { ProductsService } from '../products/products.service';
 import { StoresService } from '../stores/stores.service';
 import { PaymentsService } from '../payments/payments.service';
@@ -18,7 +18,6 @@ import { VerificationService } from '../stores/verification.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
-// Callback type for when order becomes READY
 type OnOrderReadyCallback = (order: Order) => void;
 
 const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
@@ -60,7 +59,7 @@ export class OrdersService {
     this.onOrderReadyCallback = callback;
   }
 
-  async create(input: CreateOrderInput, customer: User): Promise<Order> {
+  async create(input: CreateOrderInput, customer: AppUser): Promise<Order> {
     const store = await this.storesService.findById(input.storeId);
     const isPickup = input.isPickup || false;
 
@@ -71,8 +70,6 @@ export class OrdersService {
     let subtotal = 0;
     const items: OrderItem[] = [];
 
-    // Validate stock for all items before processing
-    // stock = 0 means untracked (unlimited). stock > 0 means tracked.
     for (const itemInput of input.items) {
       const product = await this.productsService.findById(itemInput.productId);
       if (product.stock > 0 && product.stock < itemInput.quantity) {
@@ -115,14 +112,12 @@ export class OrdersService {
     let deliveryFee = 0;
 
     if (!isPickup && input.deliveryLatitude && input.deliveryLongitude) {
-      // Check free delivery conditions
       const storeFreeDelivery = store.freeDelivery;
       const freeAbove = store.freeDeliveryAbove ? Number(store.freeDeliveryAbove) : null;
 
       if (storeFreeDelivery || (freeAbove && subtotal >= freeAbove)) {
         deliveryFee = 0;
       } else {
-        // Calculate delivery fee based on distance
         const pricePerKm = await this.platformConfigService.getDeliveryPricePerKm();
         const basePrice = await this.platformConfigService.getDeliveryBasePrice();
         const R = 6371;
@@ -139,7 +134,6 @@ export class OrdersService {
       }
     }
 
-    // Apply coupon discount if provided
     let discount = 0;
     let couponCode: string | undefined;
     let couponEntity: any = null;
@@ -156,13 +150,11 @@ export class OrdersService {
 
     const total = subtotal - discount + deliveryFee;
 
-    // Calculate commission based on vendor's plan
     const storeOwner = store.owner;
     const vendorPlan = storeOwner?.vendorPlan || 'FREE';
     const planConfig = await this.platformConfigService.getPlanConfig(vendorPlan);
     let commissionPercent = planConfig.commissionPercent;
 
-    // Apply badge commission reduction if active (temporary, 1 week per claim)
     if (
       store.commissionReductionPercent > 0 &&
       store.commissionReductionExpiresAt &&
@@ -177,21 +169,18 @@ export class OrdersService {
 
     const vendorMpConnected = storeOwner?.mpConnected ?? false;
 
-    // Vendedor sem MP conectado: só aceita pagamento na entrega
     if (!vendorMpConnected && paymentMethod !== 'ON_DELIVERY') {
       throw new BadRequestException(
         'Esta loja ainda nao aceita pagamentos online. Escolha pagamento na entrega ou retirada.',
       );
     }
 
-    // Vendedor sem MP + sem entrega propria: só permite retirada
     if (!vendorMpConnected && !store.hasOwnDelivery && !isPickup) {
       throw new BadRequestException(
         'Esta loja so aceita retirada no local no momento.',
       );
     }
 
-    // Pagamento na entrega só é permitido para lojas com entrega própria ou retirada
     if (paymentMethod === 'ON_DELIVERY' && !isPickup && !store.hasOwnDelivery) {
       throw new BadRequestException(
         'Pagamento na entrega nao disponivel para esta loja. Use PIX ou cartao.',
@@ -225,26 +214,22 @@ export class OrdersService {
     });
 
     const savedOrder = await this.ordersRepository.save(order);
-    // Ensure store with owner relation is available for payment methods (marketplace split)
     savedOrder.store = store;
 
-    // Increment coupon usage
     if (couponEntity) {
       await this.couponsService.incrementUsage(couponEntity.id);
     }
 
-    // Decrement stock for tracked products (stock > 0)
     for (const item of items) {
       if (item.product.stock > 0) {
         await this.productsService.decrementStock(item.product.id, item.quantity);
       }
     }
 
-    // Auto-save delivery address for future use
     if (!isPickup && input.deliveryAddress && input.deliveryLatitude && input.deliveryLongitude) {
       this.addressesService
         .saveFromOrder(input.deliveryAddress, input.deliveryLatitude, input.deliveryLongitude, customer)
-        .catch(() => {}); // Don't fail the order if address save fails
+        .catch(() => {});
     }
 
     if (paymentMethod === 'MERCADO_PAGO') {
@@ -259,16 +244,14 @@ export class OrdersService {
         savedOrder.pixQrCodeBase64 = qrCodeBase64;
         await this.ordersRepository.save(savedOrder);
       } catch (err: any) {
-        // PIX nao funciona no sandbox do Mercado Pago, so em producao
         throw new BadRequestException(
           'PIX nao disponivel no momento. Em ambiente de teste, use Mercado Pago ou pagamento na entrega.',
         );
       }
     }
 
-    // Notify store owner about new order
     if (store.owner?.id) {
-      this.notificationsService.sendToUser(
+      this.notificationsService.sendToVendorUser(
         store.owner.id,
         'Novo pedido!',
         `Pedido #${savedOrder.orderNumber} - R$ ${total.toFixed(2)}`,
@@ -276,7 +259,6 @@ export class OrdersService {
       ).catch(() => {});
     }
 
-    // Publish subscription events
     this.pubSub.publish('orderCreated', { orderCreated: savedOrder });
     this.pubSub.publish('orderUpdated', { orderUpdated: savedOrder });
 
@@ -367,7 +349,7 @@ export class OrdersService {
     return saved;
   }
 
-  async updateStatus(id: string, status: OrderStatus, user?: User): Promise<Order> {
+  async updateStatus(id: string, status: OrderStatus, user?: AppUser): Promise<Order> {
     const order = await this.findById(id);
 
     const allowed = STATUS_TRANSITIONS[order.status];
@@ -393,13 +375,11 @@ export class OrdersService {
     if (status === OrderStatus.DELIVERED && order.delivery) {
       order.delivery.deliveredAt = new Date();
       await this.deliveriesRepository.save(order.delivery);
-      // Update store verification score
       if (order.store?.id) {
         this.verificationService.onSaleCompleted(order.store.id).catch(() => {});
       }
     }
 
-    // Restore stock when order is cancelled
     if (status === OrderStatus.CANCELLED) {
       for (const item of order.items) {
         if (item.product) {
@@ -411,7 +391,6 @@ export class OrdersService {
     order.status = status;
     const saved = await this.ordersRepository.save(order);
 
-    // Notify customer about status change
     const statusMessages: Record<string, string> = {
       [OrderStatus.ACCEPTED]: 'Seu pedido foi aceito!',
       [OrderStatus.PREPARING]: 'Seu pedido esta sendo preparado',
@@ -423,7 +402,7 @@ export class OrdersService {
     };
 
     if (statusMessages[status] && order.customer?.id) {
-      this.notificationsService.sendToUser(
+      this.notificationsService.sendToAppUser(
         order.customer.id,
         `Pedido #${order.orderNumber}`,
         statusMessages[status],
@@ -431,12 +410,9 @@ export class OrdersService {
       ).catch(() => {});
     }
 
-    // Publish subscription event
     this.pubSub.publish('orderUpdated', { orderUpdated: saved });
 
-    // Trigger delivery offer when order is ready (skip for pickup orders)
     if (status === OrderStatus.READY && this.onOrderReadyCallback && !order.isPickup) {
-      // Reload with store relation for coordinates
       const full = await this.findById(saved.id);
       this.onOrderReadyCallback(full);
     }
@@ -467,7 +443,6 @@ export class OrdersService {
     item.weightGrams = actualWeightGrams;
     await this.orderItemsRepository.save(item);
 
-    // Reload full order items to recalculate totals
     const updatedOrder = await this.findById(order.id);
     const subtotal = updatedOrder.items.reduce((sum, i) => sum + Number(i.totalPrice), 0);
     updatedOrder.subtotal = subtotal;

@@ -6,16 +6,14 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
-  OneToOne,
 } from 'typeorm';
-import { UserRole, VendorPlan } from '../../common/enums';
-import { Store } from '../../stores/entities/store.entity';
+import { UserRole } from '../../common/enums';
 import { Order } from '../../orders/entities/order.entity';
 import { Address } from '../../addresses/entities/address.entity';
 
 @ObjectType()
-@Entity('users')
-export class User {
+@Entity('app_users')
+export class AppUser {
   @Field(() => ID)
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -47,11 +45,11 @@ export class User {
   @Column({ nullable: true })
   avatarUrl: string;
 
-  // Campos de entregador
   @Field({ nullable: true })
   @Column({ nullable: true })
   cpf: string;
 
+  // Campos de entregador
   @Field({ nullable: true })
   @Column({ nullable: true })
   vehicleType: string;
@@ -102,20 +100,6 @@ export class User {
   @Column({ type: 'timestamp', nullable: true })
   acceptedTermsAt: Date | null;
 
-  // Contrato de assinatura aceito
-  @Field(() => Date, { nullable: true })
-  @Column({ type: 'timestamp', nullable: true })
-  acceptedSubscriptionTermsAt: Date | null;
-
-  // Plano do vendedor
-  @Field(() => VendorPlan, { nullable: true })
-  @Column({ type: 'enum', enum: VendorPlan, nullable: true })
-  vendorPlan: VendorPlan | null;
-
-  @Field(() => Date, { nullable: true })
-  @Column({ type: 'timestamp', nullable: true })
-  planExpiresAt: Date | null;
-
   // Push notifications
   @Column({ nullable: true })
   expoPushToken: string;
@@ -124,7 +108,7 @@ export class User {
   @Column({ nullable: true })
   mpCustomerId: string;
 
-  // Mercado Pago Marketplace OAuth
+  // Mercado Pago para entregador
   @Field()
   @Column({ default: false })
   mpConnected: boolean;
@@ -138,10 +122,6 @@ export class User {
   @Column({ nullable: true })
   mpUserId: string;
 
-  @Field(() => [Store], { nullable: true })
-  @OneToMany(() => Store, (store) => store.owner)
-  stores: Store[];
-
   @Field(() => [Order], { nullable: true })
   @OneToMany(() => Order, (order) => order.customer)
   orders: Order[];
@@ -149,6 +129,22 @@ export class User {
   @Field(() => [Address], { nullable: true })
   @OneToMany(() => Address, (address) => address.user)
   addresses: Address[];
+
+  @Column({ nullable: true })
+  resetPasswordToken: string;
+
+  @Column({ nullable: true, type: 'timestamp' })
+  resetPasswordExpires: Date;
+
+  // Permissoes do superadmin (null = todas as permissoes)
+  @Field(() => String, { nullable: true })
+  @Column({ type: 'jsonb', nullable: true })
+  permissions: string | null;
+
+  // Email de notificacao do superadmin (diferente do email de login)
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  notificationEmail: string;
 
   @Field()
   @CreateDateColumn()

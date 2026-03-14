@@ -30,7 +30,8 @@ export class PaymentsController {
     @Res() res: express.Response,
   ): Promise<void> {
     const [userId, source] = state.split(':');
-    await this.paymentsService.handleMpOAuthCallback(code, userId);
+    const userType = source === 'app' ? 'app' : 'vendor';
+    await this.paymentsService.handleMpOAuthCallback(code, userId, userType);
     if (source === 'app') {
       res.redirect('delivery-app://profile?mp=connected');
     } else {

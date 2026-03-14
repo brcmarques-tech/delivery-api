@@ -9,7 +9,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { User } from '../users/entities/user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
@@ -27,7 +27,7 @@ export class DeliveriesResolver {
   @Roles(UserRole.DELIVERER)
   acceptDelivery(
     @Args('orderId') orderId: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: AppUser,
   ): Promise<Delivery> {
     return this.deliveriesService.acceptDelivery(orderId, user);
   }
@@ -45,7 +45,6 @@ export class DeliveriesResolver {
   async confirmDelivery(@Args('deliveryId') deliveryId: string): Promise<Delivery> {
     const delivery = await this.deliveriesService.confirmDelivery(deliveryId);
 
-    // Notify customer to confirm receipt (10-min timer)
     if (delivery.order?.id && delivery.deliveredAt) {
       this.gateway.emitDeliveryConfirmationRequired(
         delivery.order.id,
@@ -59,7 +58,7 @@ export class DeliveriesResolver {
   @Query(() => [Delivery])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.DELIVERER)
-  myDeliveries(@CurrentUser() user: User): Promise<Delivery[]> {
+  myDeliveries(@CurrentUser() user: AppUser): Promise<Delivery[]> {
     return this.deliveriesService.findByDeliverer(user.id);
   }
 
