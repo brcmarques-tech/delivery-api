@@ -122,6 +122,80 @@ export class MailService {
     }
   }
 
+  async sendPasswordResetEmail(to: string, name: string, token: string, resetUrl: string): Promise<void> {
+    const subject = 'bcmTech - Recuperacao de senha';
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+          <h2 style="color: #2D3436;">Ola, ${name}</h2>
+          <p style="color: #555; font-size: 16px; line-height: 1.6;">
+            Recebemos uma solicitacao para alterar sua senha. Clique no botao abaixo para criar uma nova senha. Este link expira em 1 hora.
+          </p>
+          <div style="text-align: center; margin-top: 30px;">
+            <a href="${resetUrl}" style="display: inline-block; background: #FF6B35; color: white; padding: 12px 30px; border-radius: 8px; font-size: 16px; font-weight: bold; text-decoration: none;">
+              Redefinir Senha
+            </a>
+          </div>
+          <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
+            Se voce nao solicitou esta alteracao, ignore este email.
+          </p>
+          <p style="color: #999; font-size: 12px; margin-top: 10px; text-align: center;">
+            Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
+          </p>
+        </div>
+      </div>
+    `;
+    try {
+      await this.sendEmail(to, subject, html);
+      this.logger.log(`Email de recuperacao de senha enviado para ${to}`);
+      await this.saveLog({ type: 'EMAIL', to, userName: name, subject, message: 'Recuperacao de senha solicitada', success: true, error: null });
+    } catch (error) {
+      this.logger.error(`Erro ao enviar email de recuperacao de senha para ${to}`, error);
+      await this.saveLog({ type: 'EMAIL', to, userName: name, subject, message: 'Recuperacao de senha solicitada', success: false, error: String(error) });
+    }
+  }
+
+  async sendStoreDeleteConfirmation(to: string, adminName: string, storeName: string, confirmUrl: string): Promise<void> {
+    const subject = 'bcmTech - Confirmar exclusao de loja';
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+          <h2 style="color: #2D3436;">Confirmar exclusao</h2>
+          <p style="color: #555; font-size: 16px; line-height: 1.6;">
+            Ola <strong>${adminName}</strong>, voce solicitou a exclusao da loja <strong>"${storeName}"</strong>.
+          </p>
+          <div style="background: #fff3f3; border-left: 4px solid #E74C3C; padding: 15px; margin: 20px 0; border-radius: 0 8px 8px 0;">
+            <p style="color: #E74C3C; font-weight: bold; margin: 0;">Atencao: esta acao e irreversivel!</p>
+            <p style="color: #555; margin: 5px 0 0 0;">Todos os produtos, categorias e dados da loja serao removidos permanentemente.</p>
+          </div>
+          <div style="text-align: center; margin-top: 30px;">
+            <a href="${confirmUrl}" style="display: inline-block; background: #E74C3C; color: white; padding: 14px 40px; border-radius: 8px; font-size: 16px; font-weight: bold; text-decoration: none;">
+              Confirmar Exclusao
+            </a>
+          </div>
+          <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
+            Este link expira em 30 minutos. Se voce nao solicitou esta acao, ignore este email.
+          </p>
+        </div>
+      </div>
+    `;
+    try {
+      await this.sendEmail(to, subject, html);
+      this.logger.log(`Email de confirmacao de exclusao de loja enviado para ${to}`);
+      await this.saveLog({ type: 'EMAIL', to, userName: adminName, subject, message: `Confirmacao de exclusao da loja "${storeName}"`, success: true, error: null });
+    } catch (error) {
+      this.logger.error(`Erro ao enviar email de exclusao para ${to}`, error);
+      await this.saveLog({ type: 'EMAIL', to, userName: adminName, subject, message: `Confirmacao de exclusao da loja "${storeName}"`, success: false, error: String(error) });
+      throw error;
+    }
+  }
+
   async resendEmail(log: NotificationLog): Promise<boolean> {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">

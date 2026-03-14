@@ -10,7 +10,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { OrderStatus } from '../../common/enums';
-import { User } from '../../users/entities/user.entity';
+import { AppUser } from '../../users/entities/app-user.entity';
 import { Store } from '../../stores/entities/store.entity';
 import { OrderItem } from './order-item.entity';
 import { Delivery } from '../../deliveries/entities/delivery.entity';
@@ -46,7 +46,7 @@ export class Order {
 
   @Field({ nullable: true })
   @Column({ nullable: true })
-  paymentMethod: string; // 'MERCADO_PAGO' | 'PIX' | 'ON_DELIVERY'
+  paymentMethod: string;
 
   @Field({ nullable: true })
   @Column({ nullable: true })
@@ -92,9 +92,9 @@ export class Order {
   @Column('decimal', { precision: 10, scale: 7, nullable: true })
   deliveryLongitude: number;
 
-  @Field(() => User)
-  @ManyToOne(() => User, (user) => user.orders)
-  customer: User;
+  @Field(() => AppUser)
+  @ManyToOne(() => AppUser, (user) => user.orders)
+  customer: AppUser;
 
   @Field(() => Store)
   @ManyToOne(() => Store)

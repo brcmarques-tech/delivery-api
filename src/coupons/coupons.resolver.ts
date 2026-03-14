@@ -8,7 +8,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { User } from '../users/entities/user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole } from '../common/enums';
 import { CouponValidation } from './coupon-validation.type';
 
@@ -20,7 +20,7 @@ export class CouponsResolver {
   @UseGuards(GqlAuthGuard)
   createCoupon(
     @Args('input') input: CreateCouponInput,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Coupon> {
     return this.couponsService.create(input, user.id);
   }
@@ -29,7 +29,7 @@ export class CouponsResolver {
   @UseGuards(GqlAuthGuard)
   updateCoupon(
     @Args('input') input: UpdateCouponInput,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Coupon> {
     return this.couponsService.update(input, user.id);
   }
@@ -38,7 +38,7 @@ export class CouponsResolver {
   @UseGuards(GqlAuthGuard)
   toggleCouponActive(
     @Args('id') id: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Coupon> {
     return this.couponsService.toggleActive(id, user.id);
   }
@@ -47,7 +47,7 @@ export class CouponsResolver {
   @UseGuards(GqlAuthGuard)
   deleteCoupon(
     @Args('id') id: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<boolean> {
     return this.couponsService.delete(id, user.id);
   }

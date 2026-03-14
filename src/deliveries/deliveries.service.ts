@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, IsNull } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
 import { Delivery } from './entities/delivery.entity';
-import { User } from '../users/entities/user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
 import { OrdersService } from '../orders/orders.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { PaymentsService } from '../payments/payments.service';
@@ -24,7 +24,6 @@ export class DeliveriesService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    // When an order becomes READY, start the delivery offer cascade
     this.ordersService.onOrderReady((order) => {
       const store = order.store;
       if (!store) return;
@@ -41,7 +40,7 @@ export class DeliveriesService implements OnModuleInit {
     });
   }
 
-  async acceptDelivery(orderId: string, deliverer: User): Promise<Delivery> {
+  async acceptDelivery(orderId: string, deliverer: AppUser): Promise<Delivery> {
     if (!deliverer.mpConnected) {
       throw new BadRequestException(
         'Conecte sua conta Mercado Pago para aceitar entregas.',
@@ -91,7 +90,6 @@ export class DeliveriesService implements OnModuleInit {
     const savedDelivery = await this.deliveriesRepository.save(delivery);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
 
-    // For app deliverer orders with online payment: pay vendor now (escrow release)
     const order = delivery.order;
     if (!order.store?.hasOwnDelivery && order.paymentMethod !== 'ON_DELIVERY') {
       const vendorAmount = Number(order.subtotal);
@@ -122,7 +120,6 @@ export class DeliveriesService implements OnModuleInit {
     delivery.deliveredAt = new Date();
     await this.ordersService.updateStatus(delivery.order.id, OrderStatus.DELIVERED);
 
-    // For app deliverer: mark payout as pending customer confirmation
     const order = delivery.order;
     if (!order.store?.hasOwnDelivery) {
       const payoutAmount = Number(order.deliveryFee);
@@ -137,7 +134,6 @@ export class DeliveriesService implements OnModuleInit {
     return savedDelivery2;
   }
 
-  /** Called when customer confirms receipt or after 10-min auto-confirm */
   async processDelivererPayout(deliveryId: string): Promise<void> {
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
@@ -160,7 +156,6 @@ export class DeliveriesService implements OnModuleInit {
     await this.deliveriesRepository.save(delivery);
   }
 
-  /** Find deliveries waiting for customer confirmation that expired (10 min) */
   async findExpiredPendingConfirmations(): Promise<Delivery[]> {
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
     return this.deliveriesRepository

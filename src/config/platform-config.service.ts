@@ -3,7 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PlatformConfig } from './entities/platform-config.entity';
 import { PlanConfig } from '../common/plan-config';
-import { User } from '../users/entities/user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole } from '../common/enums';
 
 @Injectable()
@@ -11,8 +12,10 @@ export class PlatformConfigService {
   constructor(
     @InjectRepository(PlatformConfig)
     private configRepository: Repository<PlatformConfig>,
-    @InjectRepository(User)
-    private usersRepository: Repository<User>,
+    @InjectRepository(AppUser)
+    private appUsersRepository: Repository<AppUser>,
+    @InjectRepository(VendorUser)
+    private vendorUsersRepository: Repository<VendorUser>,
   ) {}
 
   async get(key: string, defaultValue: string = '0'): Promise<string> {
@@ -137,24 +140,31 @@ export class PlatformConfigService {
     // Reset acceptance for the affected users so they must re-accept
     if (type === 'subscription') {
       // Subscription contract: reset only vendors' subscription acceptance
-      await this.usersRepository
+      await this.vendorUsersRepository
         .createQueryBuilder()
-        .update(User)
+        .update(VendorUser)
         .set({ acceptedSubscriptionTermsAt: null as any })
         .where('acceptedSubscriptionTermsAt IS NOT NULL')
         .execute();
+    } else if (type === 'vendor') {
+      // Vendor terms: reset acceptedTermsAt for all vendors
+      await this.vendorUsersRepository
+        .createQueryBuilder()
+        .update(VendorUser)
+        .set({ acceptedTermsAt: null as any })
+        .where('acceptedTermsAt IS NOT NULL')
+        .execute();
     } else {
-      // Role-specific terms: reset acceptedTermsAt for that role only
+      // App user terms (customer, deliverer): reset by role
       const roleMap: Record<string, UserRole> = {
-        vendor: UserRole.VENDOR,
         customer: UserRole.CUSTOMER,
         deliverer: UserRole.DELIVERER,
       };
       const role = roleMap[type];
       if (role) {
-        await this.usersRepository
+        await this.appUsersRepository
           .createQueryBuilder()
-          .update(User)
+          .update(AppUser)
           .set({ acceptedTermsAt: null as any })
           .where('acceptedTermsAt IS NOT NULL AND role = :role', { role })
           .execute();

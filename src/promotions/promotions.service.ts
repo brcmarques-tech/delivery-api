@@ -7,7 +7,7 @@ import { CreatePromotionInput } from './dto/create-promotion.input';
 import { StoresService } from '../stores/stores.service';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { Product } from '../products/entities/product.entity';
-import { User } from '../users/entities/user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
@@ -25,9 +25,7 @@ export class PromotionsService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    // Check for expired promotions every 30 minutes
     setInterval(() => this.clearExpiredPromotions(), 30 * 60 * 1000);
-    // Also run on startup
     this.clearExpiredPromotions();
   }
 
@@ -55,7 +53,7 @@ export class PromotionsService implements OnModuleInit {
     }
   }
 
-  async create(input: CreatePromotionInput, user: User): Promise<Promotion> {
+  async create(input: CreatePromotionInput, user: VendorUser): Promise<Promotion> {
     const store = await this.storesService.findById(input.storeId);
     if (store.owner.id !== user.id) {
       throw new BadRequestException('Voce nao e o dono dessa loja.');
@@ -64,7 +62,6 @@ export class PromotionsService implements OnModuleInit {
     const hasBadgeCredit = store.freePromoDaysCredit > 0;
     const planConfig = await this.platformConfigService.getPlanConfig(user.vendorPlan || 'FREE');
 
-    // Skip plan restriction if store has badge free promo days credit
     if (!hasBadgeCredit) {
       if (planConfig.freePromosPerWeek <= 0) {
         throw new BadRequestException(
@@ -72,7 +69,6 @@ export class PromotionsService implements OnModuleInit {
         );
       }
 
-      // Count promotions created this week by this user
       const now = new Date();
       const startOfWeek = new Date(now);
       startOfWeek.setDate(now.getDate() - now.getDay());
@@ -100,13 +96,11 @@ export class PromotionsService implements OnModuleInit {
       if (!product) throw new NotFoundException('Produto nao encontrado');
     }
 
-    // Calculate ad cost with discount
     const pricePerDay = await this.platformConfigService.getPromoPricePerDay();
     const start = new Date(input.startDate);
     const end = new Date(input.endDate);
     const totalDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
 
-    // Apply badge free promo days credit
     let paidDays = totalDays;
     let usedFreeDays = 0;
     if (store.freePromoDaysCredit > 0) {
@@ -134,7 +128,6 @@ export class PromotionsService implements OnModuleInit {
     const saved = await this.promotionsRepository.save(promotion);
     this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
 
-    // Deduct used free promo days from store credit
     if (usedFreeDays > 0) {
       store.freePromoDaysCredit = Math.max(0, store.freePromoDaysCredit - usedFreeDays);
       await this.storesService.saveStore(store);
@@ -202,7 +195,6 @@ export class PromotionsService implements OnModuleInit {
     promotion.isPaid = true;
     const saved = await this.promotionsRepository.save(promotion);
     this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
-    // Apply promotional price to the product
     if (promotion.product && promotion.promotionalPrice) {
       const now = new Date();
       const start = new Date(promotion.startDate);
@@ -212,7 +204,6 @@ export class PromotionsService implements OnModuleInit {
           promotionalPrice: promotion.promotionalPrice,
         });
         this.logger.log(`Applied promotionalPrice ${promotion.promotionalPrice} to product ${promotion.product.id}`);
-        // Notify subscribers so store page refreshes immediately
         const updatedProduct = await this.productsRepository.findOne({
           where: { id: promotion.product.id },
           relations: ['category', 'store'],
@@ -234,7 +225,6 @@ export class PromotionsService implements OnModuleInit {
     if (promotion.store.owner.id !== userId) {
       throw new BadRequestException('Voce nao e o dono dessa promocao.');
     }
-    // Clear old product's promotional price
     if (promotion.product && promotion.isPaid) {
       await this.productsRepository.update(promotion.product.id, { promotionalPrice: null as any });
     }
@@ -248,7 +238,6 @@ export class PromotionsService implements OnModuleInit {
     if (product.imageUrl) promotion.imageUrl = product.imageUrl;
     const saved = await this.promotionsRepository.save(promotion);
     this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
-    // Apply new promotional price if promotion is active
     if (promotion.isPaid) {
       const now = new Date();
       const end = new Date(promotion.endDate);
@@ -268,7 +257,6 @@ export class PromotionsService implements OnModuleInit {
     if (promotion.store.owner.id !== userId) {
       throw new BadRequestException('Voce nao e o dono dessa promocao.');
     }
-    // Clear product's promotional price
     if (promotion.product && promotion.isPaid) {
       await this.productsRepository.update(promotion.product.id, { promotionalPrice: null as any });
     }

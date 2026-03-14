@@ -5,7 +5,7 @@ import { AddressesService } from './addresses.service';
 import { CreateAddressInput } from './dto/create-address.input';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { User } from '../users/entities/user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
 
 @Resolver(() => Address)
 export class AddressesResolver {
@@ -13,7 +13,7 @@ export class AddressesResolver {
 
   @Query(() => [Address])
   @UseGuards(GqlAuthGuard)
-  myAddresses(@CurrentUser() user: User): Promise<Address[]> {
+  myAddresses(@CurrentUser() user: AppUser): Promise<Address[]> {
     return this.addressesService.findByUser(user.id);
   }
 
@@ -21,7 +21,7 @@ export class AddressesResolver {
   @UseGuards(GqlAuthGuard)
   createAddress(
     @Args('input') input: CreateAddressInput,
-    @CurrentUser() user: User,
+    @CurrentUser() user: AppUser,
   ): Promise<Address> {
     return this.addressesService.create(input, user);
   }
@@ -30,7 +30,7 @@ export class AddressesResolver {
   @UseGuards(GqlAuthGuard)
   setDefaultAddress(
     @Args('id') id: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: AppUser,
   ): Promise<Address> {
     return this.addressesService.setDefault(id, user.id);
   }
@@ -39,7 +39,7 @@ export class AddressesResolver {
   @UseGuards(GqlAuthGuard)
   deleteAddress(
     @Args('id') id: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: AppUser,
   ): Promise<boolean> {
     return this.addressesService.delete(id, user.id);
   }

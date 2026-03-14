@@ -1,0 +1,104 @@
+import { Controller, Get, Post, Query, Body, Res, BadRequestException } from '@nestjs/common';
+import * as express from 'express';
+import { AuthService } from './auth.service';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private authService: AuthService) {}
+
+  @Get('reset-password')
+  async resetPasswordPage(
+    @Query('token') token: string,
+    @Query('type') type: string,
+    @Res() res: express.Response,
+  ) {
+    if (!token) {
+      return res.status(400).send(this.renderHtml('Erro', 'Token nao fornecido.', true));
+    }
+    return res.send(this.renderHtml('Redefinir Senha', '', false, token, type || 'app'));
+  }
+
+  @Post('reset-password')
+  async resetPasswordSubmit(
+    @Body('token') token: string,
+    @Body('newPassword') newPassword: string,
+    @Body('confirmPassword') confirmPassword: string,
+    @Body('type') type: string,
+    @Res() res: express.Response,
+  ) {
+    if (!token) {
+      return res.status(400).send(this.renderHtml('Erro', 'Token nao fornecido.', true));
+    }
+    if (!newPassword || newPassword.length < 6) {
+      return res.send(this.renderHtml('Redefinir Senha', 'A senha deve ter pelo menos 6 caracteres.', false, token, type));
+    }
+    if (newPassword !== confirmPassword) {
+      return res.send(this.renderHtml('Redefinir Senha', 'As senhas nao coincidem.', false, token, type));
+    }
+
+    try {
+      if (type === 'vendor') {
+        await this.authService.resetPasswordVendor(token, newPassword);
+      } else {
+        await this.authService.resetPasswordApp(token, newPassword);
+      }
+      return res.send(this.renderHtml('Senha alterada!', 'Sua senha foi alterada com sucesso. Voce ja pode fazer login no aplicativo.', true));
+    } catch (err: any) {
+      const msg = err?.message || 'Erro ao redefinir senha.';
+      return res.send(this.renderHtml('Redefinir Senha', msg, false, token, type));
+    }
+  }
+
+  private renderHtml(title: string, message: string, isResult: boolean, token?: string, type?: string): string {
+    return `<!DOCTYPE html>
+<html lang="pt-BR"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title} - bcmTech Delivery</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23FF6B35'/><text x='50' y='72' font-size='60' font-weight='bold' font-family='Arial' fill='white' text-anchor='middle'>B</text></svg>">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f5f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .card { background: white; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); width: 100%; max-width: 420px; overflow: hidden; }
+    .header { background: #F97316; padding: 24px; text-align: center; }
+    .header h1 { color: white; font-size: 20px; font-weight: 700; }
+    .body { padding: 32px 24px; }
+    .body h2 { color: #2D3436; font-size: 22px; margin-bottom: 8px; text-align: center; }
+    .error { background: #FEF2F2; color: #DC2626; padding: 12px; border-radius: 10px; font-size: 14px; margin-bottom: 16px; text-align: center; }
+    .success { background: #F0FDF4; color: #16A34A; padding: 16px; border-radius: 10px; font-size: 15px; text-align: center; line-height: 1.5; }
+    .field { margin-bottom: 16px; }
+    .field label { display: block; font-size: 13px; color: #666; margin-bottom: 6px; font-weight: 500; }
+    .field input { width: 100%; padding: 14px 16px; border: 1px solid #E5E7EB; border-radius: 12px; font-size: 16px; color: #333; outline: none; transition: border-color 0.2s; }
+    .field input:focus { border-color: #F97316; }
+    .btn { width: 100%; padding: 14px; background: #F97316; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; }
+    .btn:hover { background: #EA580C; }
+    .btn:active { transform: scale(0.98); }
+    .footer { text-align: center; padding: 16px 24px 24px; font-size: 12px; color: #999; }
+  </style>
+</head><body>
+  <div class="card">
+    <div class="header"><h1>bcmTech Delivery</h1></div>
+    <div class="body">
+      <h2>${title}</h2>
+      ${isResult ? `<div class="success" style="margin-top: 16px;">${message}</div>` : `
+        ${message ? `<div class="error">${message}</div>` : ''}
+        <form method="POST" action="/auth/reset-password" style="margin-top: 16px;">
+          <input type="hidden" name="token" value="${token || ''}">
+          <input type="hidden" name="type" value="${type || 'app'}">
+          <div class="field">
+            <label>Nova senha</label>
+            <input type="password" name="newPassword" placeholder="Minimo 6 caracteres" required minlength="6">
+          </div>
+          <div class="field">
+            <label>Confirmar senha</label>
+            <input type="password" name="confirmPassword" placeholder="Repita a senha" required minlength="6">
+          </div>
+          <button type="submit" class="btn">Redefinir Senha</button>
+        </form>
+      `}
+    </div>
+    <div class="footer">bcmTech Delivery - Arroio Grande, RS</div>
+  </div>
+</body></html>`;
+  }
+}

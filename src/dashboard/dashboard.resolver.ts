@@ -4,7 +4,8 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
-import { UsersService } from '../users/users.service';
+import { AppUsersService } from '../users/app-users.service';
+import { VendorUsersService } from '../users/vendor-users.service';
 import { StoresService } from '../stores/stores.service';
 import { OrdersService } from '../orders/orders.service';
 import { DeliveriesService } from '../deliveries/deliveries.service';
@@ -71,7 +72,8 @@ class DashboardStats {
 @Resolver()
 export class DashboardResolver {
   constructor(
-    private usersService: UsersService,
+    private appUsersService: AppUsersService,
+    private vendorUsersService: VendorUsersService,
     private storesService: StoresService,
     private ordersService: OrdersService,
     private deliveriesService: DeliveriesService,
@@ -84,32 +86,39 @@ export class DashboardResolver {
   @Roles(UserRole.SUPERADMIN)
   async dashboardStats(): Promise<DashboardStats> {
     const [
-      totalUsers, totalStores, totalOrders, totalRevenue, platformRevenue,
-      usersByRole, ordersByStatus, pendingApprovals,
+      appUserCount, vendorUserCount, totalStores, totalOrders, totalRevenue, platformRevenue,
+      appUsersByRole, ordersByStatus, appPendingCount, vendorPendingCount,
       totalDeliveries, activeDeliveries, completedDeliveries,
     ] = await Promise.all([
-      this.usersService.totalCount(),
+      this.appUsersService.totalCount(),
+      this.vendorUsersService.totalCount(),
       this.storesService.totalCount(),
       this.ordersService.totalCount(),
       this.ordersService.totalRevenue(),
       this.paymentsService.platformRevenue(),
-      this.usersService.countByRole(),
+      this.appUsersService.countByRole(),
       this.ordersService.countByStatus(),
-      this.usersService.pendingCount(),
+      this.appUsersService.pendingCount(),
+      this.vendorUsersService.pendingCount(),
       this.deliveriesService.totalCount(),
       this.deliveriesService.activeCount(),
       this.deliveriesService.completedCount(),
     ]);
 
+    const usersByRole = [
+      ...appUsersByRole.map((r) => ({ role: r.role, count: Number(r.count) })),
+      { role: 'VENDOR', count: Number(vendorUserCount) },
+    ];
+
     return {
-      totalUsers,
+      totalUsers: appUserCount + vendorUserCount,
       totalStores,
       totalOrders,
       totalRevenue,
       platformRevenue,
-      usersByRole: usersByRole.map((r) => ({ role: r.role, count: Number(r.count) })),
+      usersByRole,
       ordersByStatus: ordersByStatus.map((s) => ({ status: s.status, count: Number(s.count) })),
-      pendingApprovals,
+      pendingApprovals: appPendingCount + vendorPendingCount,
       totalDeliveries,
       activeDeliveries,
       completedDeliveries,

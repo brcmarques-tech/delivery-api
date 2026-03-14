@@ -1,128 +1,108 @@
 import { Resolver, Query, Mutation, Args, Int } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
-import { User } from './entities/user.entity';
-import { UsersService } from './users.service';
+import { VendorUser } from './entities/vendor-user.entity';
+import { VendorUsersService } from './vendor-users.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole, VendorPlan } from '../common/enums';
-import { RegisterDelivererInput } from './dto/register-deliverer.input';
 import { PlanInfo } from '../common/plan-info.type';
 import { PlatformConfigService } from '../config/platform-config.service';
 
-@Resolver(() => User)
-export class UsersResolver {
+@Resolver(() => VendorUser)
+export class VendorUsersResolver {
   constructor(
-    private usersService: UsersService,
+    private vendorUsersService: VendorUsersService,
     private platformConfigService: PlatformConfigService,
   ) {}
 
-  @Query(() => User)
+  @Query(() => VendorUser)
   @UseGuards(GqlAuthGuard)
-  me(@CurrentUser() user: User): User {
+  meVendor(@CurrentUser() user: VendorUser): VendorUser {
     return user;
   }
 
-  @Mutation(() => User)
-  @UseGuards(GqlAuthGuard)
-  registerAsDeliverer(
-    @Args('input') input: RegisterDelivererInput,
-    @CurrentUser() user: User,
-  ): Promise<User> {
-    return this.usersService.registerAsDeliverer(user.id, input);
-  }
-
-  @Query(() => [User])
+  @Query(() => [VendorUser])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  allUsers(): Promise<User[]> {
-    return this.usersService.findAll();
+  allVendorUsers(): Promise<VendorUser[]> {
+    return this.vendorUsersService.findAll();
   }
 
-  @Query(() => [User])
+  @Query(() => [VendorUser])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  pendingApprovals(): Promise<User[]> {
-    return this.usersService.findPendingApprovals();
+  pendingVendorApprovals(): Promise<VendorUser[]> {
+    return this.vendorUsersService.findPendingApprovals();
   }
 
-  @Mutation(() => User)
+  @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  approveUser(@Args('id') id: string): Promise<User> {
-    return this.usersService.approveUser(id);
+  approveVendorUser(@Args('id') id: string): Promise<VendorUser> {
+    return this.vendorUsersService.approveUser(id);
   }
 
-  @Mutation(() => User)
+  @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  rejectUser(
+  rejectVendorUser(
     @Args('id') id: string,
     @Args('reason') reason: string,
-  ): Promise<User> {
-    return this.usersService.rejectUser(id, reason);
+  ): Promise<VendorUser> {
+    return this.vendorUsersService.rejectUser(id, reason);
   }
 
-  @Mutation(() => User)
+  @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  updateUserRole(
-    @Args('id') id: string,
-    @Args('role', { type: () => UserRole }) role: UserRole,
-  ): Promise<User> {
-    return this.usersService.updateUserRole(id, role);
+  toggleVendorUserActive(@Args('id') id: string): Promise<VendorUser> {
+    return this.vendorUsersService.toggleUserActive(id);
   }
 
-  @Mutation(() => User)
-  @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPERADMIN)
-  toggleUserActive(@Args('id') id: string): Promise<User> {
-    return this.usersService.toggleUserActive(id);
-  }
-
-  @Mutation(() => User)
+  @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
   updateVendorPlan(
     @Args('id') id: string,
     @Args('plan', { type: () => VendorPlan }) plan: VendorPlan,
     @Args('durationMonths', { type: () => Int, defaultValue: 1 }) durationMonths: number,
-  ): Promise<User> {
-    return this.usersService.updateVendorPlan(id, plan, durationMonths);
+  ): Promise<VendorUser> {
+    return this.vendorUsersService.updateVendorPlan(id, plan, durationMonths);
   }
 
-  @Mutation(() => User)
+  @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard)
-  updateProfile(
-    @CurrentUser() user: User,
+  updateVendorProfile(
+    @CurrentUser() user: VendorUser,
     @Args('name', { nullable: true }) name?: string,
     @Args('phone', { nullable: true }) phone?: string,
     @Args('currentPassword', { nullable: true }) currentPassword?: string,
     @Args('newPassword', { nullable: true }) newPassword?: string,
-  ): Promise<User> {
-    return this.usersService.updateProfile(user.id, name, phone, currentPassword, newPassword);
+  ): Promise<VendorUser> {
+    return this.vendorUsersService.updateProfile(user.id, name, phone, currentPassword, newPassword);
   }
 
-  @Mutation(() => User)
+  @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard)
-  async acceptTerms(@CurrentUser() user: User): Promise<User> {
-    return this.usersService.acceptTerms(user.id);
+  async acceptVendorTerms(@CurrentUser() user: VendorUser): Promise<VendorUser> {
+    return this.vendorUsersService.acceptTerms(user.id);
   }
 
-  @Mutation(() => User)
+  @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard)
-  async acceptSubscriptionTerms(@CurrentUser() user: User): Promise<User> {
-    return this.usersService.acceptSubscriptionTerms(user.id);
+  async acceptSubscriptionTerms(@CurrentUser() user: VendorUser): Promise<VendorUser> {
+    return this.vendorUsersService.acceptSubscriptionTerms(user.id);
   }
 
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard)
-  async registerPushToken(
+  async registerVendorPushToken(
     @Args('token') token: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<boolean> {
-    await this.usersService.updatePushToken(user.id, token);
+    await this.vendorUsersService.updatePushToken(user.id, token);
     return true;
   }
 

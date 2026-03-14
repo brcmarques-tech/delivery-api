@@ -6,7 +6,7 @@ import {
   ManyToOne,
   CreateDateColumn,
 } from 'typeorm';
-import { User } from '../../users/entities/user.entity';
+import { AppUser } from '../../users/entities/app-user.entity';
 
 @ObjectType()
 @Entity('addresses')
@@ -55,9 +55,9 @@ export class Address {
   @Column({ default: false })
   isDefault: boolean;
 
-  @Field(() => User)
-  @ManyToOne(() => User, (user) => user.addresses)
-  user: User;
+  @Field(() => AppUser)
+  @ManyToOne(() => AppUser, (user) => user.addresses)
+  user: AppUser;
 
   @Field()
   @CreateDateColumn()

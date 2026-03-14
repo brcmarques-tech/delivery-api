@@ -1,12 +1,17 @@
-import { Injectable, NotFoundException, BadRequestException, Logger, Inject } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, UnauthorizedException, Logger, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
+import * as bcrypt from 'bcryptjs';
+import * as crypto from 'crypto';
 import { Store } from './entities/store.entity';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
-import { User } from '../users/entities/user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { MailService } from '../mail/mail.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
@@ -16,14 +21,16 @@ export class StoresService {
   constructor(
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
+    @InjectRepository(AppUser)
+    private appUsersRepository: Repository<AppUser>,
+    @InjectRepository(VendorUser)
+    private vendorUsersRepository: Repository<VendorUser>,
     private platformConfigService: PlatformConfigService,
+    private mailService: MailService,
+    private configService: ConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
-  /**
-   * Geocode an address to lat/lng using Nominatim (OpenStreetMap).
-   * Tries progressively simpler queries if the full address fails.
-   */
   private async geocodeAddress(input: CreateStoreInput): Promise<{ latitude: number; longitude: number }> {
     const queries = [
       `${input.street}, ${input.number}, ${input.neighborhood}, ${input.city}, ${input.state}, Brazil`,
@@ -54,7 +61,7 @@ export class StoresService {
     );
   }
 
-  async create(input: CreateStoreInput, owner: User): Promise<Store> {
+  async create(input: CreateStoreInput, owner: VendorUser): Promise<Store> {
     const planConfig = await this.platformConfigService.getPlanConfig(owner.vendorPlan || 'FREE');
     const currentStores = await this.storesRepository.count({
       where: { owner: { id: owner.id } },
@@ -66,7 +73,6 @@ export class StoresService {
       );
     }
 
-    // Geocode address if lat/lng not provided
     if (!input.latitude || !input.longitude) {
       const coords = await this.geocodeAddress(input);
       input.latitude = coords.latitude;
@@ -79,19 +85,13 @@ export class StoresService {
     return saved;
   }
 
-  /**
-   * Check if a store is within its highlight days for the current month.
-   */
   private isWithinHighlightDays(highlightDaysPerMonth: number): boolean {
     if (highlightDaysPerMonth >= 30) return true;
     if (highlightDaysPerMonth <= 0) return false;
-    const today = new Date().getDate(); // day of month (1-31)
+    const today = new Date().getDate();
     return today <= highlightDaysPerMonth;
   }
 
-  /**
-   * Sort stores by plan priority: higher priority first, then by highlight active status.
-   */
   private async sortByPriority(stores: Store[]): Promise<Store[]> {
     const storesWithPriority = await Promise.all(
       stores.map(async (store) => {
@@ -143,7 +143,7 @@ export class StoresService {
     return this.sortByPriority(stores);
   }
 
-  async update(input: UpdateStoreInput, owner: User): Promise<Store> {
+  async update(input: UpdateStoreInput, owner: VendorUser): Promise<Store> {
     const store = await this.storesRepository.findOne({
       where: { id: input.id, owner: { id: owner.id } },
     });
@@ -157,7 +157,7 @@ export class StoresService {
     return saved;
   }
 
-  async toggleOpen(id: string, owner: User): Promise<Store> {
+  async toggleOpen(id: string, owner: VendorUser): Promise<Store> {
     const store = await this.storesRepository.findOne({
       where: { id, owner: { id: owner.id } },
     });
@@ -182,6 +182,63 @@ export class StoresService {
     const saved = await this.storesRepository.save(store);
     this.pubSub.publish('storeUpdated', { storeUpdated: saved });
     return saved;
+  }
+
+  async requestStoreDelete(storeId: string, adminId: string, password: string): Promise<boolean> {
+    const admin = await this.appUsersRepository.findOne({ where: { id: adminId } });
+    if (!admin) throw new NotFoundException('Admin nao encontrado');
+
+    const passwordValid = await bcrypt.compare(password, admin.password);
+    if (!passwordValid) throw new UnauthorizedException('Senha incorreta');
+
+    const store = await this.storesRepository.findOne({ where: { id: storeId }, relations: ['owner'] });
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+
+    const token = crypto.randomBytes(32).toString('hex');
+    store.deleteToken = token;
+    store.deleteTokenExpires = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+    await this.storesRepository.save(store);
+
+    const apiUrl = this.configService.get('APP_URL', 'http://localhost:3000');
+    const confirmUrl = `${apiUrl}/stores/confirm-delete?token=${token}`;
+
+    const emailTo = admin.notificationEmail || admin.email;
+    await this.mailService.sendStoreDeleteConfirmation(emailTo, admin.name, store.name, confirmUrl);
+    return true;
+  }
+
+  async requestVendorStoreDelete(storeId: string, vendorId: string, password: string): Promise<boolean> {
+    const vendor = await this.vendorUsersRepository.findOne({ where: { id: vendorId } });
+    if (!vendor) throw new NotFoundException('Vendedor nao encontrado');
+
+    const passwordValid = await bcrypt.compare(password, vendor.password);
+    if (!passwordValid) throw new UnauthorizedException('Senha incorreta');
+
+    const store = await this.storesRepository.findOne({ where: { id: storeId, owner: { id: vendorId } } });
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+
+    const token = crypto.randomBytes(32).toString('hex');
+    store.deleteToken = token;
+    store.deleteTokenExpires = new Date(Date.now() + 30 * 60 * 1000);
+    await this.storesRepository.save(store);
+
+    const apiUrl = this.configService.get('APP_URL', 'http://localhost:3000');
+    const confirmUrl = `${apiUrl}/stores/confirm-delete?token=${token}`;
+
+    await this.mailService.sendStoreDeleteConfirmation(vendor.email, vendor.name, store.name, confirmUrl);
+    return true;
+  }
+
+  async confirmStoreDelete(token: string): Promise<string> {
+    const store = await this.storesRepository.findOne({ where: { deleteToken: token } });
+    if (!store) throw new BadRequestException('Token invalido');
+    if (!store.deleteTokenExpires || store.deleteTokenExpires < new Date()) {
+      throw new BadRequestException('Token expirado. Solicite a exclusao novamente.');
+    }
+
+    const storeName = store.name;
+    await this.storesRepository.remove(store);
+    return storeName;
   }
 
   async totalCount(): Promise<number> {

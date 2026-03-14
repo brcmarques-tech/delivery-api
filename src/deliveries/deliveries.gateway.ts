@@ -11,7 +11,7 @@ import { Server, Socket } from 'socket.io';
 import { DeliveriesService } from './deliveries.service';
 import { DelivererTrackerService } from './deliverer-tracker.service';
 import { DeliveryOfferService } from './delivery-offer.service';
-import { UsersService } from '../users/users.service';
+import { AppUsersService } from '../users/app-users.service';
 import { Inject, forwardRef } from '@nestjs/common';
 
 @WebSocketGateway({ cors: { origin: '*' } })
@@ -23,12 +23,11 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
     private deliveriesService: DeliveriesService,
     private trackerService: DelivererTrackerService,
     private offerService: DeliveryOfferService,
-    @Inject(forwardRef(() => UsersService))
-    private usersService: UsersService,
+    @Inject(forwardRef(() => AppUsersService))
+    private appUsersService: AppUsersService,
   ) {}
 
   afterInit() {
-    // Wire up the offer service emitters
     this.offerService.setEmitters(
       (socketId, event, data) => this.server.to(socketId).emit(event, data),
       (event, data) => this.server.emit(event, data),
@@ -38,8 +37,6 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
   handleDisconnect(client: Socket) {
     this.trackerService.removeBySocketId(client.id);
   }
-
-  // --- Delivery tracking (existing) ---
 
   @SubscribeMessage('joinOrder')
   handleJoinOrder(
@@ -67,17 +64,14 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
     });
   }
 
-  // --- Deliverer online/offline ---
-
   @SubscribeMessage('delivererOnline')
   async handleDelivererOnline(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { userId: string; latitude: number; longitude: number },
   ) {
-    // Fetch vehicle type from user profile
     let vehicleType = 'MOTO';
     try {
-      const user = await this.usersService.findById(data.userId);
+      const user = await this.appUsersService.findById(data.userId);
       if (user?.vehicleType) vehicleType = user.vehicleType;
     } catch {}
     this.trackerService.setOnline(data.userId, client.id, data.latitude, data.longitude, vehicleType);
@@ -102,8 +96,6 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
     return { status: 'offline' };
   }
 
-  // --- Delivery offers ---
-
   @SubscribeMessage('acceptOffer')
   handleAcceptOffer(
     @MessageBody() data: { orderId: string; delivererId: string },
@@ -119,8 +111,6 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
     this.offerService.declineOffer(data.orderId, data.delivererId);
     return { status: 'declined' };
   }
-
-  // --- Emitters for other services ---
 
   emitOrderStatusUpdate(orderId: string, status: string) {
     this.server.to(`order:${orderId}`).emit('orderStatusUpdate', { orderId, status });

@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Address } from './entities/address.entity';
-import { User } from '../users/entities/user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
 import { CreateAddressInput } from './dto/create-address.input';
 
 @Injectable()
@@ -12,7 +12,7 @@ export class AddressesService {
     private addressesRepository: Repository<Address>,
   ) {}
 
-  async create(input: CreateAddressInput, user: User): Promise<Address> {
+  async create(input: CreateAddressInput, user: AppUser): Promise<Address> {
     if (input.isDefault) {
       await this.addressesRepository.update(
         { user: { id: user.id } },
@@ -48,16 +48,12 @@ export class AddressesService {
     return true;
   }
 
-  /**
-   * Save address from a delivery order (avoids duplicates by checking street+number+city).
-   */
   async saveFromOrder(
     deliveryAddress: string,
     latitude: number,
     longitude: number,
-    user: User,
+    user: AppUser,
   ): Promise<void> {
-    // Check if a similar address already exists for this user
     const existing = await this.addressesRepository
       .createQueryBuilder('a')
       .where('a.userId = :userId', { userId: user.id })
@@ -67,9 +63,8 @@ export class AddressesService {
       )
       .getOne();
 
-    if (existing) return; // Already saved
+    if (existing) return;
 
-    // Parse what we can from the address string
     const parts = deliveryAddress.split(',').map((p) => p.trim());
     const address = this.addressesRepository.create({
       street: parts[0] || deliveryAddress,

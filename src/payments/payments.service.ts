@@ -4,11 +4,13 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { MercadoPagoConfig, Preference, Payment as MpPayment, Customer } from 'mercadopago';
 import { Payment } from './entities/payment.entity';
-import { User } from '../users/entities/user.entity';
+import { AppUser } from '../users/entities/app-user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Order } from '../orders/entities/order.entity';
 import { Promotion } from '../promotions/entities/promotion.entity';
-import { UsersService } from '../users/users.service';
+import { AppUsersService } from '../users/app-users.service';
+import { VendorUsersService } from '../users/vendor-users.service';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
@@ -24,8 +26,10 @@ export class PaymentsService {
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
     private configService: ConfigService,
-    @Inject(forwardRef(() => UsersService))
-    private usersService: UsersService,
+    @Inject(forwardRef(() => AppUsersService))
+    private appUsersService: AppUsersService,
+    @Inject(forwardRef(() => VendorUsersService))
+    private vendorUsersService: VendorUsersService,
     private platformConfigService: PlatformConfigService,
   ) {
     this.mpClient = new MercadoPagoConfig({
@@ -33,18 +37,16 @@ export class PaymentsService {
     });
   }
 
-  async createPlanUpgrade(user: User, plan: VendorPlan, billingPeriod: string = 'monthly'): Promise<Payment> {
+  async createPlanUpgrade(user: VendorUser, plan: VendorPlan, billingPeriod: string = 'monthly'): Promise<Payment> {
     const planConfig = PLAN_CONFIGS[plan];
     if (!planConfig || planConfig.monthlyPrice === 0) {
       throw new BadRequestException('Plano invalido para upgrade');
     }
 
-    // Check subscription terms accepted
     if (!user.acceptedSubscriptionTermsAt) {
       throw new BadRequestException('Voce precisa aceitar o contrato de assinatura antes de assinar um plano.');
     }
 
-    // Determine price and duration based on billing period
     const billingMap: Record<string, { price: number; months: number; label: string }> = {
       monthly: { price: planConfig.monthlyPrice, months: 1, label: 'Mensal' },
       quarterly: { price: planConfig.quarterlyPrice, months: 3, label: 'Trimestral' },
@@ -54,7 +56,6 @@ export class PaymentsService {
 
     const billing = billingMap[billingPeriod] || billingMap.monthly;
 
-    // Apply badge subscription discount (only from 2nd claim onwards)
     let badgeDiscount = 0;
     const stores = await this.storesRepository.find({
       where: { owner: { id: user.id } },
@@ -69,13 +70,12 @@ export class PaymentsService {
     }
     if (badgeDiscount > 0) {
       billing.price = Math.round(billing.price * (1 - badgeDiscount / 100) * 100) / 100;
-      this.logger.log(`Applied ${badgeDiscount}% badge subscription discount for user ${user.id}`);
+      this.logger.log(`Applied ${badgeDiscount}% badge subscription discount for vendor ${user.id}`);
     }
 
-    // Max installments based on billing period
     const maxInstallments = billing.months >= 12 ? 12 : billing.months >= 6 ? 6 : billing.months >= 3 ? 3 : 1;
 
-    const mpCustomerId = await this.getOrCreateMpCustomer(user);
+    const mpCustomerId = await this.getOrCreateMpCustomerVendor(user);
     const preference = new Preference(this.mpClient);
     const result = await preference.create({
       body: {
@@ -117,27 +117,23 @@ export class PaymentsService {
       mpPreferenceId: result.id,
       checkoutUrl: result.init_point,
       metadata: { plan, durationMonths: billing.months, billingPeriod },
-      user,
+      vendorUser: user,
     });
 
     return this.paymentsRepository.save(payment);
   }
 
-  private async getOrCreateMpCustomer(user: User): Promise<string | undefined> {
+  private async getOrCreateMpCustomerVendor(user: VendorUser): Promise<string | undefined> {
     if (user.mpCustomerId) return user.mpCustomerId;
 
     try {
       const customerApi = new Customer(this.mpClient);
-
-      // Search existing customer by email
       const search = await customerApi.search({ options: { email: user.email } });
       if (search.results && search.results.length > 0) {
         const mpCustomerId = search.results[0].id!;
-        await this.usersService.updateMpCustomerId(user.id, mpCustomerId);
+        await this.vendorUsersService.updateMpCustomerId(user.id, mpCustomerId);
         return mpCustomerId;
       }
-
-      // Create new customer
       const created = await customerApi.create({
         body: {
           email: user.email,
@@ -146,17 +142,41 @@ export class PaymentsService {
         },
       });
       if (created.id) {
-        await this.usersService.updateMpCustomerId(user.id, created.id);
+        await this.vendorUsersService.updateMpCustomerId(user.id, created.id);
         return created.id;
       }
-    } catch {
-      // Non-critical — proceed without saved cards
-    }
+    } catch {}
     return undefined;
   }
 
-  async createPromotionCheckout(promotion: Promotion, user: User): Promise<Payment> {
-    const mpCustomerId = await this.getOrCreateMpCustomer(user);
+  private async getOrCreateMpCustomerApp(user: AppUser): Promise<string | undefined> {
+    if (user.mpCustomerId) return user.mpCustomerId;
+
+    try {
+      const customerApi = new Customer(this.mpClient);
+      const search = await customerApi.search({ options: { email: user.email } });
+      if (search.results && search.results.length > 0) {
+        const mpCustomerId = search.results[0].id!;
+        await this.appUsersService.updateMpCustomerId(user.id, mpCustomerId);
+        return mpCustomerId;
+      }
+      const created = await customerApi.create({
+        body: {
+          email: user.email,
+          first_name: user.name.split(' ')[0],
+          last_name: user.name.split(' ').slice(1).join(' ') || undefined,
+        },
+      });
+      if (created.id) {
+        await this.appUsersService.updateMpCustomerId(user.id, created.id);
+        return created.id;
+      }
+    } catch {}
+    return undefined;
+  }
+
+  async createPromotionCheckout(promotion: Promotion, user: VendorUser): Promise<Payment> {
+    const mpCustomerId = await this.getOrCreateMpCustomerVendor(user);
     const preference = new Preference(this.mpClient);
     const result = await preference.create({
       body: {
@@ -195,24 +215,20 @@ export class PaymentsService {
       mpPreferenceId: result.id,
       checkoutUrl: result.init_point,
       metadata: { promotionId: promotion.id },
-      user,
+      vendorUser: user,
     });
 
     return this.paymentsRepository.save(payment);
   }
 
-  async createOrderCheckout(order: Order, customer: User): Promise<{ checkoutUrl: string; preferenceId: string }> {
-    const mpCustomerId = await this.getOrCreateMpCustomer(customer);
+  async createOrderCheckout(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string }> {
+    const mpCustomerId = await this.getOrCreateMpCustomerApp(customer);
 
-    // Determine payment flow:
-    // - Own delivery / pickup + vendor has MP: marketplace split (vendor gets paid immediately)
-    // - App deliverer: platform receives everything (escrow), pays vendor on pickup, deliverer on customer confirmation
     const store = order.store;
     const vendorToken = store?.owner?.mpAccessToken;
     const hasOwnDelivery = store?.hasOwnDelivery;
     const isAppDeliverer = !hasOwnDelivery && !order.isPickup;
 
-    // Only use marketplace split for own-delivery/pickup orders
     const useMarketplace = !!vendorToken && !isAppDeliverer;
     const client = useMarketplace
       ? new MercadoPagoConfig({ accessToken: vendorToken })
@@ -242,8 +258,7 @@ export class PaymentsService {
     return { checkoutUrl: result.init_point!, preferenceId: result.id! };
   }
 
-  async createOrderPix(order: Order, customer: User): Promise<{ qrCode: string; qrCodeBase64: string }> {
-    // Same escrow logic as checkout: app deliverer orders go through platform account
+  async createOrderPix(order: Order, customer: AppUser): Promise<{ qrCode: string; qrCodeBase64: string }> {
     const store = order.store;
     const vendorToken = store?.owner?.mpAccessToken;
     const hasOwnDelivery = store?.hasOwnDelivery;
@@ -284,7 +299,7 @@ export class PaymentsService {
     return `https://auth.mercadopago.com.br/authorization?client_id=${appId}&response_type=code&platform_id=mp&state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`;
   }
 
-  async handleMpOAuthCallback(code: string, userId: string): Promise<void> {
+  async handleMpOAuthCallback(code: string, userId: string, userType: string = 'vendor'): Promise<void> {
     const body = {
       client_secret: this.configService.get('MP_CLIENT_SECRET'),
       client_id: this.configService.get('MP_APP_ID'),
@@ -303,20 +318,33 @@ export class PaymentsService {
     console.log('MP OAuth response:', JSON.stringify(data));
 
     if (data.access_token) {
-      await this.usersService.updateMpCredentials(
-        userId,
-        data.access_token,
-        data.refresh_token,
-        String(data.user_id),
-      );
+      if (userType === 'app') {
+        await this.appUsersService.updateMpCredentials(
+          userId,
+          data.access_token,
+          data.refresh_token,
+          String(data.user_id),
+        );
+      } else {
+        await this.vendorUsersService.updateMpCredentials(
+          userId,
+          data.access_token,
+          data.refresh_token,
+          String(data.user_id),
+        );
+      }
       console.log('MP credentials saved for user:', userId);
     } else {
       console.error('MP OAuth failed:', data);
     }
   }
 
-  async disconnectMp(userId: string): Promise<void> {
-    await this.usersService.disconnectMp(userId);
+  async disconnectMpVendor(userId: string): Promise<void> {
+    await this.vendorUsersService.disconnectMp(userId);
+  }
+
+  async disconnectMpApp(userId: string): Promise<void> {
+    await this.appUsersService.disconnectMp(userId);
   }
 
   async handleWebhook(body: any): Promise<void> {
@@ -333,9 +361,8 @@ export class PaymentsService {
     if (!mpData || !mpData.external_reference) return;
 
     const externalRef = mpData.external_reference;
-    const status = mpData.status; // approved, pending, rejected
+    const status = mpData.status;
 
-    // Handle order payment
     if (externalRef.startsWith('order:')) {
       const orderId = externalRef.replace('order:', '');
       if (status === 'approved') {
@@ -349,7 +376,6 @@ export class PaymentsService {
       return;
     }
 
-    // Handle promotion payment
     if (externalRef.startsWith('promo:')) {
       const promotionId = externalRef.replace('promo:', '');
       if (status === 'approved') {
@@ -362,7 +388,6 @@ export class PaymentsService {
         if (promotion && !promotion.isPaid) {
           promotion.isPaid = true;
           await promoRepo.save(promotion);
-          // Apply promotional price to the product
           if (promotion.product && promotion.promotionalPrice) {
             const now = new Date();
             const start = new Date(promotion.startDate);
@@ -375,7 +400,6 @@ export class PaymentsService {
           }
         }
       }
-      // Update payment record
       const prefId = (mpData as any).preference_id;
       if (prefId) {
         const payment = await this.paymentsRepository.findOne({ where: { mpPreferenceId: prefId } });
@@ -391,12 +415,11 @@ export class PaymentsService {
     // Handle plan upgrade payment
     const [userId, plan, months] = externalRef.split(':');
 
-    // Find or update payment record
     const prefId = (mpData as any).preference_id;
     if (prefId) {
       const payment = await this.paymentsRepository.findOne({
         where: { mpPreferenceId: prefId },
-        relations: ['user'],
+        relations: ['vendorUser'],
       });
 
       if (payment) {
@@ -406,9 +429,8 @@ export class PaymentsService {
       }
     }
 
-    // If approved, activate the plan
     if (status === 'approved') {
-      await this.usersService.updateVendorPlan(
+      await this.vendorUsersService.updateVendorPlan(
         userId,
         plan as VendorPlan,
         parseInt(months) || 1,
@@ -417,7 +439,7 @@ export class PaymentsService {
   }
 
   async transferToVendor(vendorId: string, amount: number, orderId: string): Promise<{ success: boolean; mpId?: string }> {
-    const vendor = await this.usersService.findById(vendorId);
+    const vendor = await this.vendorUsersService.findById(vendorId);
     if (!vendor?.mpUserId) {
       return { success: false };
     }
@@ -450,7 +472,7 @@ export class PaymentsService {
           amount,
           status: data.status,
           mpPaymentId: String(data.id),
-          user: vendor,
+          vendorUser: vendor,
         });
         await this.paymentsRepository.save(payment);
         return { success: true, mpId: String(data.id) };
@@ -464,14 +486,12 @@ export class PaymentsService {
   }
 
   async transferToDeliverer(delivererId: string, amount: number, orderId: string): Promise<{ success: boolean; mpId?: string }> {
-    // Fetch the deliverer to get mpUserId
-    const deliverer = await this.usersService.findById(delivererId);
+    const deliverer = await this.appUsersService.findById(delivererId);
     if (!deliverer?.mpUserId) {
       return { success: false };
     }
 
     try {
-      // Use MP API to transfer from platform to deliverer
       const response = await fetch('https://api.mercadopago.com/v1/payments', {
         method: 'POST',
         headers: {
@@ -493,14 +513,13 @@ export class PaymentsService {
       const data = await response.json();
 
       if (data.id && (data.status === 'approved' || data.status === 'pending')) {
-        // Save payment record for audit
         const payment = this.paymentsRepository.create({
           type: 'DELIVERER_PAYOUT',
           description: `Repasse entrega - Pedido ${orderId}`,
           amount,
           status: data.status,
           mpPaymentId: String(data.id),
-          user: deliverer,
+          appUser: deliverer,
         });
         await this.paymentsRepository.save(payment);
 
@@ -514,16 +533,23 @@ export class PaymentsService {
     }
   }
 
-  async findByUser(userId: string): Promise<Payment[]> {
+  async findByVendor(userId: string): Promise<Payment[]> {
     return this.paymentsRepository.find({
-      where: { user: { id: userId } },
+      where: { vendorUser: { id: userId } },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async findByAppUser(userId: string): Promise<Payment[]> {
+    return this.paymentsRepository.find({
+      where: { appUser: { id: userId } },
       order: { createdAt: 'DESC' },
     });
   }
 
   async findAll(): Promise<Payment[]> {
     return this.paymentsRepository.find({
-      relations: ['user'],
+      relations: ['appUser', 'vendorUser'],
       order: { createdAt: 'DESC' },
     });
   }

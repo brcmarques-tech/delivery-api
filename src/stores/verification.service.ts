@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef,
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Store } from './entities/store.entity';
-import { User } from '../users/entities/user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 import { Coupon } from '../coupons/entities/coupon.entity';
 import { VerificationLevel } from '../common/enums/verification-level.enum';
 import { VendorPlan } from '../common/enums/vendor-plan.enum';
@@ -23,8 +23,8 @@ export class VerificationService {
   constructor(
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
-    @InjectRepository(User)
-    private usersRepository: Repository<User>,
+    @InjectRepository(VendorUser)
+    private vendorUsersRepository: Repository<VendorUser>,
     @InjectRepository(Coupon)
     private couponsRepository: Repository<Coupon>,
     @Inject(forwardRef(() => PlatformConfigService))
@@ -70,34 +70,28 @@ export class VerificationService {
     }
   }
 
-  /** Check if level changed from NONE to a badge and auto-grant first rewards */
   private async checkAutoGrant(store: Store, oldLevel: VerificationLevel): Promise<void> {
     if (oldLevel !== VerificationLevel.NONE) return;
     if (store.verificationLevel === VerificationLevel.NONE) return;
-    if (store.badgeClaimCount > 0) return; // already claimed before
+    if (store.badgeClaimCount > 0) return;
 
-    // First badge ever — auto-grant first-time rewards
     const rewards = await this.configService.getBadgeRewards(store.verificationLevel);
     const thresholds = await this.getThresholds();
     const threshold = thresholds[store.verificationLevel] || 0;
 
     this.logger.log(`Auto-granting first badge rewards to store ${store.id} (level: ${store.verificationLevel})`);
 
-    // Grant free promo days credit (not cumulative — replaces)
     store.freePromoDaysCredit = rewards.freePromoDays || 0;
 
-    // Grant commission reduction for 1 week (not cumulative — replaces)
     if (rewards.commissionReduction > 0) {
       store.commissionReductionPercent = rewards.commissionReduction;
       store.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     }
 
-    // Grant free trial days (extend planExpiresAt)
     if (rewards.freeTrialDays > 0 && store.owner?.id) {
       await this.grantTrialDays(store.owner.id, rewards.freeTrialDays);
     }
 
-    // Update claim tracking
     store.badgeClaimCount = 1;
     store.lastClaimedScore = threshold;
 
@@ -105,7 +99,7 @@ export class VerificationService {
   }
 
   private async grantTrialDays(userId: string, days: number): Promise<void> {
-    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    const user = await this.vendorUsersRepository.findOne({ where: { id: userId } });
     if (!user) return;
 
     const now = new Date();
@@ -114,13 +108,12 @@ export class VerificationService {
     const newExpiry = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 
     user.planExpiresAt = newExpiry;
-    // If user has no plan, give them FREE with trial
     if (!user.vendorPlan) {
       user.vendorPlan = VendorPlan.PRO;
     }
 
-    await this.usersRepository.save(user);
-    this.logger.log(`Granted ${days} trial days to user ${userId}, expires: ${newExpiry.toISOString()}`);
+    await this.vendorUsersRepository.save(user);
+    this.logger.log(`Granted ${days} trial days to vendor ${userId}, expires: ${newExpiry.toISOString()}`);
   }
 
   private async createRewardCoupon(store: Store, couponPercent: number): Promise<void> {
@@ -136,7 +129,7 @@ export class VerificationService {
       maxDiscount: null as any,
       maxUses: 1,
       isActive: true,
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       store,
     });
 
@@ -144,7 +137,6 @@ export class VerificationService {
     this.logger.log(`Created reward coupon ${code} (${couponPercent}%) for store ${store.id}`);
   }
 
-  /** Manual claim — vendor chooses when to redeem and at which level */
   async claimBadgeReward(storeId: string, level: string, userId: string): Promise<Store> {
     const store = await this.storesRepository.findOne({
       where: { id: storeId },
@@ -169,36 +161,29 @@ export class VerificationService {
     const rewards = await this.configService.getBadgeRewards(level);
     const isFirstEver = store.badgeClaimCount === 0;
 
-    // Always: free promo days (not cumulative — replaces)
     store.freePromoDaysCredit = rewards.freePromoDays || 0;
 
-    // Always: commission reduction for 1 week (not cumulative — replaces)
     if (rewards.commissionReduction > 0) {
       store.commissionReductionPercent = rewards.commissionReduction;
       store.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     }
 
     if (isFirstEver) {
-      // First time ever: grant trial days
       if (rewards.freeTrialDays > 0 && store.owner?.id) {
         await this.grantTrialDays(store.owner.id, rewards.freeTrialDays);
       }
     } else {
-      // Second time onwards: create coupon
       if (rewards.couponValue > 0) {
         await this.createRewardCoupon(store, rewards.couponValue);
       }
-      // Second time onwards: subscription discount is passive (applied in PaymentsService)
     }
 
-    // Update tracking
     store.lastClaimedScore += threshold;
     store.badgeClaimCount += 1;
 
     return this.storesRepository.save(store);
   }
 
-  /** Get claimable points and available levels for a store */
   async getClaimableInfo(store: Store): Promise<{
     claimablePoints: number;
     availableLevels: { level: string; threshold: number; canClaim: boolean }[];

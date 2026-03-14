@@ -6,7 +6,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { User } from '../users/entities/user.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole, VendorPlan } from '../common/enums';
 
 @Resolver(() => Payment)
@@ -19,15 +19,15 @@ export class PaymentsResolver {
   createPlanUpgrade(
     @Args('plan', { type: () => VendorPlan }) plan: VendorPlan,
     @Args('billingPeriod', { nullable: true, defaultValue: 'monthly' }) billingPeriod: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
   ): Promise<Payment> {
     return this.paymentsService.createPlanUpgrade(user, plan, billingPeriod);
   }
 
   @Query(() => [Payment])
   @UseGuards(GqlAuthGuard)
-  myPayments(@CurrentUser() user: User): Promise<Payment[]> {
-    return this.paymentsService.findByUser(user.id);
+  myPayments(@CurrentUser() user: VendorUser): Promise<Payment[]> {
+    return this.paymentsService.findByVendor(user.id);
   }
 
   @Query(() => [Payment])
@@ -40,7 +40,7 @@ export class PaymentsResolver {
   @Query(() => String)
   @UseGuards(GqlAuthGuard)
   mpConnectUrl(
-    @CurrentUser() user: User,
+    @CurrentUser() user: VendorUser,
     @Args('source', { nullable: true, defaultValue: 'web' }) source: string,
   ): string {
     return this.paymentsService.getMpConnectUrl(user.id, source);
@@ -48,8 +48,12 @@ export class PaymentsResolver {
 
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard)
-  async disconnectMercadoPago(@CurrentUser() user: User): Promise<boolean> {
-    await this.paymentsService.disconnectMp(user.id);
+  async disconnectMercadoPago(@CurrentUser() user: any): Promise<boolean> {
+    if (user.userType === 'vendor') {
+      await this.paymentsService.disconnectMpVendor(user.id);
+    } else {
+      await this.paymentsService.disconnectMpApp(user.id);
+    }
     return true;
   }
 }

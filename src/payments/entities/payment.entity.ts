@@ -6,7 +6,8 @@ import {
   ManyToOne,
   CreateDateColumn,
 } from 'typeorm';
-import { User } from '../../users/entities/user.entity';
+import { AppUser } from '../../users/entities/app-user.entity';
+import { VendorUser } from '../../users/entities/vendor-user.entity';
 
 @ObjectType()
 @Entity('payments')
@@ -17,7 +18,7 @@ export class Payment {
 
   @Field()
   @Column()
-  type: string; // 'PLAN_UPGRADE' | 'PROMOTION'
+  type: string; // 'PLAN_UPGRADE' | 'PROMOTION' | 'VENDOR_PAYOUT' | 'DELIVERER_PAYOUT'
 
   @Field()
   @Column()
@@ -29,7 +30,7 @@ export class Payment {
 
   @Field()
   @Column({ default: 'pending' })
-  status: string; // 'pending' | 'approved' | 'rejected'
+  status: string;
 
   @Field({ nullable: true })
   @Column({ nullable: true })
@@ -46,9 +47,13 @@ export class Payment {
   @Column({ type: 'jsonb', nullable: true })
   metadata: any;
 
-  @Field(() => User)
-  @ManyToOne(() => User)
-  user: User;
+  @Field(() => AppUser, { nullable: true })
+  @ManyToOne(() => AppUser, { nullable: true })
+  appUser: AppUser;
+
+  @Field(() => VendorUser, { nullable: true })
+  @ManyToOne(() => VendorUser, { nullable: true })
+  vendorUser: VendorUser;
 
   @Field()
   @CreateDateColumn()
