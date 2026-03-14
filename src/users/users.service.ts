@@ -62,6 +62,7 @@ export class UsersService {
       password: hashedPassword,
       role: UserRole.CUSTOMER,
       pendingRole: isVendorRequest ? 'VENDOR' : null,
+      acceptedTermsAt: new Date(),
     });
     return this.usersRepository.save(user);
   }
