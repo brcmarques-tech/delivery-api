@@ -226,11 +226,9 @@ export class PaymentsService {
 
     const store = order.store;
     const vendorToken = store?.owner?.mpAccessToken;
-    const hasOwnDelivery = store?.hasOwnDelivery;
-    const isAppDeliverer = !hasOwnDelivery && !order.isPickup;
 
-    const useMarketplace = !!vendorToken && !isAppDeliverer;
-    const client = useMarketplace
+    // Always use vendor's token when available (platform token may be sandbox)
+    const client = vendorToken
       ? new MercadoPagoConfig({ accessToken: vendorToken })
       : this.mpClient;
 
@@ -274,11 +272,9 @@ export class PaymentsService {
   async createOrderPix(order: Order, customer: AppUser): Promise<{ qrCode: string; qrCodeBase64: string }> {
     const store = order.store;
     const vendorToken = store?.owner?.mpAccessToken;
-    const hasOwnDelivery = store?.hasOwnDelivery;
-    const isAppDeliverer = !hasOwnDelivery && !order.isPickup;
 
-    const useMarketplace = !!vendorToken && !isAppDeliverer;
-    const client = useMarketplace
+    // Always use vendor's token for Pix when available (platform token may be sandbox)
+    const client = vendorToken
       ? new MercadoPagoConfig({ accessToken: vendorToken })
       : this.mpClient;
 

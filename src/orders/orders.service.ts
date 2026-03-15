@@ -244,8 +244,9 @@ export class OrdersService {
         savedOrder.pixQrCodeBase64 = qrCodeBase64;
         await this.ordersRepository.save(savedOrder);
       } catch (err: any) {
+        console.error('PIX generation failed:', err?.message || err);
         throw new BadRequestException(
-          'PIX nao disponivel no momento. Em ambiente de teste, use Mercado Pago ou pagamento na entrega.',
+          err?.message || 'Nao foi possivel gerar o PIX. Tente novamente ou use outro metodo de pagamento.',
         );
       }
     }
