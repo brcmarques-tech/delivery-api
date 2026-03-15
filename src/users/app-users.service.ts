@@ -9,6 +9,7 @@ import { RegisterAppInput } from '../auth/dto/register-app.input';
 import { RegisterDelivererInput } from './dto/register-deliverer.input';
 import { UserRole } from '../common/enums';
 import { MailService } from '../mail/mail.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 
 @Injectable()
 export class AppUsersService {
@@ -17,6 +18,7 @@ export class AppUsersService {
     private appUsersRepository: Repository<AppUser>,
     private mailService: MailService,
     private configService: ConfigService,
+    private whatsAppService: WhatsAppService,
   ) {}
 
   private validateCpf(cpf: string): boolean {
@@ -122,6 +124,9 @@ export class AppUsersService {
     const saved = await this.appUsersRepository.save(user);
 
     this.mailService.sendApprovalEmail(user.email, user.name, approvedRole);
+    if (user.phone) {
+      this.whatsAppService.notifyUserApproved(user.phone, user.name, approvedRole).catch(() => {});
+    }
     return saved;
   }
 
@@ -142,6 +147,9 @@ export class AppUsersService {
     const saved = await this.appUsersRepository.save(user);
 
     this.mailService.sendRejectionEmail(user.email, user.name, rejectedRole, reason);
+    if (user.phone) {
+      this.whatsAppService.notifyUserRejected(user.phone, user.name, rejectedRole, reason).catch(() => {});
+    }
     return saved;
   }
 
@@ -296,6 +304,9 @@ export class AppUsersService {
     const resetUrl = `${apiUrl}/auth/reset-password?token=${token}&type=app`;
 
     await this.mailService.sendPasswordResetEmail(user.email, user.name, token, resetUrl);
+    if (user.phone) {
+      this.whatsAppService.notifyPasswordReset(user.phone, user.name, resetUrl).catch(() => {});
+    }
     return 'Email de recuperacao enviado';
   }
 

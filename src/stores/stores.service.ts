@@ -12,6 +12,7 @@ import { VendorUser } from '../users/entities/vendor-user.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { MailService } from '../mail/mail.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
@@ -27,6 +28,7 @@ export class StoresService {
     private vendorUsersRepository: Repository<VendorUser>,
     private platformConfigService: PlatformConfigService,
     private mailService: MailService,
+    private whatsAppService: WhatsAppService,
     private configService: ConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
@@ -204,6 +206,9 @@ export class StoresService {
 
     const emailTo = admin.notificationEmail || admin.email;
     await this.mailService.sendStoreDeleteConfirmation(emailTo, admin.name, store.name, confirmUrl);
+    if (admin.phone) {
+      this.whatsAppService.notifyStoreDeleteRequest(admin.phone, admin.name, store.name, confirmUrl).catch(() => {});
+    }
     return true;
   }
 
@@ -226,6 +231,9 @@ export class StoresService {
     const confirmUrl = `${apiUrl}/stores/confirm-delete?token=${token}`;
 
     await this.mailService.sendStoreDeleteConfirmation(vendor.email, vendor.name, store.name, confirmUrl);
+    if (vendor.phone) {
+      this.whatsAppService.notifyStoreDeleteRequest(vendor.phone, vendor.name, store.name, confirmUrl).catch(() => {});
+    }
     return true;
   }
 
