@@ -300,6 +300,42 @@ export class MailService {
     }
   }
 
+  async sendAdminActionEmail(adminEmail: string, adminName: string, action: string, details: string): Promise<void> {
+    const subject = `bcmTech Admin - ${action}`;
+    const now = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #2D3436; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: #FF6B35; margin: 0;">bcmTech Admin</h1>
+          <p style="color: #ddd; margin: 5px 0 0 0; font-size: 12px;">Confirmacao de acao</p>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+          <h2 style="color: #2D3436; margin-top: 0;">${action}</h2>
+          <div style="background: white; border: 1px solid #eee; border-radius: 8px; padding: 20px; margin: 15px 0;">
+            <p style="color: #555; font-size: 14px; line-height: 1.8; margin: 0; white-space: pre-line;">${details}</p>
+          </div>
+          <div style="background: #f0f0f0; border-radius: 8px; padding: 12px; margin-top: 15px;">
+            <p style="color: #777; font-size: 12px; margin: 0;"><strong>Admin:</strong> ${adminName} (${adminEmail})</p>
+            <p style="color: #777; font-size: 12px; margin: 5px 0 0 0;"><strong>Data/hora:</strong> ${now}</p>
+          </div>
+          <div style="border-top: 1px solid #eee; margin-top: 20px; padding-top: 15px; text-align: center;">
+            <p style="color: #999; font-size: 11px; margin: 0;">
+              Este email foi enviado automaticamente como confirmacao de acao administrativa.
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+    try {
+      await this.sendEmail(adminEmail, subject, html);
+      this.logger.log(`Email de confirmacao admin enviado para ${adminEmail}: ${action}`);
+      await this.saveLog({ type: 'EMAIL', to: adminEmail, userName: adminName, subject, message: `Admin: ${action} - ${details}`, success: true, error: null });
+    } catch (error) {
+      this.logger.error(`Erro ao enviar email de confirmacao admin para ${adminEmail}`, error);
+      await this.saveLog({ type: 'EMAIL', to: adminEmail, userName: adminName, subject, message: `Admin: ${action} - ${details}`, success: false, error: String(error) });
+    }
+  }
+
   async retryFailedEmails(): Promise<void> {
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     const failedLogs = await this.logRepository.find({
