@@ -7,6 +7,7 @@ import { Coupon } from '../coupons/entities/coupon.entity';
 import { VerificationLevel } from '../common/enums/verification-level.enum';
 import { VendorPlan } from '../common/enums/vendor-plan.enum';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 
 const LEVEL_ORDER = [
   VerificationLevel.NONE,
@@ -29,6 +30,7 @@ export class VerificationService {
     private couponsRepository: Repository<Coupon>,
     @Inject(forwardRef(() => PlatformConfigService))
     private configService: PlatformConfigService,
+    private whatsAppService: WhatsAppService,
   ) {}
 
   async getThresholds(): Promise<Record<string, number>> {
@@ -181,7 +183,13 @@ export class VerificationService {
     store.lastClaimedScore += threshold;
     store.badgeClaimCount += 1;
 
-    return this.storesRepository.save(store);
+    const saved = await this.storesRepository.save(store);
+
+    if (store.owner?.phone) {
+      this.whatsAppService.notifyBadgeReward(store.owner.phone, store.name, level).catch(() => {});
+    }
+
+    return saved;
   }
 
   async getClaimableInfo(store: Store): Promise<{

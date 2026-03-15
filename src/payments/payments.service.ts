@@ -12,6 +12,7 @@ import { Promotion } from '../promotions/entities/promotion.entity';
 import { AppUsersService } from '../users/app-users.service';
 import { VendorUsersService } from '../users/vendor-users.service';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
 
@@ -31,6 +32,7 @@ export class PaymentsService {
     @Inject(forwardRef(() => VendorUsersService))
     private vendorUsersService: VendorUsersService,
     private platformConfigService: PlatformConfigService,
+    private whatsAppService: WhatsAppService,
   ) {
     this.mpClient = new MercadoPagoConfig({
       accessToken: this.configService.get('MP_ACCESS_TOKEN') || '',
@@ -120,7 +122,13 @@ export class PaymentsService {
       vendorUser: user,
     });
 
-    return this.paymentsRepository.save(payment);
+    const saved = await this.paymentsRepository.save(payment);
+
+    if (user.phone) {
+      this.whatsAppService.notifyPlanUpgrade(user.phone, user.name, plan, billing.label).catch(() => {});
+    }
+
+    return saved;
   }
 
   private async getOrCreateMpCustomerVendor(user: VendorUser): Promise<string | undefined> {

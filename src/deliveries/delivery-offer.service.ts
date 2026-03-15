@@ -1,6 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { DelivererTrackerService } from './deliverer-tracker.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { AppUsersService } from '../users/app-users.service';
 
 const OFFER_TIMEOUT_MS = 30_000; // 30 seconds per deliverer
 
@@ -31,6 +33,9 @@ export class DeliveryOfferService {
   constructor(
     private trackerService: DelivererTrackerService,
     private notificationsService: NotificationsService,
+    private whatsAppService: WhatsAppService,
+    @Inject(forwardRef(() => AppUsersService))
+    private appUsersService: AppUsersService,
   ) {}
 
   setEmitters(
@@ -132,6 +137,17 @@ export class DeliveryOfferService {
       `Pedido #${offer.orderNumber} - R$ ${offer.deliveryFee.toFixed(2)}`,
       { type: 'DELIVERY_OFFER', orderId: offer.orderId },
     ).catch(() => {});
+
+    // WhatsApp notification to deliverer
+    this.appUsersService.findById(deliverer.userId).then((user) => {
+      if (user?.phone) {
+        this.whatsAppService.notifyNewDeliveryAvailable(
+          user.phone,
+          offer.orderNumber,
+          offer.deliveryFee.toFixed(2),
+        ).catch(() => {});
+      }
+    }).catch(() => {});
 
     // Set timeout — if no response, move to next
     offer.timer = setTimeout(() => {

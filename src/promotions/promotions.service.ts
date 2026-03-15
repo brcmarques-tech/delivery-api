@@ -8,6 +8,7 @@ import { StoresService } from '../stores/stores.service';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { Product } from '../products/entities/product.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
@@ -21,6 +22,7 @@ export class PromotionsService implements OnModuleInit {
     private productsRepository: Repository<Product>,
     private storesService: StoresService,
     private platformConfigService: PlatformConfigService,
+    private whatsAppService: WhatsAppService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -133,6 +135,15 @@ export class PromotionsService implements OnModuleInit {
       await this.storesService.saveStore(store);
     }
 
+    if (user.phone) {
+      this.whatsAppService.notifyPromotionCreated(
+        user.phone,
+        store.name,
+        input.title,
+        adCost.toFixed(2),
+      ).catch(() => {});
+    }
+
     return saved;
   }
 
@@ -189,12 +200,17 @@ export class PromotionsService implements OnModuleInit {
   async markAsPaid(id: string): Promise<Promotion> {
     const promotion = await this.promotionsRepository.findOne({
       where: { id },
-      relations: ['product', 'product.store', 'store'],
+      relations: ['product', 'product.store', 'store', 'store.owner'],
     });
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
     promotion.isPaid = true;
     const saved = await this.promotionsRepository.save(promotion);
     this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+
+    if (promotion.store?.owner?.phone) {
+      this.whatsAppService.notifyPromotionPaid(promotion.store.owner.phone, promotion.title).catch(() => {});
+    }
+
     if (promotion.product && promotion.promotionalPrice) {
       const now = new Date();
       const start = new Date(promotion.startDate);

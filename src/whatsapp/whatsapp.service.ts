@@ -113,4 +113,97 @@ export class WhatsAppService {
       `Aceite pelo app!`,
     );
   }
+
+  // ---- Notificações de aprovação/rejeição ----
+
+  async notifyUserApproved(phone: string, name: string, role: string): Promise<boolean> {
+    const roleLabel = role === 'DELIVERER' ? 'entregador' : role === 'VENDOR' ? 'vendedor' : role.toLowerCase();
+    return this.sendText(
+      phone,
+      `✅ *Cadastro aprovado!*\n\n` +
+      `Olá *${name}*, seu cadastro como *${roleLabel}* foi aprovado!\n\n` +
+      `Você já pode acessar todas as funcionalidades.`,
+    );
+  }
+
+  async notifyUserRejected(phone: string, name: string, role: string, reason: string): Promise<boolean> {
+    const roleLabel = role === 'DELIVERER' ? 'entregador' : role === 'VENDOR' ? 'vendedor' : role.toLowerCase();
+    return this.sendText(
+      phone,
+      `❌ *Cadastro não aprovado*\n\n` +
+      `Olá *${name}*, infelizmente seu cadastro como *${roleLabel}* não foi aprovado.\n\n` +
+      `Motivo: ${reason}\n\n` +
+      `Você pode tentar novamente corrigindo as informações.`,
+    );
+  }
+
+  // ---- Notificação de reset de senha ----
+
+  async notifyPasswordReset(phone: string, name: string, resetUrl: string): Promise<boolean> {
+    return this.sendText(
+      phone,
+      `🔑 *Recuperação de senha*\n\n` +
+      `Olá *${name}*, clique no link abaixo para redefinir sua senha:\n\n` +
+      `${resetUrl}\n\n` +
+      `O link expira em 1 hora.`,
+    );
+  }
+
+  // ---- Notificações de loja ----
+
+  async notifyStoreDeleteRequest(phone: string, name: string, storeName: string, confirmUrl: string): Promise<boolean> {
+    return this.sendText(
+      phone,
+      `⚠️ *Exclusão de loja solicitada*\n\n` +
+      `Olá *${name}*, foi solicitada a exclusão da loja *${storeName}*.\n\n` +
+      `Confirme clicando no link:\n${confirmUrl}\n\n` +
+      `O link expira em 30 minutos.`,
+    );
+  }
+
+  // ---- Notificações de plano ----
+
+  async notifyPlanUpgrade(phone: string, name: string, plan: string, billingLabel: string): Promise<boolean> {
+    return this.sendText(
+      phone,
+      `⭐ *Upgrade de plano!*\n\n` +
+      `Olá *${name}*, seu checkout para o plano *${plan}* (${billingLabel}) foi gerado.\n\n` +
+      `Finalize o pagamento para ativar seu plano!`,
+    );
+  }
+
+  // ---- Notificações de promoção ----
+
+  async notifyPromotionCreated(phone: string, storeName: string, promoTitle: string, adCost: string): Promise<boolean> {
+    const costMsg = parseFloat(adCost) > 0
+      ? `Custo do anúncio: *R$ ${adCost}*\nFinalize o pagamento para ativar.`
+      : `Promoção gratuita! Já está ativa.`;
+    return this.sendText(
+      phone,
+      `📢 *Promoção criada!*\n\n` +
+      `Loja: *${storeName}*\n` +
+      `Promoção: *${promoTitle}*\n\n` +
+      `${costMsg}`,
+    );
+  }
+
+  async notifyPromotionPaid(phone: string, promoTitle: string): Promise<boolean> {
+    return this.sendText(
+      phone,
+      `✅ *Promoção ativada!*\n\n` +
+      `Sua promoção *${promoTitle}* foi paga e está ativa!\n\n` +
+      `Os clientes já podem ver no app.`,
+    );
+  }
+
+  // ---- Notificações de selo/badge ----
+
+  async notifyBadgeReward(phone: string, storeName: string, level: string): Promise<boolean> {
+    return this.sendText(
+      phone,
+      `🏆 *Recompensa resgatada!*\n\n` +
+      `A loja *${storeName}* resgatou a recompensa do nível *${level}*!\n\n` +
+      `Confira os benefícios no painel.`,
+    );
+  }
 }
