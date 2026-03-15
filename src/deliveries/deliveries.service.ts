@@ -89,31 +89,13 @@ export class DeliveriesService implements OnModuleInit {
     await this.ordersService.updateStatus(delivery.order.id, OrderStatus.DELIVERING);
     const savedDelivery = await this.deliveriesRepository.save(delivery);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
-
-    const order = delivery.order;
-    if (!order.store?.hasOwnDelivery && order.paymentMethod !== 'ON_DELIVERY') {
-      const vendorAmount = Number(order.subtotal);
-      if (vendorAmount > 0 && order.store?.owner?.id) {
-        const result = await this.paymentsService.transferToVendor(
-          order.store.owner.id,
-          vendorAmount,
-          order.id,
-        );
-
-        savedDelivery.vendorPayoutAmount = vendorAmount;
-        savedDelivery.vendorPayoutStatus = result.success ? 'completed' : 'failed';
-        savedDelivery.vendorPayoutMpId = result.mpId || '';
-        await this.deliveriesRepository.save(savedDelivery);
-      }
-    }
-
     return savedDelivery;
   }
 
   async confirmDelivery(deliveryId: string): Promise<Delivery> {
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
-      relations: ['order', 'order.store', 'deliverer'],
+      relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
     });
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
 
@@ -121,11 +103,28 @@ export class DeliveriesService implements OnModuleInit {
     await this.ordersService.updateStatus(delivery.order.id, OrderStatus.DELIVERED);
 
     const order = delivery.order;
+
+    // Transfer delivery fee to deliverer
     if (!order.store?.hasOwnDelivery) {
       const payoutAmount = Number(order.deliveryFee);
       if (payoutAmount > 0) {
         delivery.payoutAmount = payoutAmount;
         delivery.payoutStatus = 'pending_confirmation';
+      }
+    }
+
+    // Transfer vendor's share (subtotal minus commission) after delivery is confirmed
+    if (!order.store?.hasOwnDelivery && order.paymentMethod !== 'ON_DELIVERY') {
+      const vendorAmount = Number(order.subtotal) - Number(order.commissionAmount);
+      if (vendorAmount > 0 && order.store?.owner?.id) {
+        const result = await this.paymentsService.transferToVendor(
+          order.store.owner.id,
+          vendorAmount,
+          order.id,
+        );
+        delivery.vendorPayoutAmount = vendorAmount;
+        delivery.vendorPayoutStatus = result.success ? 'completed' : 'failed';
+        delivery.vendorPayoutMpId = result.mpId || '';
       }
     }
 

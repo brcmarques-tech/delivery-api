@@ -445,8 +445,10 @@ export class OrdersService {
 
     const updatedOrder = await this.findById(order.id);
     const subtotal = updatedOrder.items.reduce((sum, i) => sum + Number(i.totalPrice), 0);
+    const discount = Number(updatedOrder.discount) || 0;
     updatedOrder.subtotal = subtotal;
-    updatedOrder.total = subtotal + Number(updatedOrder.deliveryFee);
+    updatedOrder.total = subtotal - discount + Number(updatedOrder.deliveryFee);
+    updatedOrder.commissionAmount = Math.round(((subtotal - discount) * Number(updatedOrder.commissionPercent)) / 100 * 100) / 100;
     const saved = await this.ordersRepository.save(updatedOrder);
 
     this.pubSub.publish('orderUpdated', { orderUpdated: saved });
