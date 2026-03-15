@@ -72,7 +72,7 @@ export class OrdersService {
 
     for (const itemInput of input.items) {
       const product = await this.productsService.findById(itemInput.productId);
-      if (product.stock > 0 && product.stock < itemInput.quantity) {
+      if (product.stock !== null && product.stock !== undefined && product.stock < itemInput.quantity) {
         throw new BadRequestException(
           `Estoque insuficiente para "${product.name}". Disponivel: ${product.stock}`,
         );
@@ -293,7 +293,7 @@ export class OrdersService {
   async findPendingForDelivery(): Promise<Order[]> {
     return this.ordersRepository.find({
       where: { status: OrderStatus.READY },
-      relations: ['store', 'customer'],
+      relations: ['store', 'customer', 'items', 'items.product'],
       order: { createdAt: 'ASC' },
     });
   }

@@ -54,8 +54,8 @@ export class DeliveriesService implements OnModuleInit {
       deliverer,
     });
 
-    await this.ordersService.updateStatus(orderId, OrderStatus.PICKED_UP);
     const saved = await this.deliveriesRepository.save(delivery);
+    await this.ordersService.updateStatus(orderId, OrderStatus.PICKED_UP);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
     return saved;
   }

@@ -236,15 +236,28 @@ export class PaymentsService {
 
     const preference = new Preference(client);
 
+    const itemsSummary = order.items
+      .map((item) => {
+        const name = item.product?.name || 'Produto';
+        if (item.weightGrams && item.weightGrams > 0) {
+          return `${name} (${item.weightGrams}g)`;
+        }
+        return `${item.quantity}x ${name}`;
+      })
+      .join(', ');
+
     const result = await preference.create({
       body: {
-        items: order.items.map((item) => ({
-          id: item.product?.id || item.id,
-          title: item.product?.name || 'Produto',
-          quantity: item.quantity,
-          unit_price: Number(item.unitPrice),
-          currency_id: 'BRL',
-        })),
+        items: [
+          {
+            id: `order-${order.id}`,
+            title: `Pedido ${order.orderNumber}`,
+            description: itemsSummary,
+            quantity: 1,
+            unit_price: Number(order.total),
+            currency_id: 'BRL',
+          },
+        ],
         payer: {
           email: customer.email,
           name: customer.name,
@@ -348,7 +361,7 @@ export class PaymentsService {
   }
 
   async handleWebhook(body: any): Promise<void> {
-    if (body.type !== 'payment' && body.action !== 'payment.created') {
+    if (body.type !== 'payment' || body.action !== 'payment.created') {
       return;
     }
 
