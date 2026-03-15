@@ -27,10 +27,12 @@ async function bootstrap() {
   const vendorUrl = process.env.VENDOR_PANEL_URL;
   const superadminUrl = process.env.SUPERADMIN_URL;
   if (selfUrl) {
+    const wahaUrl = process.env.WAHA_API_URL;
     setInterval(() => {
       fetch(`${selfUrl}/graphql?query={__typename}`).catch(() => {});
       if (vendorUrl) fetch(`${vendorUrl}/api/health`).catch(() => {});
       if (superadminUrl) fetch(`${superadminUrl}/api/health`).catch(() => {});
+      if (wahaUrl) fetch(`${wahaUrl}/api/version`).catch(() => {});
     }, 14 * 60 * 1000);
   }
 }
