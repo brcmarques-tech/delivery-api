@@ -70,9 +70,14 @@ export class MailService {
               Aprovado &#10003;
             </div>
           </div>
-          <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
-            Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
-          </p>
+          <div style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 15px; text-align: center;">
+            <p style="color: #999; font-size: 11px; margin: 0;">
+              Este email foi enviado automaticamente. Por favor, nao responda este email.
+            </p>
+            <p style="color: #999; font-size: 11px; margin: 5px 0 0 0;">
+              Em caso de duvidas, entre em contato pelo <a href="mailto:suporte@bcmtech.com.br" style="color: #FF6B35;">suporte@bcmtech.com.br</a>
+            </p>
+          </div>
         </div>
       </div>
     `;
@@ -106,9 +111,14 @@ export class MailService {
           <p style="color: #555; font-size: 16px; line-height: 1.6;">
             Voce ainda pode usar a plataforma como cliente normalmente. Se acredita que houve um engano, entre em contato com nosso suporte.
           </p>
-          <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
-            Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
-          </p>
+          <div style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 15px; text-align: center;">
+            <p style="color: #999; font-size: 11px; margin: 0;">
+              Este email foi enviado automaticamente. Por favor, nao responda este email.
+            </p>
+            <p style="color: #999; font-size: 11px; margin: 5px 0 0 0;">
+              Em caso de duvidas, entre em contato pelo <a href="mailto:suporte@bcmtech.com.br" style="color: #FF6B35;">suporte@bcmtech.com.br</a>
+            </p>
+          </div>
         </div>
       </div>
     `;
@@ -142,9 +152,14 @@ export class MailService {
           <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
             Se voce nao solicitou esta alteracao, ignore este email.
           </p>
-          <p style="color: #999; font-size: 12px; margin-top: 10px; text-align: center;">
-            Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
-          </p>
+          <div style="border-top: 1px solid #eee; margin-top: 15px; padding-top: 15px; text-align: center;">
+            <p style="color: #999; font-size: 11px; margin: 0;">
+              Este email foi enviado automaticamente. Por favor, nao responda este email.
+            </p>
+            <p style="color: #999; font-size: 11px; margin: 5px 0 0 0;">
+              Em caso de duvidas, entre em contato pelo <a href="mailto:suporte@bcmtech.com.br" style="color: #FF6B35;">suporte@bcmtech.com.br</a>
+            </p>
+          </div>
         </div>
       </div>
     `;
@@ -182,6 +197,14 @@ export class MailService {
           <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
             Este link expira em 30 minutos. Se voce nao solicitou esta acao, ignore este email.
           </p>
+          <div style="border-top: 1px solid #eee; margin-top: 15px; padding-top: 15px; text-align: center;">
+            <p style="color: #999; font-size: 11px; margin: 0;">
+              Este email foi enviado automaticamente. Por favor, nao responda este email.
+            </p>
+            <p style="color: #999; font-size: 11px; margin: 5px 0 0 0;">
+              Em caso de duvidas, entre em contato pelo <a href="mailto:suporte@bcmtech.com.br" style="color: #FF6B35;">suporte@bcmtech.com.br</a>
+            </p>
+          </div>
         </div>
       </div>
     `;
@@ -205,9 +228,14 @@ export class MailService {
         <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
           <h2 style="color: #2D3436;">Ola, ${log.userName}!</h2>
           <p style="color: #555; font-size: 16px; line-height: 1.6;">${log.message}</p>
-          <p style="color: #999; font-size: 12px; margin-top: 30px; text-align: center;">
-            Este email foi enviado automaticamente pela plataforma bcmTech Delivery.
-          </p>
+          <div style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 15px; text-align: center;">
+            <p style="color: #999; font-size: 11px; margin: 0;">
+              Este email foi enviado automaticamente. Por favor, nao responda este email.
+            </p>
+            <p style="color: #999; font-size: 11px; margin: 5px 0 0 0;">
+              Em caso de duvidas, entre em contato pelo <a href="mailto:suporte@bcmtech.com.br" style="color: #FF6B35;">suporte@bcmtech.com.br</a>
+            </p>
+          </div>
         </div>
       </div>
     `;
