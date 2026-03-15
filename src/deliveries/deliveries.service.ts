@@ -104,20 +104,38 @@ export class DeliveriesService implements OnModuleInit {
 
     const order = delivery.order;
 
-    // Vendor is paid automatically via MP marketplace split (marketplace_fee on checkout)
-    // Platform retains commission + delivery fee, vendor gets the rest
-    // Here we only handle the deliverer payout from platform's split balance
+    // Payment distribution depends on payment method:
+    // - MERCADO_PAGO (checkout): vendor gets paid via marketplace_fee split, platform retains commission + delivery fee
+    // - PIX: money goes to platform, platform distributes to vendor and deliverer
+    // - ON_DELIVERY: vendor receives cash directly, no transfers needed
     if (!order.store?.hasOwnDelivery && order.paymentMethod !== 'ON_DELIVERY') {
-      const payoutAmount = Number(order.deliveryFee);
-      if (payoutAmount > 0) {
-        delivery.payoutAmount = payoutAmount;
-        delivery.payoutStatus = 'pending_confirmation';
-      }
-      // Record vendor split info for tracking
+      const deliveryFee = Number(order.deliveryFee);
       const vendorAmount = Number(order.subtotal) - Number(order.commissionAmount);
-      if (vendorAmount > 0) {
-        delivery.vendorPayoutAmount = vendorAmount;
-        delivery.vendorPayoutStatus = 'split_auto';
+
+      if (order.paymentMethod === 'PIX') {
+        // PIX: platform received all money, transfer vendor's share
+        if (vendorAmount > 0 && order.store?.owner?.id) {
+          const result = await this.paymentsService.transferToVendor(
+            order.store.owner.id,
+            vendorAmount,
+            order.id,
+          );
+          delivery.vendorPayoutAmount = vendorAmount;
+          delivery.vendorPayoutStatus = result.success ? 'completed' : 'failed';
+          delivery.vendorPayoutMpId = result.mpId || '';
+        }
+      } else {
+        // MERCADO_PAGO checkout: vendor paid via marketplace_fee split
+        if (vendorAmount > 0) {
+          delivery.vendorPayoutAmount = vendorAmount;
+          delivery.vendorPayoutStatus = 'split_auto';
+        }
+      }
+
+      // Deliverer payout (platform has the delivery fee in both cases)
+      if (deliveryFee > 0) {
+        delivery.payoutAmount = deliveryFee;
+        delivery.payoutStatus = 'pending_confirmation';
       }
     }
 

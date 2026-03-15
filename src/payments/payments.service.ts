@@ -279,10 +279,8 @@ export class PaymentsService {
   }
 
   async createOrderPix(order: Order, customer: AppUser): Promise<{ qrCode: string; qrCodeBase64: string }> {
-    const store = order.store;
-    const vendorToken = store?.owner?.mpAccessToken;
-
-    this.logger.log(`Pix creating for order ${order.orderNumber} | total: ${order.total} | vendor_token: ${!!vendorToken} | owner_id: ${store?.owner?.id || 'none'}`);
+    // Pix always goes to platform account — platform distributes to vendor and deliverer later
+    this.logger.log(`Pix creating for order ${order.orderNumber} | total: ${order.total} | using platform token (marketplace model)`);
 
     const pixBody: any = {
       transaction_amount: Number(order.total),
@@ -297,33 +295,23 @@ export class PaymentsService {
       notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
     };
 
-    // Try vendor token first, fallback to platform token
-    const tokensToTry = vendorToken
-      ? [vendorToken, this.configService.get('MP_ACCESS_TOKEN')]
-      : [this.configService.get('MP_ACCESS_TOKEN')];
+    try {
+      const client = new MercadoPagoConfig({ accessToken: this.configService.get('MP_ACCESS_TOKEN') || '' });
+      const mpPayment = new MpPayment(client);
+      const result = await mpPayment.create({ body: pixBody });
 
-    let lastError: any = null;
-    for (const token of tokensToTry) {
-      try {
-        const client = new MercadoPagoConfig({ accessToken: token });
-        const mpPayment = new MpPayment(client);
-        const result = await mpPayment.create({ body: pixBody });
+      const qrCode = (result as any).point_of_interaction?.transaction_data?.qr_code || '';
+      const qrCodeBase64 = (result as any).point_of_interaction?.transaction_data?.qr_code_base64 || '';
 
-        const qrCode = (result as any).point_of_interaction?.transaction_data?.qr_code || '';
-        const qrCodeBase64 = (result as any).point_of_interaction?.transaction_data?.qr_code_base64 || '';
-
-        if (qrCode) {
-          this.logger.log(`Pix generated successfully with ${token === vendorToken ? 'vendor' : 'platform'} token`);
-          return { qrCode, qrCodeBase64 };
-        }
-        lastError = new Error('QR code vazio na resposta do Mercado Pago');
-      } catch (err: any) {
-        this.logger.warn(`Pix failed with ${token === vendorToken ? 'vendor' : 'platform'} token: ${err.message}`);
-        lastError = err;
+      if (qrCode) {
+        this.logger.log(`Pix generated successfully with platform token`);
+        return { qrCode, qrCodeBase64 };
       }
+      throw new Error('QR code vazio na resposta do Mercado Pago');
+    } catch (err: any) {
+      this.logger.error(`Pix failed: ${err.message}`);
+      throw err;
     }
-
-    throw lastError;
   }
 
   getMpConnectUrl(userId: string, source: string = 'web'): string {
