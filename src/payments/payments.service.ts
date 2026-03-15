@@ -273,31 +273,46 @@ export class PaymentsService {
     const store = order.store;
     const vendorToken = store?.owner?.mpAccessToken;
 
-    // Always use vendor's token for Pix when available (platform token may be sandbox)
-    const client = vendorToken
-      ? new MercadoPagoConfig({ accessToken: vendorToken })
-      : this.mpClient;
-
-    const mpPayment = new MpPayment(client);
-    const result = await mpPayment.create({
-      body: {
-        transaction_amount: Number(order.total),
-        description: `Pedido ${order.orderNumber}`,
-        payment_method_id: 'pix',
-        payer: {
-          email: customer.email,
-          first_name: customer.name.split(' ')[0],
-          last_name: customer.name.split(' ').slice(1).join(' ') || customer.name,
-        },
-        external_reference: `order:${order.id}`,
-        notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
+    const pixBody = {
+      transaction_amount: Number(order.total),
+      description: `Pedido ${order.orderNumber}`,
+      payment_method_id: 'pix',
+      payer: {
+        email: customer.email,
+        first_name: customer.name.split(' ')[0],
+        last_name: customer.name.split(' ').slice(1).join(' ') || customer.name,
       },
-    });
+      external_reference: `order:${order.id}`,
+      notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
+    };
 
-    const qrCode = (result as any).point_of_interaction?.transaction_data?.qr_code || '';
-    const qrCodeBase64 = (result as any).point_of_interaction?.transaction_data?.qr_code_base64 || '';
+    // Try vendor token first, fallback to platform token
+    const tokensToTry = vendorToken
+      ? [vendorToken, this.configService.get('MP_ACCESS_TOKEN')]
+      : [this.configService.get('MP_ACCESS_TOKEN')];
 
-    return { qrCode, qrCodeBase64 };
+    let lastError: any = null;
+    for (const token of tokensToTry) {
+      try {
+        const client = new MercadoPagoConfig({ accessToken: token });
+        const mpPayment = new MpPayment(client);
+        const result = await mpPayment.create({ body: pixBody });
+
+        const qrCode = (result as any).point_of_interaction?.transaction_data?.qr_code || '';
+        const qrCodeBase64 = (result as any).point_of_interaction?.transaction_data?.qr_code_base64 || '';
+
+        if (qrCode) {
+          this.logger.log(`Pix generated successfully with ${token === vendorToken ? 'vendor' : 'platform'} token`);
+          return { qrCode, qrCodeBase64 };
+        }
+        lastError = new Error('QR code vazio na resposta do Mercado Pago');
+      } catch (err: any) {
+        this.logger.warn(`Pix failed with ${token === vendorToken ? 'vendor' : 'platform'} token: ${err.message}`);
+        lastError = err;
+      }
+    }
+
+    throw lastError;
   }
 
   getMpConnectUrl(userId: string, source: string = 'web'): string {
