@@ -35,8 +35,8 @@ export class Delivery {
   @Column({ nullable: true })
   deliveredAt: Date;
 
-  @Field(() => AppUser)
-  @ManyToOne(() => AppUser)
+  @Field(() => AppUser, { nullable: true })
+  @ManyToOne(() => AppUser, { nullable: true })
   deliverer: AppUser;
 
   @Field(() => Order)
