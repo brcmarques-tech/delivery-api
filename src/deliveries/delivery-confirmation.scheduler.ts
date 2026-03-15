@@ -1,26 +1,44 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Order } from '../orders/entities/order.entity';
 import { DeliveriesService } from './deliveries.service';
+import { OrdersService } from '../orders/orders.service';
 
 @Injectable()
 export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(DeliveryConfirmationScheduler.name);
   private intervalId: ReturnType<typeof setInterval>;
 
   constructor(
     @InjectRepository(Order)
     private ordersRepository: Repository<Order>,
     private deliveriesService: DeliveriesService,
+    @Inject(forwardRef(() => OrdersService))
+    private ordersService: OrdersService,
   ) {}
 
   onModuleInit() {
-    // Check every 60 seconds for expired delivery confirmations
-    this.intervalId = setInterval(() => this.autoConfirmExpiredDeliveries(), 60_000);
+    // Check every 60 seconds for expired delivery confirmations and awaiting payment orders
+    this.intervalId = setInterval(() => {
+      this.autoConfirmExpiredDeliveries();
+      this.expireAwaitingPaymentOrders();
+    }, 60_000);
   }
 
   onModuleDestroy() {
     if (this.intervalId) clearInterval(this.intervalId);
+  }
+
+  private async expireAwaitingPaymentOrders() {
+    try {
+      const count = await this.ordersService.expireAwaitingPaymentOrders();
+      if (count > 0) {
+        this.logger.log(`Expired ${count} awaiting payment orders`);
+      }
+    } catch (err) {
+      this.logger.error('Failed to expire awaiting payment orders:', err);
+    }
   }
 
   private async autoConfirmExpiredDeliveries() {

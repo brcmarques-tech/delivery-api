@@ -10,6 +10,7 @@ export enum OrderStatus {
   DELIVERING = 'DELIVERING',
   DELIVERED = 'DELIVERED',
   CANCELLED = 'CANCELLED',
+  EXPIRED = 'EXPIRED',
 }
 
 registerEnumType(OrderStatus, { name: 'OrderStatus' });

@@ -30,6 +30,7 @@ const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.DELIVERING]: [OrderStatus.DELIVERED],
   [OrderStatus.DELIVERED]: [],
   [OrderStatus.CANCELLED]: [],
+  [OrderStatus.EXPIRED]: [],
 };
 
 @Injectable()
@@ -289,6 +290,21 @@ export class OrdersService {
       relations: ['customer', 'items', 'items.product', 'delivery'],
       order: { createdAt: 'DESC' },
     });
+  }
+
+  async expireAwaitingPaymentOrders(): Promise<number> {
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const expired = await this.ordersRepository
+      .createQueryBuilder('order')
+      .where('order.status = :status', { status: OrderStatus.AWAITING_PAYMENT })
+      .andWhere('order.createdAt <= :tenMinAgo', { tenMinAgo })
+      .getMany();
+
+    for (const order of expired) {
+      order.status = OrderStatus.EXPIRED;
+      await this.ordersRepository.save(order);
+    }
+    return expired.length;
   }
 
   async findPendingForDelivery(): Promise<Order[]> {
