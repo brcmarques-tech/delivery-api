@@ -104,27 +104,20 @@ export class DeliveriesService implements OnModuleInit {
 
     const order = delivery.order;
 
-    // Transfer delivery fee to deliverer
-    if (!order.store?.hasOwnDelivery) {
+    // Vendor is paid automatically via MP marketplace split (marketplace_fee on checkout)
+    // Platform retains commission + delivery fee, vendor gets the rest
+    // Here we only handle the deliverer payout from platform's split balance
+    if (!order.store?.hasOwnDelivery && order.paymentMethod !== 'ON_DELIVERY') {
       const payoutAmount = Number(order.deliveryFee);
       if (payoutAmount > 0) {
         delivery.payoutAmount = payoutAmount;
         delivery.payoutStatus = 'pending_confirmation';
       }
-    }
-
-    // Transfer vendor's share (subtotal minus commission) after delivery is confirmed
-    if (!order.store?.hasOwnDelivery && order.paymentMethod !== 'ON_DELIVERY') {
+      // Record vendor split info for tracking
       const vendorAmount = Number(order.subtotal) - Number(order.commissionAmount);
-      if (vendorAmount > 0 && order.store?.owner?.id) {
-        const result = await this.paymentsService.transferToVendor(
-          order.store.owner.id,
-          vendorAmount,
-          order.id,
-        );
+      if (vendorAmount > 0) {
         delivery.vendorPayoutAmount = vendorAmount;
-        delivery.vendorPayoutStatus = result.success ? 'completed' : 'failed';
-        delivery.vendorPayoutMpId = result.mpId || '';
+        delivery.vendorPayoutStatus = 'split_auto';
       }
     }
 

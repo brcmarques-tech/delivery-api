@@ -244,6 +244,12 @@ export class PaymentsService {
       })
       .join(', ');
 
+    // Calculate marketplace fee: commission + delivery fee (when platform handles delivery)
+    let marketplaceFee = Number(order.commissionAmount) || 0;
+    if (!store?.hasOwnDelivery) {
+      marketplaceFee += Number(order.deliveryFee) || 0;
+    }
+
     const result = await preference.create({
       body: {
         items: [
@@ -261,10 +267,13 @@ export class PaymentsService {
           name: customer.name,
           ...(mpCustomerId ? { id: mpCustomerId } : {}),
         },
+        ...(vendorToken && marketplaceFee > 0 ? { marketplace_fee: marketplaceFee } : {}),
         external_reference: `order:${order.id}`,
         notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
       },
     });
+
+    this.logger.log(`Checkout created for order ${order.orderNumber} | total: ${order.total} | marketplace_fee: ${marketplaceFee} | vendor_token: ${!!vendorToken}`);
 
     return { checkoutUrl: result.init_point!, preferenceId: result.id! };
   }
@@ -273,7 +282,13 @@ export class PaymentsService {
     const store = order.store;
     const vendorToken = store?.owner?.mpAccessToken;
 
-    const pixBody = {
+    // Calculate marketplace fee: commission + delivery fee (when platform handles delivery)
+    let pixMarketplaceFee = Number(order.commissionAmount) || 0;
+    if (!store?.hasOwnDelivery) {
+      pixMarketplaceFee += Number(order.deliveryFee) || 0;
+    }
+
+    const pixBody: any = {
       transaction_amount: Number(order.total),
       description: `Pedido ${order.orderNumber}`,
       payment_method_id: 'pix',
@@ -284,6 +299,7 @@ export class PaymentsService {
       },
       external_reference: `order:${order.id}`,
       notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
+      ...(vendorToken && pixMarketplaceFee > 0 ? { application_fee: pixMarketplaceFee } : {}),
     };
 
     // Try vendor token first, fallback to platform token
