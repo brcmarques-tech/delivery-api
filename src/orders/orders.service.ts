@@ -15,6 +15,7 @@ import { AddressesService } from '../addresses/addresses.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CouponsService } from '../coupons/coupons.service';
 import { VerificationService } from '../stores/verification.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
@@ -51,6 +52,7 @@ export class OrdersService {
     private couponsService: CouponsService,
     @Inject(forwardRef(() => VerificationService))
     private verificationService: VerificationService,
+    private whatsAppService: WhatsAppService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -261,6 +263,14 @@ export class OrdersService {
       ).catch(() => {});
     }
 
+    if (store.owner?.phone) {
+      this.whatsAppService.notifyNewOrderToVendor(
+        store.owner.phone,
+        savedOrder.orderNumber,
+        total.toFixed(2),
+      ).catch(() => {});
+    }
+
     this.pubSub.publish('orderCreated', { orderCreated: savedOrder });
     this.pubSub.publish('orderUpdated', { orderUpdated: savedOrder });
 
@@ -425,6 +435,21 @@ export class OrdersService {
         statusMessages[status],
         { type: 'ORDER_STATUS', orderId: order.id, status },
       ).catch(() => {});
+    }
+
+    // WhatsApp notifications
+    const customerPhone = order.customer?.phone;
+    if (customerPhone) {
+      if (status === OrderStatus.ACCEPTED) {
+        this.whatsAppService.notifyOrderConfirmed(customerPhone, order.orderNumber, order.store?.name || '').catch(() => {});
+      } else if (status === OrderStatus.READY) {
+        this.whatsAppService.notifyOrderReady(customerPhone, order.orderNumber).catch(() => {});
+      } else if (status === OrderStatus.DELIVERING) {
+        const delivererName = order.delivery?.deliverer?.name || 'Entregador';
+        this.whatsAppService.notifyOrderDelivering(customerPhone, order.orderNumber, delivererName).catch(() => {});
+      } else if (status === OrderStatus.DELIVERED) {
+        this.whatsAppService.notifyOrderDelivered(customerPhone, order.orderNumber).catch(() => {});
+      }
     }
 
     this.pubSub.publish('orderUpdated', { orderUpdated: saved });
