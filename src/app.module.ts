@@ -22,6 +22,7 @@ import { PlatformConfigModule } from './config/platform-config.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PubSubModule } from './pubsub/pubsub.module';
 import { CouponsModule } from './coupons/coupons.module';
+import { WhatsAppModule } from './whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -83,6 +84,7 @@ import { CouponsModule } from './coupons/coupons.module';
     PlatformConfigModule,
     NotificationsModule,
     CouponsModule,
+    WhatsAppModule,
   ],
 })
 export class AppModule {}
