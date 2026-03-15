@@ -273,7 +273,7 @@ export class PaymentsService {
       },
     });
 
-    this.logger.log(`Checkout created for order ${order.orderNumber} | total: ${order.total} | marketplace_fee: ${marketplaceFee} | vendor_token: ${!!vendorToken}`);
+    this.logger.log(`Checkout created for order ${order.orderNumber} | total: ${order.total} | marketplace_fee: ${marketplaceFee} | vendor_token: ${!!vendorToken} | owner_id: ${store?.owner?.id || 'none'} | mpAccessToken: ${vendorToken ? vendorToken.substring(0, 20) + '...' : 'none'}`);
 
     return { checkoutUrl: result.init_point!, preferenceId: result.id! };
   }
@@ -282,8 +282,14 @@ export class PaymentsService {
     const store = order.store;
     const vendorToken = store?.owner?.mpAccessToken;
 
-    // Pix does not support application_fee without marketplace homologation
-    // Split is handled only via marketplace_fee on Checkout Pro preferences
+    // Calculate marketplace fee: commission + delivery fee (when platform handles delivery)
+    let pixMarketplaceFee = Number(order.commissionAmount) || 0;
+    if (!store?.hasOwnDelivery) {
+      pixMarketplaceFee += Number(order.deliveryFee) || 0;
+    }
+
+    this.logger.log(`Pix creating for order ${order.orderNumber} | total: ${order.total} | application_fee: ${pixMarketplaceFee} | vendor_token: ${!!vendorToken} | owner_id: ${store?.owner?.id || 'none'}`);
+
     const pixBody: any = {
       transaction_amount: Number(order.total),
       description: `Pedido ${order.orderNumber}`,
@@ -295,6 +301,7 @@ export class PaymentsService {
       },
       external_reference: `order:${order.id}`,
       notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
+      ...(vendorToken && pixMarketplaceFee > 0 ? { application_fee: pixMarketplaceFee } : {}),
     };
 
     // Try vendor token first, fallback to platform token
