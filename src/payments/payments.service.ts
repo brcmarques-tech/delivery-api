@@ -282,13 +282,7 @@ export class PaymentsService {
     const store = order.store;
     const vendorToken = store?.owner?.mpAccessToken;
 
-    // Calculate marketplace fee: commission + delivery fee (when platform handles delivery)
-    let pixMarketplaceFee = Number(order.commissionAmount) || 0;
-    if (!store?.hasOwnDelivery) {
-      pixMarketplaceFee += Number(order.deliveryFee) || 0;
-    }
-
-    this.logger.log(`Pix creating for order ${order.orderNumber} | total: ${order.total} | application_fee: ${pixMarketplaceFee} | vendor_token: ${!!vendorToken} | owner_id: ${store?.owner?.id || 'none'}`);
+    this.logger.log(`Pix creating for order ${order.orderNumber} | total: ${order.total} | vendor_token: ${!!vendorToken} | owner_id: ${store?.owner?.id || 'none'}`);
 
     const pixBody: any = {
       transaction_amount: Number(order.total),
@@ -301,7 +295,6 @@ export class PaymentsService {
       },
       external_reference: `order:${order.id}`,
       notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
-      ...(vendorToken && pixMarketplaceFee > 0 ? { application_fee: pixMarketplaceFee } : {}),
     };
 
     // Try vendor token first, fallback to platform token
