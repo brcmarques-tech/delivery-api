@@ -5,6 +5,7 @@ import { Promotion } from './entities/promotion.entity';
 import { PromotionsService } from './promotions.service';
 import { CreatePromotionInput } from './dto/create-promotion.input';
 import { PaymentsService } from '../payments/payments.service';
+import { MailService } from '../mail/mail.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -18,6 +19,7 @@ export class PromotionsResolver {
   constructor(
     private promotionsService: PromotionsService,
     private paymentsService: PaymentsService,
+    private mailService: MailService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -68,15 +70,21 @@ export class PromotionsResolver {
   @Mutation(() => Promotion)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  togglePromotionActive(@Args('id') id: string): Promise<Promotion> {
-    return this.promotionsService.toggleActive(id);
+  async togglePromotionActive(@Args('id') id: string, @CurrentUser() admin: any): Promise<Promotion> {
+    const result = await this.promotionsService.toggleActive(id);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, `Promocao ${result.isActive ? 'ativada' : 'desativada'}`, `Promocao: ${result.title} (ID: ${result.id})`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => Promotion)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  markPromotionPaid(@Args('id') id: string): Promise<Promotion> {
-    return this.promotionsService.markAsPaid(id);
+  async markPromotionPaid(@Args('id') id: string, @CurrentUser() admin: any): Promise<Promotion> {
+    const result = await this.promotionsService.markAsPaid(id);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Promocao marcada como paga', `Promocao: ${result.title} (ID: ${result.id})`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => Promotion)

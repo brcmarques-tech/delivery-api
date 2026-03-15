@@ -2,6 +2,7 @@ import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { AppUser } from './entities/app-user.entity';
 import { AppUsersService } from './app-users.service';
+import { MailService } from '../mail/mail.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -11,7 +12,10 @@ import { RegisterDelivererInput } from './dto/register-deliverer.input';
 
 @Resolver(() => AppUser)
 export class AppUsersResolver {
-  constructor(private appUsersService: AppUsersService) {}
+  constructor(
+    private appUsersService: AppUsersService,
+    private mailService: MailService,
+  ) {}
 
   @Query(() => AppUser)
   @UseGuards(GqlAuthGuard)
@@ -45,59 +49,81 @@ export class AppUsersResolver {
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  approveAppUser(@Args('id') id: string): Promise<AppUser> {
-    return this.appUsersService.approveUser(id);
+  async approveAppUser(@Args('id') id: string, @CurrentUser() admin: AppUser): Promise<AppUser> {
+    const result = await this.appUsersService.approveUser(id);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Usuario aprovado', `Usuario: ${result.name} (${result.email})\nRole: ${result.role}`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  rejectAppUser(
+  async rejectAppUser(
     @Args('id') id: string,
     @Args('reason') reason: string,
+    @CurrentUser() admin: AppUser,
   ): Promise<AppUser> {
-    return this.appUsersService.rejectUser(id, reason);
+    const result = await this.appUsersService.rejectUser(id, reason);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Usuario rejeitado', `Usuario: ${result.name} (${result.email})\nMotivo: ${reason}`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  updateAppUserRole(
+  async updateAppUserRole(
     @Args('id') id: string,
     @Args('role', { type: () => UserRole }) role: UserRole,
+    @CurrentUser() admin: AppUser,
   ): Promise<AppUser> {
-    return this.appUsersService.updateUserRole(id, role);
+    const result = await this.appUsersService.updateUserRole(id, role);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Role de usuario alterado', `Usuario: ${result.name} (${result.email})\nNovo role: ${role}`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  toggleAppUserActive(@Args('id') id: string): Promise<AppUser> {
-    return this.appUsersService.toggleUserActive(id);
+  async toggleAppUserActive(@Args('id') id: string, @CurrentUser() admin: AppUser): Promise<AppUser> {
+    const result = await this.appUsersService.toggleUserActive(id);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, `Usuario ${result.isActive ? 'ativado' : 'desativado'}`, `Usuario: ${result.name} (${result.email})`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  registerSuperadmin(
+  async registerSuperadmin(
     @Args('name') name: string,
     @Args('email') email: string,
     @Args('password') password: string,
     @Args('phone') phone: string,
+    @CurrentUser() admin: AppUser,
     @Args('permissions', { nullable: true }) permissions?: string,
   ): Promise<AppUser> {
     const parsedPermissions = permissions ? JSON.parse(permissions) : undefined;
-    return this.appUsersService.createSuperadmin({ name, email, password, phone, permissions: parsedPermissions });
+    const result = await this.appUsersService.createSuperadmin({ name, email, password, phone, permissions: parsedPermissions });
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Novo superadmin criado', `Nome: ${name}\nEmail: ${email}`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  updateSuperadminPermissions(
+  async updateSuperadminPermissions(
     @Args('id') id: string,
     @Args('permissions') permissions: string,
+    @CurrentUser() admin: AppUser,
   ): Promise<AppUser> {
-    return this.appUsersService.updateSuperadminPermissions(id, JSON.parse(permissions));
+    const result = await this.appUsersService.updateSuperadminPermissions(id, JSON.parse(permissions));
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Permissoes de superadmin atualizadas', `Superadmin: ${result.name} (${result.email})\nPermissoes: ${permissions}`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => AppUser)

@@ -2,15 +2,20 @@ import { Resolver, Query, Mutation, Args, Float, Int } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { PlatformConfig } from './entities/platform-config.entity';
 import { PlatformConfigService } from './platform-config.service';
+import { MailService } from '../mail/mail.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole, VendorPlan } from '../common/enums';
 import { PlanInfo } from '../common/plan-info.type';
 
 @Resolver(() => PlatformConfig)
 export class PlatformConfigResolver {
-  constructor(private configService: PlatformConfigService) {}
+  constructor(
+    private configService: PlatformConfigService,
+    private mailService: MailService,
+  ) {}
 
   @Query(() => Float)
   promoPricePerDay(): Promise<number> {
@@ -20,8 +25,11 @@ export class PlatformConfigResolver {
   @Mutation(() => PlatformConfig)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  setPromoPricePerDay(@Args('price', { type: () => Float }) price: number): Promise<PlatformConfig> {
-    return this.configService.set('promo_price_per_day', String(price));
+  async setPromoPricePerDay(@Args('price', { type: () => Float }) price: number, @CurrentUser() admin: any): Promise<PlatformConfig> {
+    const result = await this.configService.set('promo_price_per_day', String(price));
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Preco de promocao/dia alterado', `Novo valor: R$ ${price}`).catch(() => {});
+    return result;
   }
 
   @Query(() => Float)
@@ -37,15 +45,21 @@ export class PlatformConfigResolver {
   @Mutation(() => PlatformConfig)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  setDeliveryPricePerKm(@Args('price', { type: () => Float }) price: number): Promise<PlatformConfig> {
-    return this.configService.set('delivery_price_per_km', String(price));
+  async setDeliveryPricePerKm(@Args('price', { type: () => Float }) price: number, @CurrentUser() admin: any): Promise<PlatformConfig> {
+    const result = await this.configService.set('delivery_price_per_km', String(price));
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Preco de entrega/km alterado', `Novo valor: R$ ${price}`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => PlatformConfig)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  setDeliveryBasePrice(@Args('price', { type: () => Float }) price: number): Promise<PlatformConfig> {
-    return this.configService.set('delivery_base_price', String(price));
+  async setDeliveryBasePrice(@Args('price', { type: () => Float }) price: number, @CurrentUser() admin: any): Promise<PlatformConfig> {
+    const result = await this.configService.set('delivery_base_price', String(price));
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Preco base de entrega alterado', `Novo valor: R$ ${price}`).catch(() => {});
+    return result;
   }
 
   @Query(() => [PlatformConfig])
@@ -73,8 +87,11 @@ export class PlatformConfigResolver {
   async updateContractContent(
     @Args('type') type: string,
     @Args('content') content: string,
+    @CurrentUser() admin: any,
   ): Promise<boolean> {
     await this.configService.updateContractContent(type as any, content);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Contrato atualizado', `Tipo: ${type}`).catch(() => {});
     return true;
   }
 
@@ -91,8 +108,11 @@ export class PlatformConfigResolver {
   @Roles(UserRole.SUPERADMIN)
   async updateBadgeThresholds(
     @Args('thresholds') thresholds: string,
+    @CurrentUser() admin: any,
   ): Promise<boolean> {
     await this.configService.setBadgeThresholds(JSON.parse(thresholds));
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Thresholds de badge atualizados', `Valores: ${thresholds}`).catch(() => {});
     return true;
   }
 
@@ -101,8 +121,11 @@ export class PlatformConfigResolver {
   @Roles(UserRole.SUPERADMIN)
   async updateBadgePoints(
     @Args('points') points: string,
+    @CurrentUser() admin: any,
   ): Promise<boolean> {
     await this.configService.setBadgePoints(JSON.parse(points));
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Pontos de badge atualizados', `Valores: ${points}`).catch(() => {});
     return true;
   }
 
@@ -112,8 +135,11 @@ export class PlatformConfigResolver {
   async updateBadgeRewards(
     @Args('level') level: string,
     @Args('rewards') rewards: string,
+    @CurrentUser() admin: any,
   ): Promise<boolean> {
     await this.configService.setBadgeRewards(level, JSON.parse(rewards));
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Recompensas de badge atualizadas', `Nivel: ${level}\nRecompensas: ${rewards}`).catch(() => {});
     return true;
   }
 
@@ -139,6 +165,7 @@ export class PlatformConfigResolver {
     @Args('hasAnalytics') hasAnalytics: boolean,
     @Args('supportLevel') supportLevel: string,
     @Args('isContactSales') isContactSales: boolean,
+    @CurrentUser() admin: any,
   ): Promise<boolean> {
     await this.configService.updatePlanConfig(plan, {
       maxStores, commissionPercent, monthlyPrice, quarterlyPrice, semiannualPrice, annualPrice,
@@ -146,6 +173,8 @@ export class PlatformConfigResolver {
       listingPriority, highlightDaysPerMonth,
       canUseCoupons, hasAnalytics, supportLevel, isContactSales,
     });
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Configuracao de plano atualizada', `Plano: ${plan}\nLojas: ${maxStores}, Comissao: ${commissionPercent}%, Mensal: R$ ${monthlyPrice}`).catch(() => {});
     return true;
   }
 }

@@ -6,6 +6,7 @@ import { StoresService } from './stores.service';
 import { VerificationService } from './verification.service';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
+import { MailService } from '../mail/mail.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -28,6 +29,7 @@ export class StoresResolver {
     private storesService: StoresService,
     private verificationService: VerificationService,
     private platformConfigService: PlatformConfigService,
+    private mailService: MailService,
     private delivererTracker: DelivererTrackerService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
@@ -171,8 +173,11 @@ export class StoresResolver {
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  toggleStoreActive(@Args('id') id: string): Promise<Store> {
-    return this.storesService.toggleActive(id);
+  async toggleStoreActive(@Args('id') id: string, @CurrentUser() admin: any): Promise<Store> {
+    const result = await this.storesService.toggleActive(id);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, `Loja ${result.isActive ? 'ativada' : 'desativada'}`, `Loja: ${result.name} (ID: ${result.id})`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => Boolean)
@@ -210,6 +215,7 @@ export class StoresResolver {
   async setStoreVerification(
     @Args('storeId') storeId: string,
     @Args('level', { type: () => VerificationLevel }) level: VerificationLevel,
+    @CurrentUser() admin: any,
     @Args('score', { type: () => Float, nullable: true }) score?: number,
   ): Promise<Store> {
     const store = await this.storesService.findById(storeId);
@@ -217,7 +223,10 @@ export class StoresResolver {
     if (score !== undefined && score !== null) {
       store.verificationScore = score;
     }
-    return this.storesService.saveStore(store);
+    const result = await this.storesService.saveStore(store);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Verificacao de loja alterada', `Loja: ${store.name}\nNivel: ${level}${score !== undefined ? `\nScore: ${score}` : ''}`).catch(() => {});
+    return result;
   }
 
   @ResolveField(() => Boolean)

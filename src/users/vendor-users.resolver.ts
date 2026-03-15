@@ -2,18 +2,21 @@ import { Resolver, Query, Mutation, Args, Int } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { VendorUser } from './entities/vendor-user.entity';
 import { VendorUsersService } from './vendor-users.service';
+import { MailService } from '../mail/mail.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole, VendorPlan } from '../common/enums';
 import { PlanInfo } from '../common/plan-info.type';
+import { AppUser } from './entities/app-user.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
 
 @Resolver(() => VendorUser)
 export class VendorUsersResolver {
   constructor(
     private vendorUsersService: VendorUsersService,
+    private mailService: MailService,
     private platformConfigService: PlatformConfigService,
   ) {}
 
@@ -40,36 +43,50 @@ export class VendorUsersResolver {
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  approveVendorUser(@Args('id') id: string): Promise<VendorUser> {
-    return this.vendorUsersService.approveUser(id);
+  async approveVendorUser(@Args('id') id: string, @CurrentUser() admin: any): Promise<VendorUser> {
+    const result = await this.vendorUsersService.approveUser(id);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Vendedor aprovado', `Vendedor: ${result.name} (${result.email})`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  rejectVendorUser(
+  async rejectVendorUser(
     @Args('id') id: string,
     @Args('reason') reason: string,
+    @CurrentUser() admin: any,
   ): Promise<VendorUser> {
-    return this.vendorUsersService.rejectUser(id, reason);
+    const result = await this.vendorUsersService.rejectUser(id, reason);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Vendedor rejeitado', `Vendedor: ${result.name} (${result.email})\nMotivo: ${reason}`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  toggleVendorUserActive(@Args('id') id: string): Promise<VendorUser> {
-    return this.vendorUsersService.toggleUserActive(id);
+  async toggleVendorUserActive(@Args('id') id: string, @CurrentUser() admin: any): Promise<VendorUser> {
+    const result = await this.vendorUsersService.toggleUserActive(id);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, `Vendedor ${result.isActive ? 'ativado' : 'desativado'}`, `Vendedor: ${result.name} (${result.email})`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  updateVendorPlan(
+  async updateVendorPlan(
     @Args('id') id: string,
     @Args('plan', { type: () => VendorPlan }) plan: VendorPlan,
     @Args('durationMonths', { type: () => Int, defaultValue: 1 }) durationMonths: number,
+    @CurrentUser() admin: any,
   ): Promise<VendorUser> {
-    return this.vendorUsersService.updateVendorPlan(id, plan, durationMonths);
+    const result = await this.vendorUsersService.updateVendorPlan(id, plan, durationMonths);
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Plano de vendedor atualizado', `Vendedor: ${result.name} (${result.email})\nPlano: ${plan}\nDuracao: ${durationMonths} mes(es)`).catch(() => {});
+    return result;
   }
 
   @Mutation(() => VendorUser)
