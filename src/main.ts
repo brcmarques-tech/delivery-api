@@ -22,7 +22,7 @@ async function bootstrap() {
     mailService.retryFailedEmails().catch(() => {});
   }, 60 * 60 * 1000);
 
-  // Anti-sleep: ping a cada 14 min para manter todos os serviços do Render acordados
+  // Anti-sleep: ping a cada 10 min para manter todos os serviços do Render acordados
   const selfUrl = process.env.RENDER_EXTERNAL_URL || process.env.APP_URL;
   const vendorUrl = process.env.VENDOR_PANEL_URL;
   const superadminUrl = process.env.SUPERADMIN_URL;
@@ -36,7 +36,7 @@ async function bootstrap() {
       if (wahaUrl) fetch(`${wahaUrl}/api/version`, {
         headers: wahaKey ? { 'X-Api-Key': wahaKey } : {},
       }).catch(() => {});
-    }, 14 * 60 * 1000);
+    }, 10 * 60 * 1000);
   }
 }
 bootstrap();
