@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, LessThanOrEqual } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
@@ -304,15 +304,19 @@ export class OrdersService {
 
   async expireAwaitingPaymentOrders(): Promise<number> {
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
-    const expired = await this.ordersRepository
-      .createQueryBuilder('order')
-      .where('order.status = :status', { status: OrderStatus.AWAITING_PAYMENT })
-      .andWhere('order.createdAt <= :tenMinAgo', { tenMinAgo })
-      .getMany();
+    const expired = await this.ordersRepository.find({
+      where: { status: OrderStatus.AWAITING_PAYMENT, createdAt: LessThanOrEqual(tenMinAgo) },
+      relations: ['items', 'items.product'],
+    });
 
     for (const order of expired) {
       order.status = OrderStatus.EXPIRED;
       await this.ordersRepository.save(order);
+      for (const item of order.items) {
+        if (item.product) {
+          await this.productsService.restoreStock(item.product.id, item.quantity);
+        }
+      }
     }
     return expired.length;
   }
