@@ -31,6 +31,8 @@ services:
       APP_URL: http://localhost:3000
       VENDOR_APP_URL: http://localhost:3001
       WEBHOOK_URL: https://acrimoniously-nondisciplinary-emory.ngrok-free.dev
+      WAHA_API_URL: http://172.17.0.1:3003
+      WAHA_API_KEY: bcmtech-waha-2026-key
     depends_on:
       - postgres
       - redis

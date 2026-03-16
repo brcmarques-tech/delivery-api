@@ -41,6 +41,40 @@ export class AppUsersService {
     return true;
   }
 
+  async validateRegistration(email: string, cpf: string, phone: string): Promise<{ valid: boolean; emailError?: string; cpfError?: string; phoneError?: string }> {
+    const result: { valid: boolean; emailError?: string; cpfError?: string; phoneError?: string } = { valid: true };
+
+    if (cpf) {
+      if (!this.validateCpf(cpf)) {
+        result.cpfError = 'CPF invalido';
+        result.valid = false;
+      } else {
+        const cpfExists = await this.appUsersRepository.findOne({ where: { cpf } });
+        if (cpfExists) {
+          result.cpfError = 'CPF ja cadastrado';
+          result.valid = false;
+        }
+      }
+    }
+
+    const emailExists = await this.appUsersRepository.findOne({ where: { email } });
+    if (emailExists) {
+      result.emailError = 'Email ja cadastrado';
+      result.valid = false;
+    }
+
+    if (phone) {
+      const phoneDigits = phone.replace(/\D/g, '');
+      const phoneExists = await this.appUsersRepository.findOne({ where: { phone: phoneDigits } });
+      if (phoneExists) {
+        result.phoneError = 'Telefone ja cadastrado';
+        result.valid = false;
+      }
+    }
+
+    return result;
+  }
+
   async create(input: RegisterAppInput): Promise<AppUser> {
     if (input.cpf) {
       if (!this.validateCpf(input.cpf)) {
@@ -70,6 +104,7 @@ export class AppUsersService {
       ...input,
       password: hashedPassword,
       role: UserRole.CUSTOMER,
+      phoneVerified: true,
       acceptedTermsAt: new Date(),
     });
     return this.appUsersRepository.save(user);

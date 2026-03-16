@@ -97,8 +97,9 @@ export class VendorUsersResolver {
     @Args('phone', { nullable: true }) phone?: string,
     @Args('currentPassword', { nullable: true }) currentPassword?: string,
     @Args('newPassword', { nullable: true }) newPassword?: string,
+    @Args('email', { nullable: true }) email?: string,
   ): Promise<VendorUser> {
-    return this.vendorUsersService.updateProfile(user.id, name, phone, currentPassword, newPassword);
+    return this.vendorUsersService.updateProfile(user.id, name, phone, currentPassword, newPassword, email);
   }
 
   @Mutation(() => VendorUser)
