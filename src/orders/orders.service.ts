@@ -66,6 +66,20 @@ export class OrdersService {
     const store = await this.storesService.findById(input.storeId);
     const isPickup = input.isPickup || false;
 
+    if (!store.isOpen) {
+      throw new BadRequestException('Esta loja esta fechada no momento');
+    }
+
+    if (store.deliveryStartTime && store.deliveryEndTime) {
+      const now = new Date();
+      const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      if (currentTime < store.deliveryStartTime || currentTime > store.deliveryEndTime) {
+        throw new BadRequestException(
+          `Esta loja so aceita pedidos das ${store.deliveryStartTime} as ${store.deliveryEndTime}`,
+        );
+      }
+    }
+
     if (!isPickup && !input.deliveryAddress) {
       throw new BadRequestException('Informe o endereco de entrega');
     }
