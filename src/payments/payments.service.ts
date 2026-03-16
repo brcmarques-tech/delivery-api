@@ -308,7 +308,7 @@ export class PaymentsService {
             quantity: 1,
             unit_price: Number(order.total),
             currency_id: 'BRL',
-            category_id: 'food',
+            category_id: 'others',
           },
         ],
         payer,
