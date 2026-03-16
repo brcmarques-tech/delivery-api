@@ -89,13 +89,15 @@ export class PaymentsService {
             quantity: 1,
             unit_price: billing.price,
             currency_id: 'BRL',
+            category_id: 'services',
           },
         ],
         payer: {
           email: user.email,
-          name: user.name,
+          first_name: user.name.split(' ')[0],
+          last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0],
           ...(mpCustomerId ? { id: mpCustomerId } : {}),
-        },
+        } as any,
         payment_methods: {
           installments: maxInstallments,
         },
@@ -196,13 +198,15 @@ export class PaymentsService {
             quantity: 1,
             unit_price: Number(promotion.adCost),
             currency_id: 'BRL',
+            category_id: 'services',
           },
         ],
         payer: {
           email: user.email,
-          name: user.name,
+          first_name: user.name.split(' ')[0],
+          last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0],
           ...(mpCustomerId ? { id: mpCustomerId } : {}),
-        },
+        } as any,
         back_urls: {
           success: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/promotions?status=success`,
           failure: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/promotions?status=failure`,
@@ -258,6 +262,42 @@ export class PaymentsService {
       marketplaceFee += Number(order.deliveryFee) || 0;
     }
 
+    // Split customer name for MP payer data
+    const nameParts = customer.name.trim().split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.slice(1).join(' ') || firstName;
+
+    // Build payer object with all available data
+    const payer: any = {
+      email: customer.email,
+      first_name: firstName,
+      last_name: lastName,
+      ...(mpCustomerId ? { id: mpCustomerId } : {}),
+    };
+
+    if (customer.cpf) {
+      payer.identification = { type: 'CPF', number: customer.cpf.replace(/\D/g, '') };
+    }
+
+    if (customer.phone) {
+      const phoneDigits = customer.phone.replace(/\D/g, '');
+      payer.phone = {
+        area_code: phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53',
+        number: phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits,
+      };
+    }
+
+    if (order.deliveryAddress) {
+      payer.address = {
+        street_name: order.deliveryAddress,
+        zip_code: '96330-000',
+      };
+    }
+
+    // Preference expires in 24h
+    const now = new Date();
+    const expiration = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
     const result = await preference.create({
       body: {
         items: [
@@ -268,13 +308,10 @@ export class PaymentsService {
             quantity: 1,
             unit_price: Number(order.total),
             currency_id: 'BRL',
+            category_id: 'food',
           },
         ],
-        payer: {
-          email: customer.email,
-          name: customer.name,
-          ...(mpCustomerId ? { id: mpCustomerId } : {}),
-        },
+        payer,
         ...(vendorToken && marketplaceFee > 0 ? { marketplace_fee: marketplaceFee } : {}),
         back_urls: {
           success: `${this.configService.get('APP_URL') || 'http://localhost:3000'}/payments/order-result?status=success&order=${order.id}`,
@@ -282,7 +319,13 @@ export class PaymentsService {
           pending: `${this.configService.get('APP_URL') || 'http://localhost:3000'}/payments/order-result?status=pending&order=${order.id}`,
         },
         auto_return: 'approved',
+        binary_mode: true,
         statement_descriptor: 'BCMTECH DELIVERY',
+        expires: true,
+        date_of_expiration: expiration.toISOString(),
+        payment_methods: {
+          installments: 6,
+        },
         external_reference: `order:${order.id}`,
         notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
       },
@@ -297,15 +340,39 @@ export class PaymentsService {
     // Pix always goes to platform account — platform distributes to vendor and deliverer later
     this.logger.log(`Pix creating for order ${order.orderNumber} | total: ${order.total} | using platform token (marketplace model)`);
 
+    const pixNameParts = customer.name.trim().split(' ');
+    const pixPayer: any = {
+      email: customer.email,
+      first_name: pixNameParts[0],
+      last_name: pixNameParts.slice(1).join(' ') || pixNameParts[0],
+    };
+
+    if (customer.cpf) {
+      pixPayer.identification = { type: 'CPF', number: customer.cpf.replace(/\D/g, '') };
+    }
+
+    if (customer.phone) {
+      const phoneDigits = customer.phone.replace(/\D/g, '');
+      pixPayer.phone = {
+        area_code: phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53',
+        number: phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits,
+      };
+    }
+
+    if (order.deliveryAddress) {
+      pixPayer.address = {
+        street_name: order.deliveryAddress,
+        zip_code: '96330-000',
+      };
+    }
+
     const pixBody: any = {
       transaction_amount: Number(order.total),
       description: `Pedido ${order.orderNumber}`,
       payment_method_id: 'pix',
-      payer: {
-        email: customer.email,
-        first_name: customer.name.split(' ')[0],
-        last_name: customer.name.split(' ').slice(1).join(' ') || customer.name,
-      },
+      payer: pixPayer,
+      binary_mode: true,
+      statement_descriptor: 'BCMTECH DELIVERY',
       external_reference: `order:${order.id}`,
       notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
     };
