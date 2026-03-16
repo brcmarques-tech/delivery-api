@@ -19,9 +19,14 @@ export class WhatsAppService {
   }
 
   private formatPhone(phone: string): string {
-    const digits = phone.replace(/\D/g, '');
-    if (digits.startsWith('55')) return digits;
-    return `55${digits}`;
+    let digits = phone.replace(/\D/g, '');
+    if (!digits.startsWith('55')) digits = `55${digits}`;
+    // WhatsApp BR: celulares com 9 digitos (55 + DDD + 9XXXX-XXXX = 13 digitos)
+    // sao registrados no WhatsApp sem o nono digito (55 + DDD + XXXX-XXXX = 12 digitos)
+    if (digits.length === 13 && digits[4] === '9') {
+      digits = digits.slice(0, 4) + digits.slice(5);
+    }
+    return digits;
   }
 
   async sendText(to: string, text: string): Promise<boolean> {

@@ -36,6 +36,25 @@ export class MailService {
     }
   }
 
+  /**
+   * Envia email apenas se o usuario verificou o email.
+   * Retorna false silenciosamente se não verificado.
+   * Para codigos de verificacao, use sendEmail diretamente.
+   */
+  async sendEmailIfVerified(to: string, subject: string, html: string, emailVerified?: boolean): Promise<boolean> {
+    if (emailVerified === false) {
+      this.logger.log(`Email nao enviado para ${to}: email nao verificado`);
+      return false;
+    }
+    try {
+      await this.sendEmail(to, subject, html);
+      return true;
+    } catch (e) {
+      this.logger.error(`Erro ao enviar email para ${to}`, e);
+      return false;
+    }
+  }
+
   private async sendEmail(to: string, subject: string, html: string): Promise<void> {
     if (!this.resend) throw new Error('Email desabilitado: RESEND_API_KEY não configurada');
     const { error } = await this.resend.emails.send({
@@ -349,5 +368,39 @@ export class MailService {
       this.logger.log(`Auto-retry email para ${log.to}`);
       await this.resendEmail(log);
     }
+  }
+
+  async sendVerificationCode(to: string, code: string): Promise<void> {
+    const subject = 'bcmTech - Codigo de verificacao';
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+          <h2 style="color: #2D3436; text-align: center;">Codigo de verificacao</h2>
+          <p style="color: #555; font-size: 16px; line-height: 1.6; text-align: center;">
+            Use o codigo abaixo para verificar seu email:
+          </p>
+          <div style="text-align: center; margin: 30px 0;">
+            <div style="display: inline-block; background: #FF6B35; color: white; padding: 16px 40px; border-radius: 12px; font-size: 32px; font-weight: bold; letter-spacing: 8px;">
+              ${code}
+            </div>
+          </div>
+          <p style="color: #999; font-size: 14px; text-align: center;">
+            Este codigo expira em 10 minutos.
+          </p>
+          <p style="color: #999; font-size: 14px; text-align: center;">
+            Se voce nao solicitou este codigo, ignore este email.
+          </p>
+          <div style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 15px; text-align: center;">
+            <p style="color: #999; font-size: 11px; margin: 0;">
+              Este email foi enviado automaticamente. Por favor, nao responda.
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+    await this.sendEmail(to, subject, html);
   }
 }

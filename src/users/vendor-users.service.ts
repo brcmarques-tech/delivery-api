@@ -43,6 +43,40 @@ export class VendorUsersService {
     return true;
   }
 
+  async validateRegistration(email: string, cpf: string, phone: string): Promise<{ valid: boolean; emailError?: string; cpfError?: string; phoneError?: string }> {
+    const result: { valid: boolean; emailError?: string; cpfError?: string; phoneError?: string } = { valid: true };
+
+    if (cpf) {
+      if (!this.validateCpf(cpf)) {
+        result.cpfError = 'CPF invalido';
+        result.valid = false;
+      } else {
+        const cpfExists = await this.vendorUsersRepository.findOne({ where: { cpf } });
+        if (cpfExists) {
+          result.cpfError = 'CPF ja cadastrado';
+          result.valid = false;
+        }
+      }
+    }
+
+    const emailExists = await this.vendorUsersRepository.findOne({ where: { email } });
+    if (emailExists) {
+      result.emailError = 'Email ja cadastrado';
+      result.valid = false;
+    }
+
+    if (phone) {
+      const phoneDigits = phone.replace(/\D/g, '');
+      const phoneExists = await this.vendorUsersRepository.findOne({ where: { phone: phoneDigits } });
+      if (phoneExists) {
+        result.phoneError = 'Telefone ja cadastrado';
+        result.valid = false;
+      }
+    }
+
+    return result;
+  }
+
   async create(input: RegisterVendorInput): Promise<VendorUser> {
     if (input.cpf) {
       if (!this.validateCpf(input.cpf)) {
@@ -74,6 +108,7 @@ export class VendorUsersService {
       password: hashedPassword,
       role: UserRole.CUSTOMER,
       pendingRole: 'VENDOR',
+      phoneVerified: true,
       acceptedTermsAt: new Date(),
     });
     return this.vendorUsersRepository.save(user);
@@ -211,11 +246,17 @@ export class VendorUsersService {
     await this.vendorUsersRepository.update(id, { expoPushToken: token });
   }
 
-  async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string): Promise<VendorUser> {
+  async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string, email?: string): Promise<VendorUser> {
     const user = await this.vendorUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     if (name) user.name = name;
     if (phone) user.phone = phone;
+    if (email && email !== user.email) {
+      const existing = await this.vendorUsersRepository.findOne({ where: { email } });
+      if (existing) throw new BadRequestException('Este email ja esta em uso');
+      user.email = email;
+      user.emailVerified = false;
+    }
     if (newPassword) {
       if (!currentPassword) throw new BadRequestException('Senha atual e obrigatoria para alterar a senha');
       const valid = await bcrypt.compare(currentPassword, user.password);

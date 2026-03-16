@@ -1,10 +1,16 @@
 import { Controller, Get, Post, Query, Body, Res, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as express from 'express';
 import { AuthService } from './auth.service';
+import { JwtService } from '@nestjs/jwt';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private configService: ConfigService,
+    private jwtService: JwtService,
+  ) {}
 
   @Get('reset-password')
   async resetPasswordPage(
@@ -46,6 +52,110 @@ export class AuthController {
     } catch (err: any) {
       const msg = err?.message || 'Erro ao redefinir senha.';
       return res.send(this.renderHtml('Redefinir Senha', msg, false, token, type));
+    }
+  }
+
+  // ---- Google OAuth for Mobile ----
+
+  @Get('google/mobile')
+  async googleMobileStart(
+    @Query('mode') mode: string,
+    @Query('userType') userType: string,
+    @Res() res: express.Response,
+  ) {
+    const clientId = this.configService.get('GOOGLE_CLIENT_ID');
+    const appUrl = this.configService.get('APP_URL');
+    const state = this.jwtService.sign(
+      { mode: mode || 'login', userType: userType || 'app' },
+      { expiresIn: '10m' },
+    );
+    const redirectUri = `${appUrl}/auth/google/mobile/callback`;
+    const url =
+      `https://accounts.google.com/o/oauth2/v2/auth?` +
+      `client_id=${clientId}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&response_type=code` +
+      `&scope=openid+profile+email` +
+      `&state=${state}` +
+      `&access_type=offline` +
+      `&prompt=select_account`;
+    return res.redirect(url);
+  }
+
+  @Get('google/mobile/callback')
+  async googleMobileCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Query('error') error: string,
+    @Res() res: express.Response,
+  ) {
+    const scheme = 'delivery-app';
+
+    if (error || !code) {
+      return res.redirect(`${scheme}://google-auth?error=${error || 'no_code'}`);
+    }
+
+    let statePayload: any;
+    try {
+      statePayload = this.jwtService.verify(state);
+    } catch {
+      return res.redirect(`${scheme}://google-auth?error=invalid_state`);
+    }
+
+    const { mode, userType } = statePayload;
+    const clientId = this.configService.get('GOOGLE_CLIENT_ID');
+    const clientSecret = this.configService.get('GOOGLE_CLIENT_SECRET');
+    const appUrl = this.configService.get('APP_URL');
+    const redirectUri = `${appUrl}/auth/google/mobile/callback`;
+
+    try {
+      // Exchange code for tokens
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+        }),
+      });
+      const tokens = await tokenRes.json();
+      if (!tokens.access_token) {
+        return res.redirect(`${scheme}://google-auth?error=token_exchange_failed`);
+      }
+
+      // Get user info
+      const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      });
+      const userInfo = await userInfoRes.json();
+
+      if (mode === 'register') {
+        // Registration: return user info so the app can collect phone/CPF
+        const params = new URLSearchParams({
+          mode: 'register',
+          name: userInfo.name || '',
+          email: userInfo.email || '',
+          googleId: userInfo.sub || '',
+          emailVerified: userInfo.email_verified ? 'true' : 'false',
+          accessToken: tokens.access_token,
+        });
+        return res.redirect(`${scheme}://google-auth?${params.toString()}`);
+      }
+
+      // Login mode: try to authenticate
+      const result = await this.authService.googleAuthMobile(userInfo, userType || 'app');
+      const params = new URLSearchParams({
+        mode: 'login',
+        token: result.accessToken,
+        user: JSON.stringify(result.user),
+      });
+      return res.redirect(`${scheme}://google-auth?${params.toString()}`);
+    } catch (err: any) {
+      const msg = err?.message || 'unknown_error';
+      return res.redirect(`${scheme}://google-auth?error=${encodeURIComponent(msg)}`);
     }
   }
 

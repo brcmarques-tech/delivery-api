@@ -26,8 +26,12 @@ export class AppUser {
   @Column({ unique: true })
   email: string;
 
-  @Column()
+  @Column({ nullable: true })
   password: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  googleId: string;
 
   @Field()
   @Column()
@@ -94,6 +98,15 @@ export class AppUser {
   @Field(() => String, { nullable: true })
   @Column({ type: 'varchar', nullable: true })
   rejectionReason: string | null;
+
+  // Verificação de contato
+  @Field()
+  @Column({ default: false })
+  emailVerified: boolean;
+
+  @Field()
+  @Column({ default: false })
+  phoneVerified: boolean;
 
   // Termos de uso aceitos
   @Field(() => Date, { nullable: true })
