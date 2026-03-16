@@ -61,12 +61,13 @@ export class AuthController {
   async googleMobileStart(
     @Query('mode') mode: string,
     @Query('userType') userType: string,
+    @Query('returnUrl') returnUrl: string,
     @Res() res: express.Response,
   ) {
     const clientId = this.configService.get('GOOGLE_CLIENT_ID');
     const appUrl = this.configService.get('APP_URL');
     const state = this.jwtService.sign(
-      { mode: mode || 'login', userType: userType || 'app' },
+      { mode: mode || 'login', userType: userType || 'app', returnUrl: returnUrl || 'delivery-app://google-auth' },
       { expiresIn: '10m' },
     );
     const redirectUri = `${appUrl}/auth/google/mobile/callback`;
@@ -89,20 +90,19 @@ export class AuthController {
     @Query('error') error: string,
     @Res() res: express.Response,
   ) {
-    const scheme = 'delivery-app';
-
     if (error || !code) {
-      return res.redirect(`${scheme}://google-auth?error=${error || 'no_code'}`);
+      return res.redirect(`delivery-app://google-auth?error=${error || 'no_code'}`);
     }
 
     let statePayload: any;
     try {
       statePayload = this.jwtService.verify(state);
     } catch {
-      return res.redirect(`${scheme}://google-auth?error=invalid_state`);
+      return res.redirect(`delivery-app://google-auth?error=invalid_state`);
     }
 
-    const { mode, userType } = statePayload;
+    const { mode, userType, returnUrl } = statePayload;
+    const baseReturnUrl = (returnUrl || 'delivery-app://google-auth').replace(/\?.*$/, '');
     const clientId = this.configService.get('GOOGLE_CLIENT_ID');
     const clientSecret = this.configService.get('GOOGLE_CLIENT_SECRET');
     const appUrl = this.configService.get('APP_URL');
@@ -123,7 +123,7 @@ export class AuthController {
       });
       const tokens = await tokenRes.json();
       if (!tokens.access_token) {
-        return res.redirect(`${scheme}://google-auth?error=token_exchange_failed`);
+        return res.redirect(`${baseReturnUrl}?error=token_exchange_failed`);
       }
 
       // Get user info
@@ -142,7 +142,7 @@ export class AuthController {
           emailVerified: userInfo.email_verified ? 'true' : 'false',
           accessToken: tokens.access_token,
         });
-        return res.redirect(`${scheme}://google-auth?${params.toString()}`);
+        return res.redirect(`${baseReturnUrl}?${params.toString()}`);
       }
 
       // Login mode: try to authenticate
@@ -152,10 +152,10 @@ export class AuthController {
         token: result.accessToken,
         user: JSON.stringify(result.user),
       });
-      return res.redirect(`${scheme}://google-auth?${params.toString()}`);
+      return res.redirect(`${baseReturnUrl}?${params.toString()}`);
     } catch (err: any) {
       const msg = err?.message || 'unknown_error';
-      return res.redirect(`${scheme}://google-auth?error=${encodeURIComponent(msg)}`);
+      return res.redirect(`${baseReturnUrl}?error=${encodeURIComponent(msg)}`);
     }
   }
 
