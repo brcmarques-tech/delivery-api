@@ -82,6 +82,15 @@ export class OrdersResolver {
   }
 
   @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard)
+  cancelOrder(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.cancelByCustomer(orderId, user.id);
+  }
+
+  @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   updateOrderStatus(

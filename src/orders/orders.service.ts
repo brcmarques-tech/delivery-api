@@ -394,6 +394,41 @@ export class OrdersService {
     return saved;
   }
 
+  async cancelByCustomer(orderId: string, customerId: string): Promise<Order> {
+    const order = await this.findById(orderId);
+
+    if (order.customer.id !== customerId) {
+      throw new BadRequestException('Voce nao pode cancelar este pedido');
+    }
+
+    const cancellableStatuses = [OrderStatus.AWAITING_PAYMENT, OrderStatus.PENDING];
+    if (!cancellableStatuses.includes(order.status)) {
+      throw new BadRequestException('Este pedido ja foi aceito e nao pode mais ser cancelado');
+    }
+
+    for (const item of order.items) {
+      if (item.product) {
+        await this.productsService.restoreStock(item.product.id, item.quantity);
+      }
+    }
+
+    order.status = OrderStatus.CANCELLED;
+    const saved = await this.ordersRepository.save(order);
+    this.pubSub.publish('orderUpdated', { orderUpdated: saved });
+
+    // Notificar vendedor
+    if (order.store?.owner?.id) {
+      this.notificationsService.sendToVendorUser(
+        order.store.owner.id,
+        `Pedido #${order.orderNumber}`,
+        'Cliente cancelou o pedido',
+        { type: 'ORDER_STATUS', orderId: order.id, status: OrderStatus.CANCELLED },
+      ).catch(() => {});
+    }
+
+    return saved;
+  }
+
   async updateStatus(id: string, status: OrderStatus, user?: AppUser): Promise<Order> {
     const order = await this.findById(id);
 
