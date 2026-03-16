@@ -23,16 +23,19 @@ async function bootstrap() {
   }, 60 * 60 * 1000);
 
   // Anti-sleep: ping a cada 14 min para manter todos os serviços do Render acordados
-  const selfUrl = process.env.RENDER_EXTERNAL_URL;
+  const selfUrl = process.env.RENDER_EXTERNAL_URL || process.env.APP_URL;
   const vendorUrl = process.env.VENDOR_PANEL_URL;
   const superadminUrl = process.env.SUPERADMIN_URL;
   if (selfUrl) {
     const wahaUrl = process.env.WAHA_API_URL;
+    const wahaKey = process.env.WAHA_API_KEY;
     setInterval(() => {
       fetch(`${selfUrl}/graphql?query={__typename}`).catch(() => {});
       if (vendorUrl) fetch(`${vendorUrl}/api/health`).catch(() => {});
       if (superadminUrl) fetch(`${superadminUrl}/api/health`).catch(() => {});
-      if (wahaUrl) fetch(`${wahaUrl}/api/version`).catch(() => {});
+      if (wahaUrl) fetch(`${wahaUrl}/api/version`, {
+        headers: wahaKey ? { 'X-Api-Key': wahaKey } : {},
+      }).catch(() => {});
     }, 14 * 60 * 1000);
   }
 }
