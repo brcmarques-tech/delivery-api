@@ -99,13 +99,13 @@ export class PaymentsService {
         payment_methods: {
           installments: maxInstallments,
         },
-        ...(this.configService.get('APP_URL') ? {
-          back_urls: {
-            success: `${this.configService.get('APP_URL')}/dashboard/plan?status=success`,
-            failure: `${this.configService.get('APP_URL')}/dashboard/plan?status=failure`,
-            pending: `${this.configService.get('APP_URL')}/dashboard/plan?status=pending`,
-          },
-        } : {}),
+        back_urls: {
+          success: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/plan?status=success`,
+          failure: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/plan?status=failure`,
+          pending: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/plan?status=pending`,
+        },
+        auto_return: 'approved',
+        statement_descriptor: 'BCMTECH DELIVERY',
         external_reference: `${user.id}:${plan}:${billing.months}`,
         notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
       },
@@ -203,13 +203,13 @@ export class PaymentsService {
           name: user.name,
           ...(mpCustomerId ? { id: mpCustomerId } : {}),
         },
-        ...(this.configService.get('VENDOR_APP_URL') ? {
-          back_urls: {
-            success: `${this.configService.get('VENDOR_APP_URL')}/dashboard/promotions?status=success`,
-            failure: `${this.configService.get('VENDOR_APP_URL')}/dashboard/promotions?status=failure`,
-            pending: `${this.configService.get('VENDOR_APP_URL')}/dashboard/promotions?status=pending`,
-          },
-        } : {}),
+        back_urls: {
+          success: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/promotions?status=success`,
+          failure: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/promotions?status=failure`,
+          pending: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/promotions?status=pending`,
+        },
+        auto_return: 'approved',
+        statement_descriptor: 'BCMTECH DELIVERY',
         external_reference: `promo:${promotion.id}`,
         notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
       },
@@ -276,6 +276,13 @@ export class PaymentsService {
           ...(mpCustomerId ? { id: mpCustomerId } : {}),
         },
         ...(vendorToken && marketplaceFee > 0 ? { marketplace_fee: marketplaceFee } : {}),
+        back_urls: {
+          success: `${this.configService.get('APP_URL') || 'http://localhost:3000'}/payments/order-result?status=success&order=${order.id}`,
+          failure: `${this.configService.get('APP_URL') || 'http://localhost:3000'}/payments/order-result?status=failure&order=${order.id}`,
+          pending: `${this.configService.get('APP_URL') || 'http://localhost:3000'}/payments/order-result?status=pending&order=${order.id}`,
+        },
+        auto_return: 'approved',
+        statement_descriptor: 'BCMTECH DELIVERY',
         external_reference: `order:${order.id}`,
         notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
       },

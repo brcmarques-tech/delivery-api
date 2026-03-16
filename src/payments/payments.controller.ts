@@ -23,6 +23,15 @@ export class PaymentsController {
     return { url };
   }
 
+  @Get('order-result')
+  async orderResult(
+    @Query('status') status: string,
+    @Query('order') orderId: string,
+    @Res() res: express.Response,
+  ): Promise<void> {
+    res.redirect(`delivery-app://order-result?status=${status || 'unknown'}&order=${orderId || ''}`);
+  }
+
   @Get('mp/callback')
   async handleMpCallback(
     @Query('code') code: string,
