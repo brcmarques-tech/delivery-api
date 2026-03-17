@@ -300,6 +300,9 @@ export class PaymentsService {
     const now = new Date();
     const expiration = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
+    const appUrl = this.configService.get('APP_URL') || 'http://localhost:3000';
+    const isLocalhost = appUrl.includes('localhost');
+
     const result = await preference.create({
       body: {
         items: [
@@ -315,12 +318,14 @@ export class PaymentsService {
         ],
         payer,
         ...(vendorToken && marketplaceFee > 0 ? { marketplace_fee: marketplaceFee } : {}),
-        back_urls: {
-          success: `${this.configService.get('APP_URL') || 'http://localhost:3000'}/payments/order-result?status=success&order=${order.id}`,
-          failure: `${this.configService.get('APP_URL') || 'http://localhost:3000'}/payments/order-result?status=failure&order=${order.id}`,
-          pending: `${this.configService.get('APP_URL') || 'http://localhost:3000'}/payments/order-result?status=pending&order=${order.id}`,
-        },
-        auto_return: 'approved',
+        ...(!isLocalhost ? {
+          back_urls: {
+            success: `${appUrl}/payments/order-result?status=success&order=${order.id}`,
+            failure: `${appUrl}/payments/order-result?status=failure&order=${order.id}`,
+            pending: `${appUrl}/payments/order-result?status=pending&order=${order.id}`,
+          },
+          auto_return: 'approved',
+        } : {}),
         binary_mode: true,
         statement_descriptor: 'BCMTECH DELIVERY',
         expires: true,
@@ -333,69 +338,125 @@ export class PaymentsService {
       },
     });
 
-    this.logger.log(`Checkout created for order ${order.orderNumber} | total: ${order.total} | marketplace_fee: ${marketplaceFee} | vendor_token: ${!!vendorToken} | owner_id: ${store?.owner?.id || 'none'} | mpAccessToken: ${vendorToken ? vendorToken.substring(0, 20) + '...' : 'none'}`);
+    const checkoutUrl = this.configService.get('MP_SANDBOX') === 'true'
+      ? result.sandbox_init_point!
+      : result.init_point!;
 
-    return { checkoutUrl: result.init_point!, preferenceId: result.id! };
+    this.logger.log(`Checkout created for order ${order.orderNumber} | total: ${order.total} | marketplace_fee: ${marketplaceFee} | vendor_token: ${!!vendorToken} | owner_id: ${store?.owner?.id || 'none'} | sandbox: ${this.configService.get('MP_SANDBOX') === 'true'}`);
+
+    return { checkoutUrl, preferenceId: result.id! };
   }
 
-  async createOrderPix(order: Order, customer: AppUser): Promise<{ qrCode: string; qrCodeBase64: string }> {
-    // Pix always goes to platform account — platform distributes to vendor and deliverer later
-    this.logger.log(`Pix creating for order ${order.orderNumber} | total: ${order.total} | using platform token (marketplace model)`);
+  async createOrderPix(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string }> {
+    // PIX via Checkout Pro: same marketplace_fee split as MERCADO_PAGO
+    // Only PIX is allowed as payment method — customer is redirected to MP checkout showing only PIX
+    const store = order.store;
+    const vendorToken = store?.owner?.mpAccessToken;
 
-    const pixNameParts = customer.name.trim().split(' ');
-    const pixPayer: any = {
+    const client = vendorToken
+      ? new MercadoPagoConfig({ accessToken: vendorToken })
+      : this.mpClient;
+
+    const preference = new Preference(client);
+
+    const itemsSummary = order.items
+      .map((item) => {
+        const name = item.product?.name || 'Produto';
+        if (item.weightGrams && item.weightGrams > 0) {
+          return `${name} (${item.weightGrams}g)`;
+        }
+        return `${item.quantity}x ${name}`;
+      })
+      .join(', ');
+
+    // marketplace_fee = commission + delivery fee (when platform handles delivery)
+    let marketplaceFee = Number(order.commissionAmount) || 0;
+    if (!store?.hasOwnDelivery) {
+      marketplaceFee += Number(order.deliveryFee) || 0;
+    }
+
+    const nameParts = customer.name.trim().split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.slice(1).join(' ') || firstName;
+
+    const payer: any = {
       email: customer.email,
-      first_name: pixNameParts[0],
-      last_name: pixNameParts.slice(1).join(' ') || pixNameParts[0],
+      first_name: firstName,
+      last_name: lastName,
     };
 
     if (customer.cpf) {
-      pixPayer.identification = { type: 'CPF', number: customer.cpf.replace(/\D/g, '') };
+      payer.identification = { type: 'CPF', number: customer.cpf.replace(/\D/g, '') };
     }
 
     if (customer.phone) {
       const phoneDigits = customer.phone.replace(/\D/g, '');
-      pixPayer.phone = {
+      payer.phone = {
         area_code: phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53',
         number: phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits,
       };
     }
 
     if (order.deliveryAddress) {
-      pixPayer.address = {
+      payer.address = {
         street_name: order.deliveryAddress,
         zip_code: '96330-000',
       };
     }
 
-    const pixBody: any = {
-      transaction_amount: Number(order.total),
-      description: `Pedido ${order.orderNumber}`,
-      payment_method_id: 'pix',
-      payer: pixPayer,
-      binary_mode: true,
-      statement_descriptor: 'BCMTECH DELIVERY',
-      external_reference: `order:${order.id}`,
-      notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
-    };
+    const now = new Date();
+    const expiration = new Date(now.getTime() + 30 * 60 * 1000); // PIX expires in 30min
 
-    try {
-      const client = new MercadoPagoConfig({ accessToken: this.configService.get('MP_ACCESS_TOKEN') || '' });
-      const mpPayment = new MpPayment(client);
-      const result = await mpPayment.create({ body: pixBody });
+    const appUrl = this.configService.get('APP_URL') || 'http://localhost:3000';
+    const isLocalhost = appUrl.includes('localhost');
 
-      const qrCode = (result as any).point_of_interaction?.transaction_data?.qr_code || '';
-      const qrCodeBase64 = (result as any).point_of_interaction?.transaction_data?.qr_code_base64 || '';
+    const result = await preference.create({
+      body: {
+        items: [
+          {
+            id: `order-${order.id}`,
+            title: `Pedido ${order.orderNumber} (PIX)`,
+            description: itemsSummary,
+            quantity: 1,
+            unit_price: Number(order.total),
+            currency_id: 'BRL',
+            category_id: 'others',
+          },
+        ],
+        payer,
+        ...(vendorToken && marketplaceFee > 0 ? { marketplace_fee: marketplaceFee } : {}),
+        ...(!isLocalhost ? {
+          back_urls: {
+            success: `${appUrl}/payments/order-result?status=success&order=${order.id}`,
+            failure: `${appUrl}/payments/order-result?status=failure&order=${order.id}`,
+            pending: `${appUrl}/payments/order-result?status=pending&order=${order.id}`,
+          },
+          auto_return: 'approved',
+        } : {}),
+        binary_mode: true,
+        statement_descriptor: 'BCMTECH DELIVERY',
+        expires: true,
+        date_of_expiration: expiration.toISOString(),
+        payment_methods: {
+          excluded_payment_types: [
+            { id: 'credit_card' },
+            { id: 'debit_card' },
+            { id: 'ticket' },
+            { id: 'atm' },
+          ],
+        },
+        external_reference: `order:${order.id}`,
+        notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
+      },
+    });
 
-      if (qrCode) {
-        this.logger.log(`Pix generated successfully with platform token`);
-        return { qrCode, qrCodeBase64 };
-      }
-      throw new Error('QR code vazio na resposta do Mercado Pago');
-    } catch (err: any) {
-      this.logger.error(`Pix failed: ${err.message}`);
-      throw err;
-    }
+    const checkoutUrl = this.configService.get('MP_SANDBOX') === 'true'
+      ? result.sandbox_init_point!
+      : result.init_point!;
+
+    this.logger.log(`PIX Checkout created for order ${order.orderNumber} | total: ${order.total} | marketplace_fee: ${marketplaceFee} | vendor_token: ${!!vendorToken} | sandbox: ${this.configService.get('MP_SANDBOX') === 'true'}`);
+
+    return { checkoutUrl, preferenceId: result.id! };
   }
 
   getMpConnectUrl(userId: string, source: string = 'web'): string {

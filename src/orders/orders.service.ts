@@ -256,14 +256,14 @@ export class OrdersService {
       await this.ordersRepository.save(savedOrder);
     } else if (paymentMethod === 'PIX') {
       try {
-        const { qrCode, qrCodeBase64 } = await this.paymentsService.createOrderPix(savedOrder, customer);
-        savedOrder.pixQrCode = qrCode;
-        savedOrder.pixQrCodeBase64 = qrCodeBase64;
+        const { checkoutUrl, preferenceId } = await this.paymentsService.createOrderPix(savedOrder, customer);
+        savedOrder.checkoutUrl = checkoutUrl;
+        savedOrder.mpPreferenceId = preferenceId;
         await this.ordersRepository.save(savedOrder);
       } catch (err: any) {
-        console.error('PIX generation failed:', err?.message || err);
+        console.error('PIX checkout generation failed:', err?.message || err);
         throw new BadRequestException(
-          err?.message || 'Nao foi possivel gerar o PIX. Tente novamente ou use outro metodo de pagamento.',
+          err?.message || 'Nao foi possivel gerar o pagamento PIX. Tente novamente ou use outro metodo de pagamento.',
         );
       }
     }

@@ -104,29 +104,21 @@ export class DeliveriesService implements OnModuleInit {
 
     const order = delivery.order;
 
-    // Payment distribution depends on payment method:
-    // - MERCADO_PAGO (checkout): vendor gets paid via marketplace_fee split, platform retains commission + delivery fee
-    // - PIX: money goes to platform, platform distributes to vendor and deliverer
-    // - ON_DELIVERY: vendor receives cash directly, no transfers needed
+    // Payment distribution:
+    // - MERCADO_PAGO and PIX: both use Checkout Pro with marketplace_fee
+    //   Vendor receives automatically via split, platform retains commission + delivery fee
+    // - ON_DELIVERY: vendor receives cash directly, no digital transfers needed
     if (order.paymentMethod !== 'ON_DELIVERY') {
       const deliveryFee = Number(order.deliveryFee);
       const vendorAmount = Number(order.subtotal) - Number(order.commissionAmount);
 
-      if (order.paymentMethod === 'PIX') {
-        // PIX: platform received all money, vendor payout will be processed by scheduler
-        if (vendorAmount > 0 && order.store?.owner?.id) {
-          delivery.vendorPayoutAmount = vendorAmount;
-          delivery.vendorPayoutStatus = 'pending';
-        }
-      } else {
-        // MERCADO_PAGO checkout: vendor paid via marketplace_fee split
-        if (vendorAmount > 0) {
-          delivery.vendorPayoutAmount = vendorAmount;
-          delivery.vendorPayoutStatus = 'split_auto';
-        }
+      // Both PIX and MERCADO_PAGO use Checkout Pro with marketplace_fee split
+      if (vendorAmount > 0) {
+        delivery.vendorPayoutAmount = vendorAmount;
+        delivery.vendorPayoutStatus = 'split_auto';
       }
 
-      // Deliverer payout (platform has the delivery fee for PIX and MERCADO_PAGO)
+      // Deliverer payout: platform holds delivery fee via marketplace_fee, needs to transfer to deliverer
       if (!order.store?.hasOwnDelivery && deliveryFee > 0) {
         delivery.payoutAmount = deliveryFee;
         delivery.payoutStatus = 'pending_confirmation';
@@ -177,14 +169,9 @@ export class DeliveriesService implements OnModuleInit {
     return this.deliveriesRepository
       .createQueryBuilder('delivery')
       .leftJoinAndSelect('delivery.order', 'order')
-      .leftJoinAndSelect('order.store', 'store')
-      .leftJoinAndSelect('store.owner', 'owner')
       .leftJoinAndSelect('delivery.deliverer', 'deliverer')
       .where('delivery.deliveredAt IS NOT NULL')
-      .andWhere('(delivery.payoutStatus = :failed OR delivery.vendorPayoutStatus IN (:...vendorStatuses))', {
-        failed: 'failed',
-        vendorStatuses: ['failed', 'pending'],
-      })
+      .andWhere('delivery.payoutStatus = :failed', { failed: 'failed' })
       .getMany();
   }
 

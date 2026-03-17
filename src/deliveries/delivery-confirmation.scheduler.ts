@@ -50,10 +50,6 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
           await this.deliveriesService.processDelivererPayout(delivery.id);
           this.logger.log(`Retry payout entregador delivery ${delivery.id}`);
         }
-        if (['failed', 'pending'].includes(delivery.vendorPayoutStatus)) {
-          await this.deliveriesService.retryVendorPayout(delivery.id);
-          this.logger.log(`Processando payout vendedor delivery ${delivery.id} (status: ${delivery.vendorPayoutStatus})`);
-        }
       }
     } catch (err) {
       this.logger.error('Failed to process payouts:', err);
