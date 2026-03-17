@@ -578,6 +578,19 @@ export class PaymentsService {
       return { success: false };
     }
 
+    const requestBody = {
+      transaction_amount: amount,
+      description: `Pagamento pedido ${orderId}`,
+      payment_method_id: 'account_money',
+      payer: {
+        email: payerEmail,
+      },
+      collector_id: Number(vendor.mpUserId),
+      external_reference: `vendor-payout:${orderId}:${vendorId}`,
+    };
+
+    this.logger.log(`transferToVendor REQUEST: vendor=${vendorId} | mpUserId=${vendor.mpUserId} | amount=R$${amount} | payerEmail=${payerEmail} | orderId=${orderId}`);
+
     try {
       const response = await fetch('https://api.mercadopago.com/v1/payments', {
         method: 'POST',
@@ -585,19 +598,11 @@ export class PaymentsService {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.configService.get('MP_ACCESS_TOKEN')}`,
         },
-        body: JSON.stringify({
-          transaction_amount: amount,
-          description: `Pagamento pedido ${orderId}`,
-          payment_method_id: 'account_money',
-          payer: {
-            email: payerEmail,
-          },
-          collector_id: Number(vendor.mpUserId),
-          external_reference: `vendor-payout:${orderId}:${vendorId}`,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
+      this.logger.log(`transferToVendor RESPONSE: status=${response.status} | body=${JSON.stringify(data)}`);
 
       if (data.id && (data.status === 'approved' || data.status === 'pending')) {
         const payment = this.paymentsRepository.create({
@@ -613,10 +618,10 @@ export class PaymentsService {
         return { success: true, mpId: String(data.id) };
       }
 
-      this.logger.error(`transferToVendor falhou: ${JSON.stringify(data)}`);
+      this.logger.error(`transferToVendor FALHOU: httpStatus=${response.status} | mpStatus=${data.status} | message=${data.message} | cause=${JSON.stringify(data.cause)}`);
       return { success: false };
     } catch (err: any) {
-      this.logger.error(`transferToVendor erro: ${err.message}`);
+      this.logger.error(`transferToVendor EXCEPTION: ${err.message}`);
       return { success: false };
     }
   }
@@ -634,6 +639,19 @@ export class PaymentsService {
       return { success: false };
     }
 
+    const requestBody = {
+      transaction_amount: amount,
+      description: `Entrega do pedido ${orderId}`,
+      payment_method_id: 'account_money',
+      payer: {
+        email: payerEmail,
+      },
+      collector_id: Number(deliverer.mpUserId),
+      external_reference: `payout:${orderId}:${delivererId}`,
+    };
+
+    this.logger.log(`transferToDeliverer REQUEST: deliverer=${delivererId} | mpUserId=${deliverer.mpUserId} | amount=R$${amount} | payerEmail=${payerEmail} | orderId=${orderId}`);
+
     try {
       const response = await fetch('https://api.mercadopago.com/v1/payments', {
         method: 'POST',
@@ -641,19 +659,11 @@ export class PaymentsService {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.configService.get('MP_ACCESS_TOKEN')}`,
         },
-        body: JSON.stringify({
-          transaction_amount: amount,
-          description: `Entrega do pedido ${orderId}`,
-          payment_method_id: 'account_money',
-          payer: {
-            email: payerEmail,
-          },
-          collector_id: Number(deliverer.mpUserId),
-          external_reference: `payout:${orderId}:${delivererId}`,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
+      this.logger.log(`transferToDeliverer RESPONSE: status=${response.status} | body=${JSON.stringify(data)}`);
 
       if (data.id && (data.status === 'approved' || data.status === 'pending')) {
         const payment = this.paymentsRepository.create({
@@ -669,10 +679,10 @@ export class PaymentsService {
         return { success: true, mpId: String(data.id) };
       }
 
-      this.logger.error(`transferToDeliverer falhou: ${JSON.stringify(data)}`);
+      this.logger.error(`transferToDeliverer FALHOU: httpStatus=${response.status} | mpStatus=${data.status} | message=${data.message} | cause=${JSON.stringify(data.cause)}`);
       return { success: false };
     } catch (err: any) {
-      this.logger.error(`transferToDeliverer erro: ${err.message}`);
+      this.logger.error(`transferToDeliverer EXCEPTION: ${err.message}`);
       return { success: false };
     }
   }
