@@ -74,6 +74,7 @@ describe('PaymentsService', () => {
 
   const mockPlatformConfigService = {
     getBadgeRewards: jest.fn().mockResolvedValue({ subscriptionDiscount: 0 }),
+    getDeliveryCommissionPercent: jest.fn().mockResolvedValue(1),
   };
 
   const mockWhatsAppService = {
@@ -212,15 +213,17 @@ describe('PaymentsService', () => {
       expect(body.payments[0].split.length).toBeGreaterThanOrEqual(2); // platform + vendor at minimum
     });
 
-    it('should throw if vendor has no pagarmeRecipientId', async () => {
+    it('should work without split when vendor has no pagarmeRecipientId', async () => {
       const order = makeOrder({
         store: makeStore({ owner: makeVendorUser({ pagarmeRecipientId: null }) }),
       });
       const customer = makeCustomer();
 
-      await expect(service.createOrderPix(order, customer)).rejects.toThrow(
-        'Vendedor não cadastrou conta de recebimento',
-      );
+      const result = await service.createOrderPix(order, customer);
+      expect(result.preferenceId).toBeDefined();
+
+      const body = mockHttpService.axiosRef.post.mock.calls[0][1];
+      expect(body.payments[0].split).toBeUndefined();
     });
   });
 
@@ -253,7 +256,7 @@ describe('PaymentsService', () => {
 
       const delivererSplit = splitRules.find((s: any) => s.recipient_id === 'rp_deliverer_456');
       expect(delivererSplit).toBeDefined();
-      expect(delivererSplit.amount).toBe(500); // R$5.00 delivery fee in cents
+      expect(delivererSplit.amount).toBe(495); // R$5.00 delivery fee minus 1% platform commission (R$0.05)
       expect(delivererSplit.type).toBe('flat');
     });
 

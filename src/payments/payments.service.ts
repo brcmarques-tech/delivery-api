@@ -85,6 +85,19 @@ export class PaymentsService {
     return response.data;
   }
 
+  private async pagarmeDelete<T = any>(path: string): Promise<T> {
+    const response = await this.httpService.axiosRef.delete(
+      `${this.pagarmeBaseUrl}${path}`,
+      {
+        headers: {
+          'Authorization': this.pagarmeAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    return response.data;
+  }
+
   // ─── Recipients (Recebedores) ─────────────────────────────────────────
 
   async createRecipient(data: {
@@ -253,7 +266,6 @@ export class PaymentsService {
 
   private async getOrCreatePagarmeCustomer(user: { name: string; email: string; cpf?: string; phone?: string }): Promise<string | undefined> {
     try {
-      const nameParts = user.name.trim().split(' ');
       const phoneDigits = user.phone?.replace(/\D/g, '') || '';
       const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
       const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
@@ -280,6 +292,156 @@ export class PaymentsService {
     }
   }
 
+  async ensureCustomer(user: AppUser): Promise<string> {
+    if (user.pagarmeCustomerId) return user.pagarmeCustomerId;
+
+    const customerId = await this.getOrCreatePagarmeCustomer(user);
+    if (!customerId) throw new BadRequestException('Nao foi possivel criar cliente no Pagar.me');
+
+    await this.appUsersService.updatePagarmeCustomerId(user.id, customerId);
+    return customerId;
+  }
+
+  // ─── Saved Cards ────────────────────────────────────────────────────
+
+  async saveCard(userId: string, cardToken: string): Promise<any> {
+    const user = await this.appUsersService.findById(userId);
+    if (!user) throw new NotFoundException('Usuario nao encontrado');
+
+    const customerId = await this.ensureCustomer(user);
+
+    try {
+      const result = await this.pagarmePost(`/customers/${customerId}/cards`, { token: cardToken });
+      return {
+        id: result.id,
+        lastFourDigits: result.last_four_digits,
+        brand: result.brand,
+        holderName: result.holder_name,
+        expMonth: result.exp_month,
+        expYear: result.exp_year,
+      };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Failed to save card: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(errorData?.message || 'Erro ao salvar cartao');
+    }
+  }
+
+  async listCards(userId: string): Promise<any[]> {
+    const user = await this.appUsersService.findById(userId);
+    if (!user) throw new NotFoundException('Usuario nao encontrado');
+
+    if (!user.pagarmeCustomerId) return [];
+
+    try {
+      const result = await this.pagarmeGet(`/customers/${user.pagarmeCustomerId}/cards`);
+      const cards = result.data || result;
+      return (Array.isArray(cards) ? cards : []).map((c: any) => ({
+        id: c.id,
+        lastFourDigits: c.last_four_digits,
+        brand: c.brand,
+        holderName: c.holder_name,
+        expMonth: c.exp_month,
+        expYear: c.exp_year,
+      }));
+    } catch (err: any) {
+      this.logger.warn(`Failed to list cards: ${err.response?.data?.message || err.message}`);
+      return [];
+    }
+  }
+
+  async deleteCard(userId: string, cardId: string): Promise<boolean> {
+    const user = await this.appUsersService.findById(userId);
+    if (!user) throw new NotFoundException('Usuario nao encontrado');
+    if (!user.pagarmeCustomerId) throw new BadRequestException('Nenhum cartao cadastrado');
+
+    try {
+      await this.pagarmeDelete(`/customers/${user.pagarmeCustomerId}/cards/${cardId}`);
+      return true;
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Failed to delete card: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(errorData?.message || 'Erro ao remover cartao');
+    }
+  }
+
+  // ─── Direct Charge (saved card) ────────────────────────────────────
+
+  async createOrderDirectCharge(order: Order, customer: AppUser, cardId: string): Promise<{ pagarmeOrderId: string; status: string }> {
+    const store = order.store;
+    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
+    const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
+
+    const customerId = await this.ensureCustomer(customer);
+    const totalCents = Math.round(Number(order.total) * 100);
+    const splitRules = (vendorRecipientId && platformRecipientId)
+      ? await this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId)
+      : [];
+
+    const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
+    const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
+    const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
+
+    const orderBody: any = {
+      code: `order-${order.id}`,
+      items: [
+        {
+          amount: totalCents,
+          description: `Pedido ${order.orderNumber}`.substring(0, 256),
+          quantity: 1,
+          code: `order-${order.id}`,
+        },
+      ],
+      customer: {
+        id: customerId,
+        name: customer.name,
+        email: customer.email,
+        type: 'individual',
+        ...(customer.cpf ? { document: customer.cpf.replace(/\D/g, '') } : {}),
+        phones: {
+          mobile_phone: {
+            country_code: '55',
+            area_code: ddd,
+            number: phoneNumber || '999999999',
+          },
+        },
+      },
+      payments: [
+        {
+          payment_method: 'credit_card',
+          credit_card: {
+            installments: 1,
+            statement_descriptor: 'BCMTECH',
+            capture: true,
+            card_id: cardId,
+          },
+          ...(splitRules.length > 0 ? { split: splitRules } : {}),
+        },
+      ],
+      metadata: {
+        order_id: order.id,
+        order_number: order.orderNumber,
+      },
+      closed: true,
+    };
+
+    try {
+      const result = await this.pagarmePost('/orders', orderBody);
+      this.logger.log(
+        `Pagar.me direct charge for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id} | split: ${splitRules.length > 0}`,
+      );
+      const charge = result.charges?.[0];
+      const status = charge?.status || result.status || 'pending';
+      return { pagarmeOrderId: result.id, status };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Pagar.me direct charge failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(
+        errorData?.message || 'Erro ao cobrar cartao salvo',
+      );
+    }
+  }
+
   // ─── Order Checkout (Credit Card via Pagar.me) ─────────────────────────
 
   async createOrderCheckout(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string }> {
@@ -287,17 +449,12 @@ export class PaymentsService {
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
-    if (!vendorRecipientId) {
-      throw new BadRequestException('Vendedor não cadastrou conta de recebimento');
-    }
-    if (!platformRecipientId) {
-      throw new BadRequestException('Recipient da plataforma não configurado');
-    }
-
     const customerId = await this.getOrCreatePagarmeCustomer(customer);
 
-    // Build split rules
-    const splitRules = this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId);
+    // Build split rules (skip if recipients not configured)
+    const splitRules = (vendorRecipientId && platformRecipientId)
+      ? await this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId)
+      : [];
 
     const totalCents = Math.round(Number(order.total) * 100);
 
@@ -355,7 +512,7 @@ export class PaymentsService {
             statement_descriptor: 'BCMTECH',
             capture: true,
           },
-          split: splitRules,
+          ...(splitRules.length > 0 ? { split: splitRules } : {}),
         },
       ],
       metadata: {
@@ -392,15 +549,10 @@ export class PaymentsService {
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
-    if (!vendorRecipientId) {
-      throw new BadRequestException('Vendedor não cadastrou conta de recebimento');
-    }
-    if (!platformRecipientId) {
-      throw new BadRequestException('Recipient da plataforma não configurado');
-    }
-
     const totalCents = Math.round(Number(order.total) * 100);
-    const splitRules = this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId);
+    const splitRules = (vendorRecipientId && platformRecipientId)
+      ? await this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId)
+      : [];
 
     const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
     const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
@@ -438,7 +590,7 @@ export class PaymentsService {
               { name: 'Pedido', value: order.orderNumber },
             ],
           },
-          split: splitRules,
+          ...(splitRules.length > 0 ? { split: splitRules } : {}),
         },
       ],
       metadata: {
@@ -512,20 +664,23 @@ export class PaymentsService {
 
   // ─── Split Rules Builder ───────────────────────────────────────────────
 
-  private buildSplitRules(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string): any[] {
+  private async buildSplitRules(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string): Promise<any[]> {
     const totalCents = Math.round(Number(order.total) * 100);
     const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
     const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
 
     const splitRules: any[] = [];
 
-    // Deliverer split: gets delivery fee (when platform handles delivery)
+    // Deliverer split: gets delivery fee minus platform commission on delivery
     let delivererCents = 0;
+    let deliveryCommissionCents = 0;
     const delivery = (order as any).delivery;
     const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
+    const deliveryCommissionPercent = await this.platformConfigService.getDeliveryCommissionPercent();
 
     if (!store?.hasOwnDelivery && deliveryFeeCents > 0 && delivererRecipientId) {
-      delivererCents = deliveryFeeCents;
+      deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+      delivererCents = deliveryFeeCents - deliveryCommissionCents;
       splitRules.push({
         amount: delivererCents,
         recipient_id: delivererRecipientId,
@@ -538,22 +693,22 @@ export class PaymentsService {
       });
     }
 
-    // Platform split: gets commission
-    const platformCents = commissionCents + ((!store?.hasOwnDelivery && !delivererRecipientId) ? deliveryFeeCents : 0);
+    // Platform split: gets sales commission + delivery commission
+    const platformCents = commissionCents + deliveryCommissionCents + ((!store?.hasOwnDelivery && !delivererRecipientId) ? deliveryFeeCents : 0);
     if (platformCents > 0) {
       splitRules.push({
         amount: platformCents,
         recipient_id: platformRecipientId,
         type: 'flat',
         options: {
-          charge_processing_fee: true,
+          charge_processing_fee: false,
           charge_remainder_fee: true,
           liable: true,
         },
       });
     }
 
-    // Vendor split: gets the rest (total - commission - deliverer fee)
+    // Vendor split: gets the rest (total - commission - deliverer fee), pays processing fees
     const vendorCents = totalCents - platformCents - delivererCents;
     if (vendorCents > 0) {
       splitRules.push({
@@ -561,7 +716,7 @@ export class PaymentsService {
         recipient_id: vendorRecipientId,
         type: 'flat',
         options: {
-          charge_processing_fee: false,
+          charge_processing_fee: true,
           charge_remainder_fee: false,
           liable: false,
         },
