@@ -261,6 +261,10 @@ export class AppUsersService {
     });
   }
 
+  async updatePagarmeCustomerId(id: string, customerId: string): Promise<void> {
+    await this.appUsersRepository.update(id, { pagarmeCustomerId: customerId });
+  }
+
   async updatePushToken(id: string, token: string): Promise<void> {
     await this.appUsersRepository.update(id, { expoPushToken: token });
   }

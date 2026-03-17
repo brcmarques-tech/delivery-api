@@ -62,6 +62,21 @@ export class PlatformConfigResolver {
     return result;
   }
 
+  @Query(() => Float)
+  deliveryCommissionPercent(): Promise<number> {
+    return this.configService.getDeliveryCommissionPercent();
+  }
+
+  @Mutation(() => PlatformConfig)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async setDeliveryCommissionPercent(@Args('percent', { type: () => Float }) percent: number, @CurrentUser() admin: any): Promise<PlatformConfig> {
+    const result = await this.configService.set('delivery_commission_percent', String(percent));
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Comissao sobre entregas alterada', `Novo valor: ${percent}%`).catch(() => {});
+    return result;
+  }
+
   @Query(() => [PlatformConfig])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)

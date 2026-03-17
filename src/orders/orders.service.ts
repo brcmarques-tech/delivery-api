@@ -249,7 +249,15 @@ export class OrdersService {
         .catch(() => {});
     }
 
-    if (paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') {
+    if ((paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') && input.cardId) {
+      // Direct charge with saved card — no redirect needed
+      const { pagarmeOrderId, status } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId);
+      savedOrder.mpPreferenceId = pagarmeOrderId;
+      if (status === 'paid') {
+        savedOrder.status = OrderStatus.PENDING;
+      }
+      await this.ordersRepository.save(savedOrder);
+    } else if (paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') {
       const { checkoutUrl, preferenceId } = await this.paymentsService.createOrderCheckout(savedOrder, customer);
       savedOrder.checkoutUrl = checkoutUrl;
       savedOrder.mpPreferenceId = preferenceId;

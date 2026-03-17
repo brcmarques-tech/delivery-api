@@ -49,4 +49,8 @@ export class CreateOrderInput {
   @Field({ nullable: true })
   @IsOptional()
   couponCode?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  cardId?: string;
 }

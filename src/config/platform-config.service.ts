@@ -52,6 +52,11 @@ export class PlatformConfigService {
     return parseFloat(value);
   }
 
+  async getDeliveryCommissionPercent(): Promise<number> {
+    const value = await this.get('delivery_commission_percent', '1');
+    return parseFloat(value);
+  }
+
   async getPlanConfig(plan: string): Promise<PlanConfig> {
     const defaults: Record<string, PlanConfig> = {
       FREE: {

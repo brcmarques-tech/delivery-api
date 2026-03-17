@@ -122,6 +122,10 @@ export class AppUser {
   @Column({ nullable: true })
   pagarmeRecipientId: string;
 
+  // Pagar.me customer ID (for saved cards)
+  @Column({ nullable: true })
+  pagarmeCustomerId: string;
+
   // Payment provider connected status (DB column kept as mpConnected for migration compat)
   @Field()
   @Column({ name: 'mpConnected', default: false })
