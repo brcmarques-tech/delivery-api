@@ -34,12 +34,14 @@ export class AuthResolver {
 
   // ---- Verificação OTP (público, antes do cadastro) ----
 
-  @Mutation(() => Boolean)
-  async sendVerificationCode(@Args('input') input: SendCodeInput): Promise<boolean> {
+  @Mutation(() => String)
+  async sendVerificationCode(@Args('input') input: SendCodeInput): Promise<string> {
     if (input.channel === 'whatsapp') {
-      return this.otpService.sendPhoneCode(input.value);
+      const result = await this.otpService.sendPhoneCode(input.value, input.fallbackEmail);
+      return result.method;
     }
-    return this.otpService.sendEmailCode(input.value);
+    await this.otpService.sendEmailCode(input.value);
+    return 'email';
   }
 
   @Mutation(() => Boolean)
