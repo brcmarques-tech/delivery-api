@@ -277,7 +277,8 @@ export class PaymentsService {
         name: user.name,
         email: user.email,
         type: 'individual',
-        ...(user.cpf ? { document: user.cpf.replace(/\D/g, ''), document_type: 'CPF' } : {}),
+        document: user.cpf?.replace(/\D/g, '') || '',
+        document_type: 'CPF',
         phones: {
           mobile_phone: {
             country_code: '55',
@@ -400,7 +401,8 @@ export class PaymentsService {
         name: customer.name,
         email: customer.email,
         type: 'individual',
-        ...(customer.cpf ? { document: customer.cpf.replace(/\D/g, '') } : {}),
+        document: customer.cpf?.replace(/\D/g, '') || '',
+        document_type: 'CPF',
         phones: {
           mobile_phone: {
             country_code: '55',
@@ -481,7 +483,8 @@ export class PaymentsService {
       name: customer.name,
       email: customer.email,
       type: 'individual',
-      ...(customer.cpf ? { document: customer.cpf.replace(/\D/g, '') } : {}),
+      document: customer.cpf?.replace(/\D/g, '') || '',
+      document_type: 'CPF',
       phones: {
         mobile_phone: {
           country_code: '55',
@@ -575,7 +578,8 @@ export class PaymentsService {
         name: customer.name,
         email: customer.email,
         type: 'individual',
-        ...(customer.cpf ? { document: customer.cpf.replace(/\D/g, '') } : {}),
+        document: customer.cpf?.replace(/\D/g, '') || '',
+        document_type: 'CPF',
         phones: {
           mobile_phone: {
             country_code: '55',
