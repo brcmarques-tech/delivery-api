@@ -206,6 +206,10 @@ export class OrdersService {
 
     const needsPayment = paymentMethod !== 'ON_DELIVERY';
 
+    if (needsPayment && !customer.cpf) {
+      throw new BadRequestException('CPF obrigatorio para pagamento online. Atualize seu perfil.');
+    }
+
     const order = this.ordersRepository.create({
       orderNumber: `ORD-${Date.now()}`,
       customer,
