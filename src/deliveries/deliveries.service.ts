@@ -108,21 +108,15 @@ export class DeliveriesService implements OnModuleInit {
     // - MERCADO_PAGO (checkout): vendor gets paid via marketplace_fee split, platform retains commission + delivery fee
     // - PIX: money goes to platform, platform distributes to vendor and deliverer
     // - ON_DELIVERY: vendor receives cash directly, no transfers needed
-    if (!order.store?.hasOwnDelivery && order.paymentMethod !== 'ON_DELIVERY') {
+    if (order.paymentMethod !== 'ON_DELIVERY') {
       const deliveryFee = Number(order.deliveryFee);
       const vendorAmount = Number(order.subtotal) - Number(order.commissionAmount);
 
       if (order.paymentMethod === 'PIX') {
-        // PIX: platform received all money, transfer vendor's share
+        // PIX: platform received all money, vendor payout will be processed by scheduler
         if (vendorAmount > 0 && order.store?.owner?.id) {
-          const result = await this.paymentsService.transferToVendor(
-            order.store.owner.id,
-            vendorAmount,
-            order.id,
-          );
           delivery.vendorPayoutAmount = vendorAmount;
-          delivery.vendorPayoutStatus = result.success ? 'completed' : 'failed';
-          delivery.vendorPayoutMpId = result.mpId || '';
+          delivery.vendorPayoutStatus = 'pending';
         }
       } else {
         // MERCADO_PAGO checkout: vendor paid via marketplace_fee split
@@ -132,8 +126,8 @@ export class DeliveriesService implements OnModuleInit {
         }
       }
 
-      // Deliverer payout (platform has the delivery fee in both cases)
-      if (deliveryFee > 0) {
+      // Deliverer payout (platform has the delivery fee for PIX and MERCADO_PAGO)
+      if (!order.store?.hasOwnDelivery && deliveryFee > 0) {
         delivery.payoutAmount = deliveryFee;
         delivery.payoutStatus = 'pending_confirmation';
       }
@@ -149,7 +143,7 @@ export class DeliveriesService implements OnModuleInit {
       where: { id: deliveryId },
       relations: ['order', 'deliverer'],
     });
-    if (!delivery || delivery.payoutStatus !== 'pending_confirmation') return;
+    if (!delivery || !['pending_confirmation', 'failed'].includes(delivery.payoutStatus)) return;
 
     const payoutAmount = Number(delivery.payoutAmount) || Number(delivery.order.deliveryFee);
     if (payoutAmount <= 0) return;
@@ -177,6 +171,41 @@ export class DeliveriesService implements OnModuleInit {
       .andWhere('delivery.payoutStatus = :status', { status: 'pending_confirmation' })
       .andWhere('order.customerConfirmedAt IS NULL')
       .getMany();
+  }
+
+  async findPendingPayouts(): Promise<Delivery[]> {
+    return this.deliveriesRepository
+      .createQueryBuilder('delivery')
+      .leftJoinAndSelect('delivery.order', 'order')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .where('delivery.deliveredAt IS NOT NULL')
+      .andWhere('(delivery.payoutStatus = :failed OR delivery.vendorPayoutStatus IN (:...vendorStatuses))', {
+        failed: 'failed',
+        vendorStatuses: ['failed', 'pending'],
+      })
+      .getMany();
+  }
+
+  async retryVendorPayout(deliveryId: string): Promise<void> {
+    const delivery = await this.deliveriesRepository.findOne({
+      where: { id: deliveryId },
+      relations: ['order', 'order.store', 'order.store.owner'],
+    });
+    if (!delivery || !['failed', 'pending'].includes(delivery.vendorPayoutStatus)) return;
+
+    const vendorAmount = Number(delivery.vendorPayoutAmount);
+    if (vendorAmount <= 0 || !delivery.order.store?.owner?.id) return;
+
+    const result = await this.paymentsService.transferToVendor(
+      delivery.order.store.owner.id,
+      vendorAmount,
+      delivery.order.id,
+    );
+    delivery.vendorPayoutStatus = result.success ? 'completed' : 'failed';
+    delivery.vendorPayoutMpId = result.mpId || delivery.vendorPayoutMpId;
+    await this.deliveriesRepository.save(delivery);
   }
 
   async findByDeliverer(delivererId: string): Promise<Delivery[]> {

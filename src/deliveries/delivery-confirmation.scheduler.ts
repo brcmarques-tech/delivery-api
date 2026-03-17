@@ -23,6 +23,7 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
     this.intervalId = setInterval(() => {
       this.autoConfirmExpiredDeliveries();
       this.expireAwaitingPaymentOrders();
+      this.retryPendingPayouts();
     }, 60_000);
   }
 
@@ -38,6 +39,24 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
       }
     } catch (err) {
       this.logger.error('Failed to expire awaiting payment orders:', err);
+    }
+  }
+
+  private async retryPendingPayouts() {
+    try {
+      const pending = await this.deliveriesService.findPendingPayouts();
+      for (const delivery of pending) {
+        if (delivery.payoutStatus === 'failed') {
+          await this.deliveriesService.processDelivererPayout(delivery.id);
+          this.logger.log(`Retry payout entregador delivery ${delivery.id}`);
+        }
+        if (['failed', 'pending'].includes(delivery.vendorPayoutStatus)) {
+          await this.deliveriesService.retryVendorPayout(delivery.id);
+          this.logger.log(`Processando payout vendedor delivery ${delivery.id} (status: ${delivery.vendorPayoutStatus})`);
+        }
+      }
+    } catch (err) {
+      this.logger.error('Failed to process payouts:', err);
     }
   }
 

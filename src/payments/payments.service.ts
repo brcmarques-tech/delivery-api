@@ -13,6 +13,7 @@ import { AppUsersService } from '../users/app-users.service';
 import { VendorUsersService } from '../users/vendor-users.service';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
 
@@ -33,6 +34,7 @@ export class PaymentsService {
     private vendorUsersService: VendorUsersService,
     private platformConfigService: PlatformConfigService,
     private whatsAppService: WhatsAppService,
+    private notificationsService: NotificationsService,
   ) {
     this.mpClient = new MercadoPagoConfig({
       accessToken: this.configService.get('MP_ACCESS_TOKEN') || '',
@@ -453,7 +455,7 @@ export class PaymentsService {
   }
 
   async handleWebhook(body: any): Promise<void> {
-    if (body.type !== 'payment' || body.action !== 'payment.created') {
+    if (body.type !== 'payment' || !['payment.created', 'payment.updated'].includes(body.action)) {
       return;
     }
 
@@ -472,10 +474,30 @@ export class PaymentsService {
       const orderId = externalRef.replace('order:', '');
       if (status === 'approved') {
         const orderRepo = this.paymentsRepository.manager.getRepository(Order);
-        const order = await orderRepo.findOne({ where: { id: orderId } });
+        const order = await orderRepo.findOne({
+          where: { id: orderId },
+          relations: ['customer', 'store'],
+        });
         if (order && order.status === OrderStatus.AWAITING_PAYMENT) {
           order.status = OrderStatus.PENDING;
           await orderRepo.save(order);
+          this.logger.log(`Pagamento aprovado para pedido #${order.orderNumber} (${body.action})`);
+
+          // Notificar cliente
+          if (order.customer?.id) {
+            this.notificationsService.sendToAppUser(
+              order.customer.id,
+              'Pagamento confirmado!',
+              `Seu pagamento do pedido #${order.orderNumber} foi aprovado. Aguarde a confirmação da loja.`,
+              { type: 'PAYMENT_CONFIRMED', orderId: order.id },
+            ).catch(() => {});
+          }
+          if (order.customer?.phone) {
+            this.whatsAppService.sendText(
+              order.customer.phone,
+              `✅ *Pagamento confirmado!*\n\nSeu pagamento do pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) foi aprovado.\n\nAguarde a confirmação da loja!`,
+            ).catch(() => {});
+          }
         }
       }
       return;
@@ -546,8 +568,28 @@ export class PaymentsService {
   async transferToVendor(vendorId: string, amount: number, orderId: string): Promise<{ success: boolean; mpId?: string }> {
     const vendor = await this.vendorUsersService.findById(vendorId);
     if (!vendor?.mpUserId) {
+      this.logger.warn(`transferToVendor falhou: vendor ${vendorId} sem mpUserId`);
       return { success: false };
     }
+
+    const payerEmail = this.configService.get('MP_PAYER_EMAIL', '');
+    if (!payerEmail) {
+      this.logger.error('transferToVendor falhou: MP_PAYER_EMAIL não configurado');
+      return { success: false };
+    }
+
+    const requestBody = {
+      transaction_amount: amount,
+      description: `Pagamento pedido ${orderId}`,
+      payment_method_id: 'account_money',
+      payer: {
+        email: payerEmail,
+      },
+      collector_id: Number(vendor.mpUserId),
+      external_reference: `vendor-payout:${orderId}:${vendorId}`,
+    };
+
+    this.logger.log(`transferToVendor REQUEST: vendor=${vendorId} | mpUserId=${vendor.mpUserId} | amount=R$${amount} | payerEmail=${payerEmail} | orderId=${orderId}`);
 
     try {
       const response = await fetch('https://api.mercadopago.com/v1/payments', {
@@ -556,19 +598,11 @@ export class PaymentsService {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.configService.get('MP_ACCESS_TOKEN')}`,
         },
-        body: JSON.stringify({
-          transaction_amount: amount,
-          description: `Pagamento pedido ${orderId}`,
-          payment_method_id: 'account_money',
-          payer: {
-            email: 'platform@bcmtech.com',
-          },
-          collector_id: Number(vendor.mpUserId),
-          external_reference: `vendor-payout:${orderId}:${vendorId}`,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
+      this.logger.log(`transferToVendor RESPONSE: status=${response.status} | body=${JSON.stringify(data)}`);
 
       if (data.id && (data.status === 'approved' || data.status === 'pending')) {
         const payment = this.paymentsRepository.create({
@@ -580,12 +614,14 @@ export class PaymentsService {
           vendorUser: vendor,
         });
         await this.paymentsRepository.save(payment);
+        this.logger.log(`Repasse vendedor OK: R$${amount} -> vendor ${vendorId} | mpId: ${data.id}`);
         return { success: true, mpId: String(data.id) };
       }
 
+      this.logger.error(`transferToVendor FALHOU: httpStatus=${response.status} | mpStatus=${data.status} | message=${data.message} | cause=${JSON.stringify(data.cause)}`);
       return { success: false };
-    } catch (err) {
-      console.error('Failed to transfer to vendor:', err);
+    } catch (err: any) {
+      this.logger.error(`transferToVendor EXCEPTION: ${err.message}`);
       return { success: false };
     }
   }
@@ -593,8 +629,28 @@ export class PaymentsService {
   async transferToDeliverer(delivererId: string, amount: number, orderId: string): Promise<{ success: boolean; mpId?: string }> {
     const deliverer = await this.appUsersService.findById(delivererId);
     if (!deliverer?.mpUserId) {
+      this.logger.warn(`transferToDeliverer falhou: deliverer ${delivererId} sem mpUserId`);
       return { success: false };
     }
+
+    const payerEmail = this.configService.get('MP_PAYER_EMAIL', '');
+    if (!payerEmail) {
+      this.logger.error('transferToDeliverer falhou: MP_PAYER_EMAIL não configurado');
+      return { success: false };
+    }
+
+    const requestBody = {
+      transaction_amount: amount,
+      description: `Entrega do pedido ${orderId}`,
+      payment_method_id: 'account_money',
+      payer: {
+        email: payerEmail,
+      },
+      collector_id: Number(deliverer.mpUserId),
+      external_reference: `payout:${orderId}:${delivererId}`,
+    };
+
+    this.logger.log(`transferToDeliverer REQUEST: deliverer=${delivererId} | mpUserId=${deliverer.mpUserId} | amount=R$${amount} | payerEmail=${payerEmail} | orderId=${orderId}`);
 
     try {
       const response = await fetch('https://api.mercadopago.com/v1/payments', {
@@ -603,19 +659,11 @@ export class PaymentsService {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.configService.get('MP_ACCESS_TOKEN')}`,
         },
-        body: JSON.stringify({
-          transaction_amount: amount,
-          description: `Entrega do pedido ${orderId}`,
-          payment_method_id: 'account_money',
-          payer: {
-            email: 'platform@bcmtech.com',
-          },
-          collector_id: Number(deliverer.mpUserId),
-          external_reference: `payout:${orderId}:${delivererId}`,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
+      this.logger.log(`transferToDeliverer RESPONSE: status=${response.status} | body=${JSON.stringify(data)}`);
 
       if (data.id && (data.status === 'approved' || data.status === 'pending')) {
         const payment = this.paymentsRepository.create({
@@ -627,13 +675,14 @@ export class PaymentsService {
           appUser: deliverer,
         });
         await this.paymentsRepository.save(payment);
-
+        this.logger.log(`Repasse entregador OK: R$${amount} -> deliverer ${delivererId} | mpId: ${data.id}`);
         return { success: true, mpId: String(data.id) };
       }
 
+      this.logger.error(`transferToDeliverer FALHOU: httpStatus=${response.status} | mpStatus=${data.status} | message=${data.message} | cause=${JSON.stringify(data.cause)}`);
       return { success: false };
-    } catch (err) {
-      console.error('Failed to transfer to deliverer:', err);
+    } catch (err: any) {
+      this.logger.error(`transferToDeliverer EXCEPTION: ${err.message}`);
       return { success: false };
     }
   }
