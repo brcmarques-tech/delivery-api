@@ -10,6 +10,8 @@ interface ExpoPushMessage {
   body: string;
   data?: Record<string, any>;
   sound?: 'default' | null;
+  priority?: 'default' | 'normal' | 'high';
+  channelId?: string;
 }
 
 @Injectable()
@@ -33,6 +35,8 @@ export class NotificationsService {
       body,
       data,
       sound: 'default',
+      priority: 'high',
+      channelId: 'default',
     }]);
   }
 
@@ -46,6 +50,8 @@ export class NotificationsService {
       body,
       data,
       sound: 'default',
+      priority: 'high',
+      channelId: 'default',
     }]);
   }
 
@@ -53,12 +59,12 @@ export class NotificationsService {
     // Try app user first, then vendor
     const appUser = await this.appUsersRepository.findOne({ where: { id: userId } });
     if (appUser?.expoPushToken) {
-      await this.sendPushNotifications([{ to: appUser.expoPushToken, title, body, data, sound: 'default' }]);
+      await this.sendPushNotifications([{ to: appUser.expoPushToken, title, body, data, sound: 'default', priority: 'high', channelId: 'default' }]);
       return;
     }
     const vendorUser = await this.vendorUsersRepository.findOne({ where: { id: userId } });
     if (vendorUser?.expoPushToken) {
-      await this.sendPushNotifications([{ to: vendorUser.expoPushToken, title, body, data, sound: 'default' }]);
+      await this.sendPushNotifications([{ to: vendorUser.expoPushToken, title, body, data, sound: 'default', priority: 'high', channelId: 'default' }]);
     }
   }
 
@@ -78,6 +84,8 @@ export class NotificationsService {
         body,
         data,
         sound: 'default' as const,
+        priority: 'high' as const,
+        channelId: 'default',
       }));
 
     if (messages.length > 0) {
