@@ -31,12 +31,16 @@ export class WhatsAppService {
 
   async sendText(to: string, text: string): Promise<boolean> {
     if (!this.enabled) {
-      this.logger.warn('WhatsApp desabilitado: WAHA_API_URL ou WAHA_API_KEY não configurados');
+      this.logger.warn(`WhatsApp desabilitado: apiUrl=${this.apiUrl} apiKey=${this.apiKey ? 'SET' : 'EMPTY'}`);
       return false;
     }
 
+    const phone = this.formatPhone(to);
+    const url = `${this.apiUrl}/api/sendText`;
+    this.logger.log(`WhatsApp tentando enviar para ${phone} via ${url}`);
+
     try {
-      const res = await fetch(`${this.apiUrl}/api/sendText`, {
+      const res = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -44,7 +48,7 @@ export class WhatsAppService {
         },
         body: JSON.stringify({
           session: this.session,
-          chatId: `${this.formatPhone(to)}@c.us`,
+          chatId: `${phone}@c.us`,
           text,
         }),
       });
@@ -52,14 +56,14 @@ export class WhatsAppService {
       const data = await res.json();
 
       if (!res.ok) {
-        this.logger.error(`WhatsApp erro: ${JSON.stringify(data)}`);
+        this.logger.error(`WhatsApp erro ${res.status}: ${JSON.stringify(data)}`);
         return false;
       }
 
       this.logger.log(`WhatsApp enviado para ${to} | msgId: ${data.key?.id}`);
       return true;
     } catch (err: any) {
-      this.logger.error(`WhatsApp falhou para ${to}: ${err.message}`);
+      this.logger.error(`WhatsApp falhou para ${to} (${url}): ${err.message}`);
       return false;
     }
   }

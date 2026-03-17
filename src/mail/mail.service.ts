@@ -10,6 +10,8 @@ import { PlatformConfigService } from '../config/platform-config.service';
 export class MailService {
   private resend: Resend | null;
   private readonly logger = new Logger(MailService.name);
+  private lastSendTime = 0;
+  private sendQueue = Promise.resolve();
 
   constructor(
     private configService: ConfigService,
@@ -57,6 +59,18 @@ export class MailService {
 
   private async sendEmail(to: string, subject: string, html: string): Promise<void> {
     if (!this.resend) throw new Error('Email desabilitado: RESEND_API_KEY não configurada');
+    // Rate limit: max 4 emails/segundo (Resend permite 5, margem de seguranca)
+    await new Promise<void>((resolve) => {
+      this.sendQueue = this.sendQueue.then(async () => {
+        const now = Date.now();
+        const elapsed = now - this.lastSendTime;
+        if (elapsed < 250) {
+          await new Promise((r) => setTimeout(r, 250 - elapsed));
+        }
+        this.lastSendTime = Date.now();
+        resolve();
+      });
+    });
     const { error } = await this.resend.emails.send({
       from: this.from,
       to,
