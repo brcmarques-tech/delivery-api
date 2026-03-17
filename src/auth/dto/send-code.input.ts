@@ -7,4 +7,7 @@ export class SendCodeInput {
 
   @Field()
   channel: 'whatsapp' | 'email';
+
+  @Field({ nullable: true })
+  fallbackEmail?: string; // email to use if WhatsApp fails
 }
