@@ -167,19 +167,21 @@ export class PaymentsService {
 
     if (data.type === 'individual') {
       registerInfo.name = data.name;
-      registerInfo.birthdate = data.birthdate;
+      // Pagar.me expects DD/MM/YYYY format
+      const [y, m, d] = (data.birthdate || '').split('-');
+      registerInfo.birthdate = y && m && d ? `${d}/${m}/${y}` : data.birthdate;
       registerInfo.monthly_income = data.monthlyIncome;
       registerInfo.professional_occupation = data.professionalOccupation;
       if (data.motherName) registerInfo.mother_name = data.motherName;
       registerInfo.address = {
         street: data.address.street,
         street_number: data.address.streetNumber,
+        complementary: data.address.complementary || 'N/A',
+        reference_point: data.address.referencePoint || 'N/A',
         neighborhood: data.address.neighborhood,
         city: data.address.city,
         state: data.address.state,
         zip_code: data.address.zipCode.replace(/\D/g, ''),
-        ...(data.address.complementary ? { complementary: data.address.complementary } : {}),
-        ...(data.address.referencePoint ? { reference_point: data.address.referencePoint } : {}),
       };
     } else {
       registerInfo.company_name = data.companyName;
@@ -190,12 +192,12 @@ export class PaymentsService {
       registerInfo.main_address = {
         street: data.address.street,
         street_number: data.address.streetNumber,
+        complementary: data.address.complementary || 'N/A',
+        reference_point: data.address.referencePoint || 'N/A',
         neighborhood: data.address.neighborhood,
         city: data.address.city,
         state: data.address.state,
         zip_code: data.address.zipCode.replace(/\D/g, ''),
-        ...(data.address.complementary ? { complementary: data.address.complementary } : {}),
-        ...(data.address.referencePoint ? { reference_point: data.address.referencePoint } : {}),
       };
       if (data.managingPartners) {
         registerInfo.managing_partners = data.managingPartners.map((p) => ({
@@ -204,7 +206,7 @@ export class PaymentsService {
           document: p.document.replace(/\D/g, ''),
           type: 'individual',
           mother_name: p.motherName || '',
-          birthdate: p.birthdate,
+          birthdate: (() => { const [y2, m2, d2] = (p.birthdate || '').split('-'); return y2 && m2 && d2 ? `${d2}/${m2}/${y2}` : p.birthdate; })(),
           monthly_income: p.monthlyIncome,
           professional_occupation: p.professionalOccupation,
           self_declared_legal_representative: p.selfDeclaredLegalRepresentative,
@@ -237,7 +239,7 @@ export class PaymentsService {
       },
       transfer_settings: {
         transfer_enabled: true,
-        transfer_interval: 'Daily',
+        transfer_interval: 'daily',
         transfer_day: 0,
       },
       automatic_anticipation_settings: {
@@ -246,6 +248,7 @@ export class PaymentsService {
     };
 
     try {
+      this.logger.log(`Creating recipient: ${data.code}`);
       const result = await this.pagarmePost('/recipients', body);
       this.logger.log(`Recipient created: ${result.id} (code: ${data.code})`);
       return result;
