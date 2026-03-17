@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DeliveryConfirmationScheduler } from './delivery-confirmation.scheduler';
 import { DeliveriesService } from './deliveries.service';
@@ -25,6 +26,13 @@ describe('DeliveryConfirmationScheduler', () => {
     save: jest.fn((data) => Promise.resolve(data)),
   };
 
+  const mockConfigService = {
+    get: jest.fn((key: string) => {
+      if (key === 'MP_PAYER_EMAIL') return 'test@platform.com';
+      return undefined;
+    }),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -34,6 +42,7 @@ describe('DeliveryConfirmationScheduler', () => {
         { provide: getRepositoryToken(Order), useValue: mockOrdersRepo },
         { provide: DeliveriesService, useValue: mockDeliveriesService },
         { provide: OrdersService, useValue: mockOrdersService },
+        { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();
 

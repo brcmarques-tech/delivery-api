@@ -1,5 +1,6 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Order } from '../orders/entities/order.entity';
 import { DeliveriesService } from './deliveries.service';
@@ -16,6 +17,7 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
     private deliveriesService: DeliveriesService,
     @Inject(forwardRef(() => OrdersService))
     private ordersService: OrdersService,
+    private configService: ConfigService,
   ) {}
 
   onModuleInit() {
@@ -43,6 +45,9 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
   }
 
   private async retryPendingPayouts() {
+    // Skip if MP_PAYER_EMAIL is not configured — transfers will always fail
+    if (!this.configService.get('MP_PAYER_EMAIL')) return;
+
     try {
       const pending = await this.deliveriesService.findPendingPayouts();
       for (const delivery of pending) {
