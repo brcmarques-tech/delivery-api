@@ -230,7 +230,7 @@ export class StoresResolver {
   }
 
   @ResolveField(() => Boolean)
-  ownerMpConnected(@Parent() store: Store): boolean {
+  ownerPaymentConnected(@Parent() store: Store): boolean {
     return store.owner?.paymentConnected ?? false;
   }
 

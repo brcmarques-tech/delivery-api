@@ -172,7 +172,7 @@ export class Store {
   categories: Category[];
 
   @Field(() => Boolean)
-  ownerMpConnected: boolean;
+  ownerPaymentConnected: boolean;
 
   @Field()
   @CreateDateColumn()
