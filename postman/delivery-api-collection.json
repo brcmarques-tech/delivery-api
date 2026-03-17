@@ -1,0 +1,1123 @@
+{
+  "info": {
+    "name": "Delivery API - Fluxo Completo",
+    "_postman_id": "delivery-api-collection",
+    "description": "Collection completa da Delivery API.\n\n## Como usar:\n1. Importe o environment \"Delivery API - Local\"\n2. Execute as requests na ordem das pastas\n3. Os tokens e IDs são salvos automaticamente nas variáveis\n\n## Fluxo de Pagamento:\n1. Login (Auth) → tokens salvos\n2. Criar Loja + Produto (Setup)\n3. Criar Pedido (Orders)\n4. Simular Pagamento (Payments)\n5. Fluxo de Entrega (Deliveries)\n6. Confirmar Recebimento + Verificar Valores",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [],
+  "item": [
+    {
+      "name": "1. Auth",
+      "description": "Login de todos os usuários. Execute na ordem.",
+      "item": [
+        {
+          "name": "Login Cliente",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.loginApp) {",
+                  "  pm.environment.set('customerToken', res.data.loginApp.accessToken);",
+                  "  pm.environment.set('customerId', res.data.loginApp.user.id);",
+                  "  pm.test('Login cliente OK', () => {",
+                  "    pm.expect(res.data.loginApp.accessToken).to.be.a('string');",
+                  "    pm.expect(res.data.loginApp.user.name).to.not.be.empty;",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Login cliente falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation LoginApp($input: LoginInput!) {\n  loginApp(input: $input) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n      mpConnected\n    }\n  }\n}",
+                "variables": "{\"input\":{\"email\":\"{{customerEmail}}\",\"password\":\"{{customerPassword}}\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Login Vendedor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.loginVendor) {",
+                  "  pm.environment.set('vendorToken', res.data.loginVendor.accessToken);",
+                  "  pm.environment.set('vendorId', res.data.loginVendor.user.id);",
+                  "  pm.test('Login vendedor OK', () => {",
+                  "    pm.expect(res.data.loginVendor.accessToken).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Login vendedor falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation LoginVendor($input: LoginInput!) {\n  loginVendor(input: $input) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n      mpConnected\n    }\n  }\n}",
+                "variables": "{\"input\":{\"email\":\"{{vendorEmail}}\",\"password\":\"{{vendorPassword}}\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Login Entregador",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.loginApp) {",
+                  "  pm.environment.set('delivererToken', res.data.loginApp.accessToken);",
+                  "  pm.environment.set('delivererId', res.data.loginApp.user.id);",
+                  "  pm.test('Login entregador OK', () => {",
+                  "    pm.expect(res.data.loginApp.accessToken).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Login entregador falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation LoginApp($input: LoginInput!) {\n  loginApp(input: $input) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n      mpConnected\n    }\n  }\n}",
+                "variables": "{\"input\":{\"email\":\"{{delivererEmail}}\",\"password\":\"{{delivererPassword}}\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Login Superadmin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.loginApp) {",
+                  "  pm.environment.set('superadminToken', res.data.loginApp.accessToken);",
+                  "  pm.test('Login superadmin OK', () => {",
+                  "    pm.expect(res.data.loginApp.accessToken).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Login superadmin falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation LoginApp($input: LoginInput!) {\n  loginApp(input: $input) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n    }\n  }\n}",
+                "variables": "{\"input\":{\"email\":\"{{superadminEmail}}\",\"password\":\"{{superadminPassword}}\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Me App (Cliente)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  meApp {\n    id\n    name\n    email\n    role\n    phone\n    mpConnected\n    emailVerified\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Me Vendor",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  meVendor {\n    id\n    name\n    email\n    role\n    mpConnected\n    vendorPlan\n    stores {\n      id\n      name\n      isOpen\n    }\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Setup (Loja + Produto)",
+      "description": "Cria loja e produto para teste. Pule se já existirem.",
+      "item": [
+        {
+          "name": "Listar Lojas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.stores && res.data.stores.length > 0) {",
+                  "  const store = res.data.stores[0];",
+                  "  pm.environment.set('storeId', store.id);",
+                  "  pm.test('Loja encontrada: ' + store.name, () => {",
+                  "    pm.expect(store.id).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Nenhuma loja - execute Criar Loja', () => {",
+                  "    pm.expect(res.data.stores).to.be.an('array');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  stores {\n    id\n    name\n    isOpen\n    deliveryFee\n    hasOwnDelivery\n    ownerMpConnected\n    products {\n      id\n      name\n      price\n      stock\n      isAvailable\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Criar Loja",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.createStore) {",
+                  "  pm.environment.set('storeId', res.data.createStore.id);",
+                  "  pm.test('Loja criada: ' + res.data.createStore.name, () => {",
+                  "    pm.expect(res.data.createStore.id).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Criar loja falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  createStore(input: {\n    name: \"Loja Postman Test\"\n    description: \"Loja criada via Postman\"\n    phone: \"53999001122\"\n    street: \"Rua Postman\"\n    number: \"100\"\n    neighborhood: \"Centro\"\n    city: \"Pelotas\"\n    state: \"RS\"\n    zipCode: \"96010-000\"\n    latitude: -31.7654\n    longitude: -52.3456\n    deliveryFee: 5.00\n  }) {\n    id\n    name\n    deliveryFee\n    isOpen\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Criar Produto",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.createProduct) {",
+                  "  pm.environment.set('productId', res.data.createProduct.id);",
+                  "  pm.test('Produto criado: ' + res.data.createProduct.name, () => {",
+                  "    pm.expect(res.data.createProduct.id).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Criar produto falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  createProduct(input: {\n    storeId: \"{{storeId}}\"\n    name: \"X-Burger Postman\"\n    description: \"Hamburguer para teste\"\n    price: 25.00\n    stock: 100\n  }) {\n    id\n    name\n    price\n    stock\n    isAvailable\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Detalhes da Loja",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.store) {",
+                  "  const products = res.data.store.products || [];",
+                  "  if (products.length > 0) {",
+                  "    pm.environment.set('productId', products[0].id);",
+                  "  }",
+                  "  pm.test('Loja: ' + res.data.store.name + ' | Produtos: ' + products.length, () => {",
+                  "    pm.expect(res.data.store.id).to.be.a('string');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  store(id: \"{{storeId}}\") {\n    id\n    name\n    deliveryFee\n    hasOwnDelivery\n    isOpen\n    ownerMpConnected\n    products {\n      id\n      name\n      price\n      stock\n      isAvailable\n    }\n    categories {\n      id\n      name\n    }\n    owner {\n      id\n      name\n      mpConnected\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "MP Connect URL (Vendedor)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('MP Connect URL gerada', () => {",
+                  "  pm.expect(res.data.mpConnectUrl).to.include('mercadopago');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  mpConnectUrl\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Pedidos",
+      "description": "Criar e gerenciar pedidos.",
+      "item": [
+        {
+          "name": "Criar Pedido (MERCADO_PAGO)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.createOrder) {",
+                  "  const order = res.data.createOrder;",
+                  "  pm.environment.set('orderId', order.id);",
+                  "  pm.environment.set('orderNumber', order.orderNumber);",
+                  "  if (order.checkoutUrl) pm.environment.set('checkoutUrl', order.checkoutUrl);",
+                  "",
+                  "  pm.test('Pedido criado: #' + order.orderNumber, () => {",
+                  "    pm.expect(order.id).to.be.a('string');",
+                  "    pm.expect(order.status).to.equal('AWAITING_PAYMENT');",
+                  "  });",
+                  "",
+                  "  // Log valores",
+                  "  console.log('--- VALORES DO PEDIDO ---');",
+                  "  console.log('Subtotal: R$' + order.subtotal);",
+                  "  console.log('Taxa entrega: R$' + order.deliveryFee);",
+                  "  console.log('Total: R$' + order.total);",
+                  "  console.log('Comissao: ' + order.commissionPercent + '% = R$' + order.commissionAmount);",
+                  "  if (order.checkoutUrl) console.log('Checkout: ' + order.checkoutUrl);",
+                  "} else {",
+                  "  pm.test('Criar pedido falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    checkoutUrl\n    mpPreferenceId\n    commissionPercent\n    commissionAmount\n    deliveryAddress\n    store {\n      id\n      name\n    }\n    items {\n      id\n      quantity\n      unitPrice\n      totalPrice\n      product {\n        name\n      }\n    }\n    createdAt\n  }\n}",
+                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId}}\",\"quantity\":2}],\"paymentMethod\":\"MERCADO_PAGO\",\"deliveryAddress\":\"Rua Postman Test, 123 - Centro\",\"deliveryLatitude\":-31.7654,\"deliveryLongitude\":-52.3456}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Criar Pedido (PIX)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.createOrder) {",
+                  "  const order = res.data.createOrder;",
+                  "  pm.environment.set('orderId', order.id);",
+                  "  pm.environment.set('orderNumber', order.orderNumber);",
+                  "  if (order.checkoutUrl) pm.environment.set('checkoutUrl', order.checkoutUrl);",
+                  "",
+                  "  pm.test('Pedido PIX criado: #' + order.orderNumber, () => {",
+                  "    pm.expect(order.id).to.be.a('string');",
+                  "    pm.expect(order.paymentMethod).to.equal('PIX');",
+                  "  });",
+                  "  if (order.checkoutUrl) console.log('PIX Checkout: ' + order.checkoutUrl);",
+                  "} else {",
+                  "  pm.test('Criar pedido PIX falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    checkoutUrl\n    commissionPercent\n    commissionAmount\n    createdAt\n  }\n}",
+                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId}}\",\"quantity\":1}],\"paymentMethod\":\"PIX\",\"deliveryAddress\":\"Rua PIX Test, 456\",\"deliveryLatitude\":-31.7654,\"deliveryLongitude\":-52.3456}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Criar Pedido (ON_DELIVERY)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.createOrder) {",
+                  "  const order = res.data.createOrder;",
+                  "  pm.environment.set('orderId', order.id);",
+                  "  pm.environment.set('orderNumber', order.orderNumber);",
+                  "  pm.test('Pedido ON_DELIVERY criado: #' + order.orderNumber, () => {",
+                  "    pm.expect(order.status).to.equal('PENDING');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Criar pedido falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    commissionPercent\n    commissionAmount\n    createdAt\n  }\n}",
+                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId}}\",\"quantity\":1}],\"paymentMethod\":\"ON_DELIVERY\",\"deliveryAddress\":\"Rua Entrega Test, 789\",\"deliveryLatitude\":-31.7654,\"deliveryLongitude\":-52.3456}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Consultar Pedido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.order) {",
+                  "  const o = res.data.order;",
+                  "  pm.test('Pedido #' + o.orderNumber + ' | Status: ' + o.status, () => {",
+                  "    pm.expect(o.id).to.equal(pm.environment.get('orderId'));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  order(id: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    checkoutUrl\n    commissionPercent\n    commissionAmount\n    customerConfirmedAt\n    deliveryAddress\n    store {\n      id\n      name\n      hasOwnDelivery\n    }\n    items {\n      id\n      quantity\n      unitPrice\n      totalPrice\n      product {\n        name\n      }\n    }\n    delivery {\n      id\n      payoutStatus\n      payoutAmount\n      vendorPayoutStatus\n      vendorPayoutAmount\n      deliveredAt\n    }\n    createdAt\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Meus Pedidos (Cliente)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  myOrders {\n    id\n    orderNumber\n    status\n    total\n    paymentMethod\n    createdAt\n    store {\n      name\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Pedidos da Loja (Vendedor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  storeOrders(storeId: \"{{storeId}}\") {\n    id\n    orderNumber\n    status\n    total\n    paymentMethod\n    customer {\n      name\n    }\n    createdAt\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Cancelar Pedido (Cliente)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  cancelOrder(orderId: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Pagamentos",
+      "description": "Webhook, simulação de pagamento e verificações.",
+      "item": [
+        {
+          "name": "Simular Pagamento (AWAITING → PENDING)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.updateOrderStatus) {",
+                  "  pm.test('Pagamento simulado | Status: ' + res.data.updateOrderStatus.status, () => {",
+                  "    pm.expect(res.data.updateOrderStatus.status).to.equal('PENDING');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Simular pagamento falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Este request simula a aprovacao do pagamento que normalmente viria do webhook MP",
+                  "console.log('Simulando aprovacao de pagamento para pedido: ' + pm.environment.get('orderId'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  updateOrderStatus(id: \"{{orderId}}\", status: PENDING) {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Webhook MP (POST)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Webhook respondeu OK', () => {",
+                  "  pm.expect(pm.response.json().ok).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/payments/webhook", "host": ["{{baseUrl}}"], "path": ["payments", "webhook"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"payment\",\n  \"action\": \"payment.created\",\n  \"data\": {\n    \"id\": 99999\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "MP Connect URL (REST)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('URL retornada', () => {",
+                  "  pm.expect(pm.response.json().url).to.include('mercadopago');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments/mp/connect-url?userId={{vendorId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["payments", "mp", "connect-url"],
+              "query": [{ "key": "userId", "value": "{{vendorId}}" }]
+            }
+          }
+        },
+        {
+          "name": "Desconectar Mercado Pago",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  disconnectMercadoPago\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Fluxo de Entrega",
+      "description": "Vendedor aceita → prepara → pronto → Entregador aceita → coleta → entrega.",
+      "item": [
+        {
+          "name": "5.1 Vendedor Aceita",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Pedido aceito', () => {",
+                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('ACCEPTED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  updateOrderStatus(id: \"{{orderId}}\", status: ACCEPTED) {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.2 Vendedor Prepara",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Pedido em preparo', () => {",
+                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('PREPARING');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  updateOrderStatus(id: \"{{orderId}}\", status: PREPARING) {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.3 Vendedor Pronto",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Pedido pronto', () => {",
+                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('READY');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  updateOrderStatus(id: \"{{orderId}}\", status: READY) {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.4 Entregas Disponíveis",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  availableDeliveries {\n    id\n    orderNumber\n    status\n    total\n    deliveryFee\n    deliveryAddress\n    store {\n      name\n      street\n      number\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.5 Entregador Aceita",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.acceptDelivery) {",
+                  "  pm.environment.set('deliveryId', res.data.acceptDelivery.id);",
+                  "  pm.test('Entrega aceita: ' + res.data.acceptDelivery.id.substring(0, 8), () => {",
+                  "    pm.expect(res.data.acceptDelivery.id).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Aceitar entrega falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  acceptDelivery(orderId: \"{{orderId}}\") {\n    id\n    order {\n      id\n      orderNumber\n      status\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.6 Entregador Coleta",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Coleta confirmada', () => {",
+                  "  pm.expect(res.data.confirmPickup.pickedUpAt).to.not.be.null;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  confirmPickup(deliveryId: \"{{deliveryId}}\") {\n    id\n    pickedUpAt\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.7 Entregador Entrega",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.confirmDelivery) {",
+                  "  const d = res.data.confirmDelivery;",
+                  "  pm.test('Entrega confirmada', () => {",
+                  "    pm.expect(d.deliveredAt).to.not.be.null;",
+                  "  });",
+                  "",
+                  "  console.log('--- PAYOUT STATUS ---');",
+                  "  console.log('Vendedor: ' + d.vendorPayoutStatus + ' = R$' + d.vendorPayoutAmount);",
+                  "  console.log('Entregador: ' + d.payoutStatus + ' = R$' + d.payoutAmount);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  confirmDelivery(deliveryId: \"{{deliveryId}}\") {\n    id\n    deliveredAt\n    payoutStatus\n    payoutAmount\n    vendorPayoutStatus\n    vendorPayoutAmount\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Confirmação + Valores",
+      "description": "Cliente confirma recebimento e verificamos a separação de valores.",
+      "item": [
+        {
+          "name": "6.1 Cliente Confirma Recebimento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.confirmReceipt) {",
+                  "  const o = res.data.confirmReceipt;",
+                  "  pm.test('Recebimento confirmado | Status: ' + o.status, () => {",
+                  "    pm.expect(o.customerConfirmedAt).to.not.be.null;",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Confirmar recebimento falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  confirmReceipt(orderId: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n    customerConfirmedAt\n    delivery {\n      payoutStatus\n      payoutAmount\n      vendorPayoutStatus\n      vendorPayoutAmount\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "6.2 Verificar Separação de Valores",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.order) {",
+                  "  const o = res.data.order;",
+                  "  const d = o.delivery;",
+                  "",
+                  "  const subtotal = parseFloat(o.subtotal);",
+                  "  const deliveryFee = parseFloat(o.deliveryFee);",
+                  "  const total = parseFloat(o.total);",
+                  "  const commission = parseFloat(o.commissionAmount);",
+                  "  const vendorAmount = d ? parseFloat(d.vendorPayoutAmount || 0) : 0;",
+                  "  const delivererAmount = d ? parseFloat(d.payoutAmount || 0) : 0;",
+                  "",
+                  "  const totalDistribuido = vendorAmount + delivererAmount + commission;",
+                  "",
+                  "  console.log('══════════════════════════════════');",
+                  "  console.log('  SEPARACAO DE VALORES');",
+                  "  console.log('══════════════════════════════════');",
+                  "  console.log('Subtotal:     R$ ' + subtotal.toFixed(2));",
+                  "  console.log('Entrega:      R$ ' + deliveryFee.toFixed(2));",
+                  "  console.log('TOTAL:        R$ ' + total.toFixed(2));",
+                  "  console.log('──────────────────────────────────');",
+                  "  console.log('Vendedor:     R$ ' + vendorAmount.toFixed(2) + ' (' + (d ? d.vendorPayoutStatus : 'n/a') + ')');",
+                  "  console.log('Entregador:   R$ ' + delivererAmount.toFixed(2) + ' (' + (d ? d.payoutStatus : 'n/a') + ')');",
+                  "  console.log('Plataforma:   R$ ' + commission.toFixed(2) + ' (' + o.commissionPercent + '%)');",
+                  "  console.log('──────────────────────────────────');",
+                  "  console.log('Distribuido:  R$ ' + totalDistribuido.toFixed(2));",
+                  "  console.log('Cobrado:      R$ ' + total.toFixed(2));",
+                  "",
+                  "  pm.test('Valores batem: R$' + totalDistribuido.toFixed(2) + ' = R$' + total.toFixed(2), () => {",
+                  "    pm.expect(Math.abs(totalDistribuido - total)).to.be.below(0.01);",
+                  "  });",
+                  "",
+                  "  if (d) {",
+                  "    pm.test('Vendedor split_auto: R$' + vendorAmount.toFixed(2), () => {",
+                  "      pm.expect(d.vendorPayoutStatus).to.equal('split_auto');",
+                  "    });",
+                  "    pm.test('Entregador pending: R$' + delivererAmount.toFixed(2), () => {",
+                  "      pm.expect(['pending_confirmation', 'completed']).to.include(d.payoutStatus);",
+                  "    });",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  order(id: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    commissionPercent\n    commissionAmount\n    customerConfirmedAt\n    store {\n      name\n      hasOwnDelivery\n    }\n    delivery {\n      id\n      payoutStatus\n      payoutAmount\n      payoutMpId\n      vendorPayoutStatus\n      vendorPayoutAmount\n      vendorPayoutMpId\n      deliveredAt\n      deliverer {\n        name\n      }\n    }\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Admin",
+      "description": "Consultas de superadmin e dashboard.",
+      "item": [
+        {
+          "name": "Todos os Pedidos",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  allOrders {\n    id\n    orderNumber\n    status\n    total\n    paymentMethod\n    commissionAmount\n    customer {\n      name\n    }\n    store {\n      name\n    }\n    createdAt\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Todas as Entregas",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  allDeliveries {\n    id\n    payoutStatus\n    payoutAmount\n    vendorPayoutStatus\n    vendorPayoutAmount\n    deliveredAt\n    deliverer {\n      name\n    }\n    order {\n      orderNumber\n      total\n      paymentMethod\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Todas as Lojas (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  allStores {\n    id\n    name\n    isOpen\n    isActive\n    ownerMpConnected\n    owner {\n      name\n      email\n      mpConnected\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Entregadores Online",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  onlineDeliverersCount\n}"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

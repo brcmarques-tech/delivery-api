@@ -1,0 +1,30 @@
+{
+  "id": "delivery-api-env",
+  "name": "Delivery API - Local",
+  "values": [
+    { "key": "baseUrl", "value": "http://localhost:3000", "enabled": true },
+    { "key": "graphqlUrl", "value": "http://localhost:3000/graphql", "enabled": true },
+    { "key": "customerToken", "value": "", "enabled": true },
+    { "key": "vendorToken", "value": "", "enabled": true },
+    { "key": "delivererToken", "value": "", "enabled": true },
+    { "key": "superadminToken", "value": "", "enabled": true },
+    { "key": "storeId", "value": "", "enabled": true },
+    { "key": "productId", "value": "", "enabled": true },
+    { "key": "orderId", "value": "", "enabled": true },
+    { "key": "orderNumber", "value": "", "enabled": true },
+    { "key": "deliveryId", "value": "", "enabled": true },
+    { "key": "checkoutUrl", "value": "", "enabled": true },
+    { "key": "vendorId", "value": "", "enabled": true },
+    { "key": "delivererId", "value": "", "enabled": true },
+    { "key": "customerId", "value": "", "enabled": true },
+    { "key": "customerEmail", "value": "cliente@bcmtech.com", "enabled": true },
+    { "key": "customerPassword", "value": "cliente123", "enabled": true },
+    { "key": "vendorEmail", "value": "admin@bcmtech.com", "enabled": true },
+    { "key": "vendorPassword", "value": "admin123", "enabled": true },
+    { "key": "delivererEmail", "value": "entregador@bcmtech.com", "enabled": true },
+    { "key": "delivererPassword", "value": "entrega123", "enabled": true },
+    { "key": "superadminEmail", "value": "superadmin@bcmtech.com", "enabled": true },
+    { "key": "superadminPassword", "value": "super123", "enabled": true }
+  ],
+  "_postman_variable_scope": "environment"
+}

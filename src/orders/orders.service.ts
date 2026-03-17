@@ -184,15 +184,15 @@ export class OrdersService {
 
     const paymentMethod = input.paymentMethod || 'ON_DELIVERY';
 
-    const vendorMpConnected = storeOwner?.mpConnected ?? false;
+    const vendorPaymentConnected = storeOwner?.paymentConnected ?? false;
 
-    if (!vendorMpConnected && paymentMethod !== 'ON_DELIVERY') {
+    if (!vendorPaymentConnected && paymentMethod !== 'ON_DELIVERY') {
       throw new BadRequestException(
         'Esta loja ainda nao aceita pagamentos online. Escolha pagamento na entrega ou retirada.',
       );
     }
 
-    if (!vendorMpConnected && !store.hasOwnDelivery && !isPickup) {
+    if (!vendorPaymentConnected && !store.hasOwnDelivery && !isPickup) {
       throw new BadRequestException(
         'Esta loja so aceita retirada no local no momento.',
       );
@@ -249,21 +249,23 @@ export class OrdersService {
         .catch(() => {});
     }
 
-    if (paymentMethod === 'MERCADO_PAGO') {
+    if (paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') {
       const { checkoutUrl, preferenceId } = await this.paymentsService.createOrderCheckout(savedOrder, customer);
       savedOrder.checkoutUrl = checkoutUrl;
       savedOrder.mpPreferenceId = preferenceId;
       await this.ordersRepository.save(savedOrder);
     } else if (paymentMethod === 'PIX') {
       try {
-        const { qrCode, qrCodeBase64 } = await this.paymentsService.createOrderPix(savedOrder, customer);
-        savedOrder.pixQrCode = qrCode;
-        savedOrder.pixQrCodeBase64 = qrCodeBase64;
+        const result = await this.paymentsService.createOrderPix(savedOrder, customer);
+        savedOrder.checkoutUrl = result.checkoutUrl;
+        savedOrder.mpPreferenceId = result.preferenceId;
+        if (result.qrCode) savedOrder.pixQrCode = result.qrCode;
+        if (result.qrCodeUrl) savedOrder.pixQrCodeBase64 = result.qrCodeUrl;
         await this.ordersRepository.save(savedOrder);
       } catch (err: any) {
-        console.error('PIX generation failed:', err?.message || err);
+        console.error('PIX checkout generation failed:', err?.message || err);
         throw new BadRequestException(
-          err?.message || 'Nao foi possivel gerar o PIX. Tente novamente ou use outro metodo de pagamento.',
+          err?.message || 'Nao foi possivel gerar o pagamento PIX. Tente novamente ou use outro metodo de pagamento.',
         );
       }
     }

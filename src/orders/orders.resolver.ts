@@ -1,9 +1,8 @@
 import { Resolver, Query, Mutation, Args, Subscription, Int } from '@nestjs/graphql';
-import { UseGuards, Inject, forwardRef } from '@nestjs/common';
+import { UseGuards, Inject } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrdersService } from './orders.service';
-import { DeliveriesService } from '../deliveries/deliveries.service';
 import { CreateOrderInput } from './dto/create-order.input';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -17,8 +16,6 @@ import { PUB_SUB } from '../pubsub/pubsub.module';
 export class OrdersResolver {
   constructor(
     private ordersService: OrdersService,
-    @Inject(forwardRef(() => DeliveriesService))
-    private deliveriesService: DeliveriesService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -70,15 +67,8 @@ export class OrdersResolver {
     @Args('orderId') orderId: string,
     @CurrentUser() user: AppUser,
   ): Promise<Order> {
-    const order = await this.ordersService.confirmReceipt(orderId, user.id);
-
-    if (order.delivery?.id) {
-      this.deliveriesService
-        .processDelivererPayout(order.delivery.id)
-        .catch((err) => console.error('Payout after confirmation failed:', err));
-    }
-
-    return order;
+    // With Pagar.me split, payments are already distributed at transaction time
+    return this.ordersService.confirmReceipt(orderId, user.id);
   }
 
   @Mutation(() => Order)

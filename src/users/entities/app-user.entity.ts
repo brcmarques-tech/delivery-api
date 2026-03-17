@@ -117,23 +117,15 @@ export class AppUser {
   @Column({ nullable: true })
   expoPushToken: string;
 
-  // Mercado Pago customer ID para cartoes salvos
+  // Pagar.me recipient ID (for deliverer split payments)
+  @Field({ nullable: true })
   @Column({ nullable: true })
-  mpCustomerId: string;
+  pagarmeRecipientId: string;
 
-  // Mercado Pago para entregador
+  // Payment provider connected status (DB column kept as mpConnected for migration compat)
   @Field()
-  @Column({ default: false })
-  mpConnected: boolean;
-
-  @Column({ nullable: true })
-  mpAccessToken: string;
-
-  @Column({ nullable: true })
-  mpRefreshToken: string;
-
-  @Column({ nullable: true })
-  mpUserId: string;
+  @Column({ name: 'mpConnected', default: false })
+  paymentConnected: boolean;
 
   @Field(() => [Order], { nullable: true })
   @OneToMany(() => Order, (order) => order.customer)

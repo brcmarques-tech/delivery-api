@@ -229,16 +229,17 @@ export class VendorUsersService {
     return saved;
   }
 
-  async updateMpCustomerId(id: string, mpCustomerId: string): Promise<void> {
-    await this.vendorUsersRepository.update(id, { mpCustomerId });
+  async updatePagarmeRecipient(id: string, recipientId: string): Promise<void> {
+    await this.vendorUsersRepository.update(id, {
+      pagarmeRecipientId: recipientId,
+      paymentConnected: true,
+    });
   }
 
-  async updateMpCredentials(id: string, accessToken: string, refreshToken: string, mpUserId: string): Promise<void> {
+  async disconnectPayment(id: string): Promise<void> {
     await this.vendorUsersRepository.update(id, {
-      mpAccessToken: accessToken,
-      mpRefreshToken: refreshToken,
-      mpUserId: mpUserId,
-      mpConnected: true,
+      pagarmeRecipientId: null as any,
+      paymentConnected: false,
     });
   }
 
@@ -264,15 +265,6 @@ export class VendorUsersService {
       user.password = await bcrypt.hash(newPassword, 10);
     }
     return this.vendorUsersRepository.save(user);
-  }
-
-  async disconnectMp(id: string): Promise<void> {
-    await this.vendorUsersRepository.update(id, {
-      mpAccessToken: null as any,
-      mpRefreshToken: null as any,
-      mpUserId: null as any,
-      mpConnected: false,
-    });
   }
 
   async acceptTerms(id: string): Promise<VendorUser> {
