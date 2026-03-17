@@ -149,7 +149,7 @@ export class DeliveriesService implements OnModuleInit {
       where: { id: deliveryId },
       relations: ['order', 'deliverer'],
     });
-    if (!delivery || delivery.payoutStatus !== 'pending_confirmation') return;
+    if (!delivery || !['pending_confirmation', 'failed'].includes(delivery.payoutStatus)) return;
 
     const payoutAmount = Number(delivery.payoutAmount) || Number(delivery.order.deliveryFee);
     if (payoutAmount <= 0) return;
@@ -177,6 +177,38 @@ export class DeliveriesService implements OnModuleInit {
       .andWhere('delivery.payoutStatus = :status', { status: 'pending_confirmation' })
       .andWhere('order.customerConfirmedAt IS NULL')
       .getMany();
+  }
+
+  async findFailedPayouts(): Promise<Delivery[]> {
+    return this.deliveriesRepository
+      .createQueryBuilder('delivery')
+      .leftJoinAndSelect('delivery.order', 'order')
+      .leftJoinAndSelect('delivery.order.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .where('delivery.deliveredAt IS NOT NULL')
+      .andWhere('(delivery.payoutStatus = :failed OR delivery.vendorPayoutStatus = :failed)', { failed: 'failed' })
+      .getMany();
+  }
+
+  async retryVendorPayout(deliveryId: string): Promise<void> {
+    const delivery = await this.deliveriesRepository.findOne({
+      where: { id: deliveryId },
+      relations: ['order', 'order.store', 'order.store.owner'],
+    });
+    if (!delivery || delivery.vendorPayoutStatus !== 'failed') return;
+
+    const vendorAmount = Number(delivery.vendorPayoutAmount);
+    if (vendorAmount <= 0 || !delivery.order.store?.owner?.id) return;
+
+    const result = await this.paymentsService.transferToVendor(
+      delivery.order.store.owner.id,
+      vendorAmount,
+      delivery.order.id,
+    );
+    delivery.vendorPayoutStatus = result.success ? 'completed' : 'failed';
+    delivery.vendorPayoutMpId = result.mpId || delivery.vendorPayoutMpId;
+    await this.deliveriesRepository.save(delivery);
   }
 
   async findByDeliverer(delivererId: string): Promise<Delivery[]> {

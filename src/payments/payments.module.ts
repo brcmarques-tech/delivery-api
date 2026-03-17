@@ -7,12 +7,14 @@ import { PaymentsResolver } from './payments.resolver';
 import { PaymentsController } from './payments.controller';
 import { UsersModule } from '../users/users.module';
 import { PlatformConfigModule } from '../config/platform-config.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Payment, Store]),
     forwardRef(() => UsersModule),
     PlatformConfigModule,
+    NotificationsModule,
   ],
   providers: [PaymentsService, PaymentsResolver],
   controllers: [PaymentsController],
