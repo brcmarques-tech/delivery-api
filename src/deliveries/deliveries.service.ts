@@ -183,7 +183,7 @@ export class DeliveriesService implements OnModuleInit {
     return this.deliveriesRepository
       .createQueryBuilder('delivery')
       .leftJoinAndSelect('delivery.order', 'order')
-      .leftJoinAndSelect('delivery.order.store', 'store')
+      .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoinAndSelect('delivery.deliverer', 'deliverer')
       .where('delivery.deliveredAt IS NOT NULL')
