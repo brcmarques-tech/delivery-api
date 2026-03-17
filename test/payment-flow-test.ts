@@ -1,14 +1,13 @@
 /**
- * TESTE VISUAL COMPLETO - FLUXO DE PAGAMENTO
+ * TESTE VISUAL COMPLETO - FLUXO DE PAGAMENTO (Pagar.me)
  *
- * Simula o caminho real do usuário:
- * 1. Cliente cria pedido com PIX ou MERCADO_PAGO
- * 2. Cliente paga via sandbox do MP
- * 3. Webhook confirma pagamento
- * 4. Vendedor aceita e prepara
- * 5. Entregador aceita, coleta e entrega
- * 6. Cliente confirma recebimento
- * 7. Sistema mostra a separação de valores
+ * Simula o caminho real do usuario:
+ * 1. Cliente cria pedido com PIX ou CREDIT_CARD
+ * 2. Webhook Pagar.me confirma pagamento
+ * 3. Vendedor aceita e prepara
+ * 4. Entregador aceita, coleta e entrega
+ * 5. Cliente confirma recebimento
+ * 6. Sistema mostra a separacao de valores (split automatico)
  *
  * Uso: npx ts-node test/payment-flow-test.ts
  */
@@ -82,9 +81,9 @@ async function login(email: string, password: string, type: 'app' | 'vendor'): P
 
 async function main() {
   try {
-    header('TESTE DE FLUXO COMPLETO DE PAGAMENTO');
+    header('TESTE DE FLUXO COMPLETO DE PAGAMENTO (Pagar.me)');
     console.log(`  Este teste simula o caminho real do usuario:`);
-    console.log(`  Compra → Pagamento → Entrega → Confirmacao → Separacao de Valores\n`);
+    console.log(`  Compra → Pagamento → Entrega → Confirmacao → Split Automatico\n`);
 
     // ─── LOGIN ─────────────────────────────────────────────────
     step(1, 'Logando usuarios...');
@@ -93,10 +92,86 @@ async function main() {
     const delivererToken = await login('entregador@bcmtech.com', 'entrega123', 'app');
     success('Todos logados');
 
-    // ─── BUSCAR OU CRIAR LOJA E PRODUTO ──────────────────────────
-    step(2, 'Buscando ou criando loja e produto...');
+    // ─── VERIFICAR CONTA DE RECEBIMENTO ─────────────────────────
+    step(2, 'Verificando conta de recebimento do vendedor...');
 
-    // Check for existing stores
+    const vendorMe = await gql(`query { meVendor { id paymentConnected pagarmeRecipientId } }`, {}, vendorToken);
+    const vendorUser = vendorMe.meVendor;
+
+    if (!vendorUser.paymentConnected) {
+      info('Info', 'Vendedor nao tem conta de recebimento. Registrando via API...');
+      await gql(`
+        mutation {
+          registerRecipient(recipientData: {
+            name: "Vendor Test"
+            email: "admin@bcmtech.com"
+            document: "12345678901"
+            type: "individual"
+            phone: { ddd: "53", number: "999112233" }
+            address: {
+              street: "Rua Teste"
+              streetNumber: "100"
+              neighborhood: "Centro"
+              city: "Pelotas"
+              state: "RS"
+              zipCode: "96010000"
+            }
+            bankAccount: {
+              holderName: "Vendor Test"
+              bank: "260"
+              branchNumber: "0001"
+              accountNumber: "12345"
+              accountCheckDigit: "6"
+              type: "checking"
+            }
+          })
+        }
+      `, {}, vendorToken);
+      success('Vendedor registrado como recebedor Pagar.me');
+    } else {
+      success(`Vendedor ja conectado (recipient: ${vendorUser.pagarmeRecipientId})`);
+    }
+
+    // Check deliverer
+    const delivererMe = await gql(`query { meApp { id paymentConnected pagarmeRecipientId } }`, {}, delivererToken);
+    const delivererUser = delivererMe.meApp;
+    if (!delivererUser.paymentConnected) {
+      info('Info', 'Entregador nao tem conta de recebimento. Registrando via API...');
+      await gql(`
+        mutation {
+          registerRecipient(recipientData: {
+            name: "Entregador Test"
+            email: "entregador@bcmtech.com"
+            document: "98765432101"
+            type: "individual"
+            phone: { ddd: "53", number: "999334455" }
+            address: {
+              street: "Rua Entrega"
+              streetNumber: "200"
+              neighborhood: "Centro"
+              city: "Pelotas"
+              state: "RS"
+              zipCode: "96010000"
+            }
+            bankAccount: {
+              holderName: "Entregador Test"
+              bank: "260"
+              branchNumber: "0001"
+              accountNumber: "67890"
+              accountCheckDigit: "1"
+              type: "checking"
+            }
+          })
+        }
+      `, {}, delivererToken);
+      success('Entregador registrado como recebedor Pagar.me');
+    } else {
+      success(`Entregador ja conectado (recipient: ${delivererUser.pagarmeRecipientId})`);
+    }
+
+    // ─── BUSCAR OU CRIAR LOJA E PRODUTO ──────────────────────────
+    step(3, 'Buscando ou criando loja e produto...');
+
     let storesData = await gql(`query { stores { id name deliveryFee isOpen } }`, {}, customerToken);
     let store = storesData.stores?.[0];
 
@@ -127,51 +202,11 @@ async function main() {
     info('Loja', `${store.name} (${store.id.substring(0, 8)}...)`);
     money('Taxa de entrega', Number(store.deliveryFee));
 
-    // Connect vendor MP account via direct GraphQL (get vendor ID and set MP credentials)
-    step(2.1 as any, 'Conectando MP do vendedor...');
-    const vendorMe = await gql(`query { meVendor { id mpConnected } }`, {}, vendorToken);
-    const vendorUser = vendorMe.meVendor;
-    // Always update vendor MP token to ensure it's the real test token
-    const mpToken = process.env.MP_ACCESS_TOKEN!;
-    const { Client } = require('pg');
-    const pgClient = new Client({
-      host: 'localhost',
-      port: 5432,
-      user: 'delivery',
-      password: 'delivery123',
-      database: 'delivery_db',
-    });
-    await pgClient.connect();
-    await pgClient.query(
-      `UPDATE vendor_users SET "mpConnected" = true, "mpAccessToken" = $1, "mpUserId" = '3255267120' WHERE id = $2`,
-      [mpToken, vendorUser.id],
-    );
-    await pgClient.end();
-    success(`Vendedor MP conectado (token: ${mpToken.substring(0, 20)}...)`);
-
-    // Also connect deliverer's MP account
-    const delivererMe = await gql(`query { meApp { id mpConnected } }`, {}, delivererToken);
-    const delivererUser = delivererMe.meApp;
-    if (!delivererUser.mpConnected) {
-      const pgClient2 = new Client({
-        host: 'localhost', port: 5432, user: 'delivery',
-        password: 'delivery123', database: 'delivery_db',
-      });
-      await pgClient2.connect();
-      await pgClient2.query(
-        `UPDATE app_users SET "mpConnected" = true, "mpAccessToken" = $1, "mpUserId" = '888888' WHERE id = $2`,
-        [mpToken, delivererUser.id],
-      );
-      await pgClient2.end();
-      success('Entregador MP conectado via DB');
-    }
-
     // Check for existing products or create one
     const storeData = await gql(`
       query { store(id: "${store.id}") {
         id name deliveryFee hasOwnDelivery
         products { id name price isAvailable stock }
-        categories { id name }
       }}
     `, {}, customerToken);
 
@@ -214,9 +249,9 @@ async function main() {
     console.log(LINE);
 
     // ─── CRIAR PEDIDO ────────────────────────────────────────────
-    const PAYMENT_METHOD = 'MERCADO_PAGO'; // Testar com Checkout Pro
+    const PAYMENT_METHOD = 'CREDIT_CARD';
 
-    step(3, `Criando pedido com pagamento ${PAYMENT_METHOD}...`);
+    step(4, `Criando pedido com pagamento ${PAYMENT_METHOD}...`);
     const orderData = await gql(`
       mutation CreateOrder($input: CreateOrderInput!) {
         createOrder(input: $input) {
@@ -245,20 +280,18 @@ async function main() {
     info('Comissao %', `${order.commissionPercent}%`);
     money('Comissao R$', Number(order.commissionAmount));
 
-    // ─── CALCULAR SEPARAÇÃO DE VALORES ───────────────────────────
+    // ─── CALCULAR SEPARACAO DE VALORES ───────────────────────────
     const commissionAmount = Number(order.commissionAmount);
     const orderDeliveryFee = Number(order.deliveryFee);
     const orderSubtotal = Number(order.subtotal);
     const orderTotal = Number(order.total);
 
-    // marketplace_fee = comissão + taxa de entrega (quando plataforma gerencia entrega)
-    const marketplaceFee = commissionAmount + (storeData.store.hasOwnDelivery ? 0 : orderDeliveryFee);
-    const vendorReceives = orderTotal - marketplaceFee;
     const platformKeeps = commissionAmount;
+    const vendorReceives = orderSubtotal - commissionAmount;
     const delivererReceives = storeData.store.hasOwnDelivery ? 0 : orderDeliveryFee;
 
     console.log(`\n${SEPARATOR}`);
-    console.log(`${BOLD}${CYAN}  SEPARACAO DE VALORES ESPERADA${RESET}`);
+    console.log(`${BOLD}${CYAN}  SEPARACAO DE VALORES (Pagar.me Split)${RESET}`);
     console.log(SEPARATOR);
     money('Total do pedido', orderTotal);
     console.log(LINE);
@@ -266,34 +299,34 @@ async function main() {
     money(`Plataforma retém (comissao ${order.commissionPercent}%)`, platformKeeps);
     money(`Entregador recebe (taxa de entrega)`, delivererReceives);
     console.log(LINE);
-    money('marketplace_fee no MP', marketplaceFee);
-    console.log(`  ${YELLOW}(comissao R$${commissionAmount.toFixed(2)} + entrega R$${orderDeliveryFee.toFixed(2)})${RESET}`);
+    console.log(`  ${YELLOW}Split automatico pelo Pagar.me no momento do pagamento${RESET}`);
     console.log(SEPARATOR);
 
     // ─── CHECKOUT URL & SIMULAR PAGAMENTO ──────────────────────────
     if (order.checkoutUrl) {
-      step(4, 'Link de pagamento gerado!');
-      console.log(`\n  ${BOLD}${GREEN}Checkout URL do sandbox:${RESET}`);
+      step(5, 'Link de pagamento gerado!');
+      console.log(`\n  ${BOLD}${GREEN}Checkout URL:${RESET}`);
       console.log(`  ${CYAN}${order.checkoutUrl}${RESET}`);
       console.log(`\n  ${YELLOW}(Em producao, o cliente pagaria por este link)${RESET}`);
 
-      // Simulate payment approval by transitioning order AWAITING_PAYMENT → PENDING
-      console.log(`\n  ${BOLD}Simulando aprovacao de pagamento...${RESET}`);
-      await gql(`mutation { updateOrderStatus(id: "${order.id}", status: PENDING) { id status } }`, {}, vendorToken);
-      success('Pagamento simulado (AWAITING_PAYMENT → PENDING)');
+      // Simulate payment approval
+      console.log(`\n  ${BOLD}Simulando aprovacao de pagamento via webhook...${RESET}`);
+      await fetch(`${API_URL}/payments/webhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'order.paid',
+          data: {
+            id: 'or_test_visual',
+            code: `order-${order.id}`,
+            metadata: { order_id: order.id, order_number: order.orderNumber },
+          },
+        }),
+      });
+      success('Pagamento aprovado via webhook (AWAITING_PAYMENT → PENDING)');
     } else {
-      step(4, 'Pedido criado sem necessidade de pagamento online');
+      step(5, 'Pedido criado sem necessidade de pagamento online');
     }
-
-    // ─── VERIFICAR STATUS PÓS-PAGAMENTO ──────────────────────────
-    step(5, 'Verificando pedido apos pagamento...');
-    const orderAfterPayment = await gql(`
-      query { order(id: "${order.id}") {
-        id orderNumber status subtotal deliveryFee total
-        commissionPercent commissionAmount paymentMethod
-      }}
-    `, {}, customerToken);
-    info('Status', orderAfterPayment.order.status);
 
     // ─── VENDEDOR ACEITA E PREPARA ───────────────────────────────
     step(6, 'Vendedor aceita e prepara o pedido...');
@@ -340,21 +373,18 @@ async function main() {
     info('    Status', del.vendorPayoutStatus);
     money('    Valor', Number(del.vendorPayoutAmount || 0));
     if (del.vendorPayoutStatus === 'split_auto') {
-      success('    Vendedor recebe automaticamente via marketplace_fee do MP');
+      success('    Vendedor recebe automaticamente via split Pagar.me');
     }
 
     console.log(`\n  ${BOLD}Entregador:${RESET}`);
     info('    Status', del.payoutStatus);
     money('    Valor', Number(del.payoutAmount || 0));
-    if (del.payoutStatus === 'pending_confirmation') {
-      info('    Aguardando', 'Confirmacao do cliente para liberar pagamento');
+    if (del.payoutStatus === 'split_auto') {
+      success('    Entregador recebe automaticamente via split Pagar.me');
     }
 
     console.log(`\n  ${BOLD}Plataforma:${RESET}`);
-    money('    Comissao retida', commissionAmount);
-    if (!storeData.store.hasOwnDelivery) {
-      money('    Taxa entrega (em custódia)', orderDeliveryFee);
-    }
+    money('    Comissao retida via split', commissionAmount);
 
     // ─── CLIENTE CONFIRMA RECEBIMENTO ─────────────────────────────
     step(10, 'Cliente confirma recebimento do pedido...');
@@ -370,49 +400,38 @@ async function main() {
     const finalDelivery = confirmResult.confirmReceipt.delivery;
 
     // ─── RESULTADO FINAL ──────────────────────────────────────────
-    header('RESULTADO FINAL - SEPARACAO DE VALORES');
+    header('RESULTADO FINAL - SEPARACAO DE VALORES (Pagar.me Split)');
 
     console.log(`  ${BOLD}Pedido #${order.orderNumber}${RESET}`);
-    console.log(`  Pagamento: ${PAYMENT_METHOD}`);
+    console.log(`  Pagamento: ${PAYMENT_METHOD} (via Pagar.me)`);
     console.log(`  Status: ${confirmResult.confirmReceipt.status}`);
     console.log(`  Confirmado pelo cliente: ${confirmResult.confirmReceipt.customerConfirmedAt ? 'Sim' : 'Nao'}\n`);
 
-    console.log(LINE);
-    console.log(`  ${BOLD}VALOR TOTAL DO PEDIDO${RESET}`);
-    console.log(LINE);
-    money('  Subtotal (produtos)', orderSubtotal);
-    money('  Taxa de entrega', orderDeliveryFee);
-    money('  TOTAL COBRADO', orderTotal);
+    const vendorFinal = Number(finalDelivery?.vendorPayoutAmount || del.vendorPayoutAmount || 0);
+    const vendorStatus = finalDelivery?.vendorPayoutStatus || del.vendorPayoutStatus;
+    const delivererFinal = Number(finalDelivery?.payoutAmount || del.payoutAmount || 0);
+    const delivererStatus = finalDelivery?.payoutStatus || del.payoutStatus;
 
-    console.log(`\n${LINE}`);
+    console.log(LINE);
     console.log(`  ${BOLD}DISTRIBUICAO DO DINHEIRO${RESET}`);
     console.log(LINE);
 
-    // Vendedor
-    const vendorFinal = Number(finalDelivery?.vendorPayoutAmount || del.vendorPayoutAmount || 0);
-    const vendorStatus = finalDelivery?.vendorPayoutStatus || del.vendorPayoutStatus;
     console.log(`\n  ${GREEN}${BOLD}VENDEDOR${RESET}`);
     money('  Valor recebido', vendorFinal);
     info('  Status', vendorStatus);
-    info('  Como recebe', vendorStatus === 'split_auto'
-      ? 'Automatico via marketplace_fee (MP deposita direto)'
-      : 'Transfer manual');
+    info('  Como recebe', 'Automatico via split Pagar.me');
 
-    // Entregador
-    const delivererFinal = Number(finalDelivery?.payoutAmount || del.payoutAmount || 0);
-    const delivererStatus = finalDelivery?.payoutStatus || del.payoutStatus;
     console.log(`\n  ${GREEN}${BOLD}ENTREGADOR${RESET}`);
     money('  Valor a receber', delivererFinal);
     info('  Status', delivererStatus);
-    info('  Como recebe', 'Transfer da plataforma apos confirmacao do cliente');
+    info('  Como recebe', 'Automatico via split Pagar.me');
 
-    // Plataforma
     console.log(`\n  ${GREEN}${BOLD}PLATAFORMA (BCM TECH)${RESET}`);
     money('  Comissao', commissionAmount);
     info('  Percentual', `${order.commissionPercent}% sobre subtotal`);
-    info('  Como recebe', 'Retido via marketplace_fee no checkout');
+    info('  Como recebe', 'Automatico via split Pagar.me');
 
-    // Verificação
+    // Verificacao
     console.log(`\n${LINE}`);
     console.log(`  ${BOLD}VERIFICACAO MATEMATICA${RESET}`);
     console.log(LINE);
@@ -432,33 +451,25 @@ async function main() {
 
     // Resumo visual
     console.log(`\n${SEPARATOR}`);
-    console.log(`${BOLD}${CYAN}  FLUXO DO DINHEIRO${RESET}`);
+    console.log(`${BOLD}${CYAN}  FLUXO DO DINHEIRO (Pagar.me Split)${RESET}`);
     console.log(SEPARATOR);
     console.log(`
   Cliente paga: R$ ${orderTotal.toFixed(2)}
        │
        ▼
   ┌─────────────────────────────────┐
-  │     MERCADO PAGO (Checkout)     │
-  │   marketplace_fee: R$ ${marketplaceFee.toFixed(2)}      │
+  │       PAGAR.ME (Split)          │
+  │   Distribui automaticamente     │
   └──────────┬──────────────────────┘
              │
-     ┌───────┴───────┐
-     ▼               ▼
-  ┌──────────┐  ┌──────────────┐
-  │ VENDEDOR │  │  PLATAFORMA  │
-  │R$ ${vendorFinal.toFixed(2).padStart(6)}  │  │ R$ ${marketplaceFee.toFixed(2).padStart(6)}     │
-  │(${vendorStatus})│  │              │
-  └──────────┘  └──────┬───────┘
-                       │
-                       ▼
-                ┌──────────────┐
-                │ ENTREGADOR   │
-                │ R$ ${delivererFinal.toFixed(2).padStart(6)}     │
-                │ (${delivererStatus})│
-                └──────────────┘
+     ┌───────┼───────────┐
+     ▼       ▼           ▼
+  ┌──────┐ ┌──────────┐ ┌──────────┐
+  │VENDOR│ │PLATAFORMA│ │ENTREGADOR│
+  │R$${vendorFinal.toFixed(2).padStart(5)}│ │ R$${commissionAmount.toFixed(2).padStart(6)} │ │ R$${delivererFinal.toFixed(2).padStart(6)} │
+  └──────┘ └──────────┘ └──────────┘
 
-  Plataforma fica com: R$ ${commissionAmount.toFixed(2)} (comissao)
+  Tudo distribuido automaticamente no momento do pagamento!
 `);
 
     console.log(`${GREEN}${BOLD}TESTE CONCLUIDO COM SUCESSO!${RESET}\n`);

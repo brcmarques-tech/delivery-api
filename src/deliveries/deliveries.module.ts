@@ -9,15 +9,14 @@ import { DelivererTrackerService } from './deliverer-tracker.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { DeliveryConfirmationScheduler } from './delivery-confirmation.scheduler';
 import { OrdersModule } from '../orders/orders.module';
-import { PaymentsModule } from '../payments/payments.module';
 import { UsersModule } from '../users/users.module';
+// PaymentsModule no longer needed — Pagar.me split handles all payments at transaction time
 import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Delivery, Order]),
     forwardRef(() => OrdersModule),
-    forwardRef(() => PaymentsModule),
     forwardRef(() => UsersModule),
     NotificationsModule,
   ],

@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef,
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
-import { MercadoPagoConfig, Preference, Payment as MpPayment, Customer } from 'mercadopago';
+import { HttpService } from '@nestjs/axios';
 import { Payment } from './entities/payment.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
@@ -20,7 +20,8 @@ import { PLAN_CONFIGS } from '../common/plan-config';
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
-  private mpClient: MercadoPagoConfig;
+  private readonly pagarmeBaseUrl = 'https://api.pagar.me/core/v5';
+  private readonly pagarmeAuthHeader: string;
 
   constructor(
     @InjectRepository(Payment)
@@ -28,6 +29,7 @@ export class PaymentsService {
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
     private configService: ConfigService,
+    private httpService: HttpService,
     @Inject(forwardRef(() => AppUsersService))
     private appUsersService: AppUsersService,
     @Inject(forwardRef(() => VendorUsersService))
@@ -36,10 +38,540 @@ export class PaymentsService {
     private whatsAppService: WhatsAppService,
     private notificationsService: NotificationsService,
   ) {
-    this.mpClient = new MercadoPagoConfig({
-      accessToken: this.configService.get('MP_ACCESS_TOKEN') || '',
-    });
+    const secretKey = this.configService.get('PAGARME_SECRET_KEY') || '';
+    this.pagarmeAuthHeader = 'Basic ' + Buffer.from(`${secretKey}:`).toString('base64');
   }
+
+  // ─── Pagar.me HTTP helpers ────────────────────────────────────────────
+
+  private async pagarmePost<T = any>(path: string, body: any): Promise<T> {
+    const response = await this.httpService.axiosRef.post(
+      `${this.pagarmeBaseUrl}${path}`,
+      body,
+      {
+        headers: {
+          'Authorization': this.pagarmeAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    return response.data;
+  }
+
+  private async pagarmeGet<T = any>(path: string): Promise<T> {
+    const response = await this.httpService.axiosRef.get(
+      `${this.pagarmeBaseUrl}${path}`,
+      {
+        headers: {
+          'Authorization': this.pagarmeAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    return response.data;
+  }
+
+  private async pagarmePut<T = any>(path: string, body: any): Promise<T> {
+    const response = await this.httpService.axiosRef.put(
+      `${this.pagarmeBaseUrl}${path}`,
+      body,
+      {
+        headers: {
+          'Authorization': this.pagarmeAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    return response.data;
+  }
+
+  // ─── Recipients (Recebedores) ─────────────────────────────────────────
+
+  async createRecipient(data: {
+    code: string;
+    name: string;
+    email: string;
+    document: string;
+    type: 'individual' | 'corporation';
+    birthdate?: string;
+    monthlyIncome?: number;
+    professionalOccupation?: string;
+    motherName?: string;
+    phone: { ddd: string; number: string };
+    address: {
+      street: string;
+      streetNumber: string;
+      neighborhood: string;
+      city: string;
+      state: string;
+      zipCode: string;
+      complementary?: string;
+      referencePoint?: string;
+    };
+    bankAccount: {
+      holderName: string;
+      bank: string;
+      branchNumber: string;
+      branchCheckDigit?: string;
+      accountNumber: string;
+      accountCheckDigit: string;
+      type: 'checking' | 'savings';
+    };
+    // Corporation fields
+    companyName?: string;
+    tradingName?: string;
+    annualRevenue?: number;
+    corporationType?: string;
+    foundingDate?: string;
+    managingPartners?: Array<{
+      name: string;
+      email: string;
+      document: string;
+      motherName?: string;
+      birthdate: string;
+      monthlyIncome: number;
+      professionalOccupation: string;
+      selfDeclaredLegalRepresentative: boolean;
+      phone: { ddd: string; number: string };
+      address: {
+        street: string;
+        streetNumber: string;
+        neighborhood: string;
+        city: string;
+        state: string;
+        zipCode: string;
+      };
+    }>;
+  }): Promise<any> {
+    const registerInfo: any = {
+      email: data.email,
+      document: data.document.replace(/\D/g, ''),
+      type: data.type,
+      phone_numbers: [
+        { ddd: data.phone.ddd, number: data.phone.number, type: 'mobile' },
+      ],
+    };
+
+    if (data.type === 'individual') {
+      registerInfo.name = data.name;
+      registerInfo.birthdate = data.birthdate;
+      registerInfo.monthly_income = data.monthlyIncome;
+      registerInfo.professional_occupation = data.professionalOccupation;
+      if (data.motherName) registerInfo.mother_name = data.motherName;
+      registerInfo.address = {
+        street: data.address.street,
+        street_number: data.address.streetNumber,
+        neighborhood: data.address.neighborhood,
+        city: data.address.city,
+        state: data.address.state,
+        zip_code: data.address.zipCode.replace(/\D/g, ''),
+        ...(data.address.complementary ? { complementary: data.address.complementary } : {}),
+        ...(data.address.referencePoint ? { reference_point: data.address.referencePoint } : {}),
+      };
+    } else {
+      registerInfo.company_name = data.companyName;
+      registerInfo.trading_name = data.tradingName;
+      registerInfo.annual_revenue = data.annualRevenue;
+      if (data.corporationType) registerInfo.corporation_type = data.corporationType;
+      if (data.foundingDate) registerInfo.founding_date = data.foundingDate;
+      registerInfo.main_address = {
+        street: data.address.street,
+        street_number: data.address.streetNumber,
+        neighborhood: data.address.neighborhood,
+        city: data.address.city,
+        state: data.address.state,
+        zip_code: data.address.zipCode.replace(/\D/g, ''),
+        ...(data.address.complementary ? { complementary: data.address.complementary } : {}),
+        ...(data.address.referencePoint ? { reference_point: data.address.referencePoint } : {}),
+      };
+      if (data.managingPartners) {
+        registerInfo.managing_partners = data.managingPartners.map((p) => ({
+          name: p.name,
+          email: p.email,
+          document: p.document.replace(/\D/g, ''),
+          type: 'individual',
+          mother_name: p.motherName || '',
+          birthdate: p.birthdate,
+          monthly_income: p.monthlyIncome,
+          professional_occupation: p.professionalOccupation,
+          self_declared_legal_representative: p.selfDeclaredLegalRepresentative,
+          phone_numbers: [{ ddd: p.phone.ddd, number: p.phone.number, type: 'mobile' }],
+          address: {
+            street: p.address.street,
+            street_number: p.address.streetNumber,
+            neighborhood: p.address.neighborhood,
+            city: p.address.city,
+            state: p.address.state,
+            zip_code: p.address.zipCode.replace(/\D/g, ''),
+          },
+        }));
+      }
+    }
+
+    const body = {
+      code: data.code,
+      register_information: registerInfo,
+      default_bank_account: {
+        holder_name: data.bankAccount.holderName,
+        holder_type: data.type,
+        holder_document: data.document.replace(/\D/g, ''),
+        bank: data.bankAccount.bank,
+        branch_number: data.bankAccount.branchNumber,
+        ...(data.bankAccount.branchCheckDigit ? { branch_check_digit: data.bankAccount.branchCheckDigit } : {}),
+        account_number: data.bankAccount.accountNumber,
+        account_check_digit: data.bankAccount.accountCheckDigit,
+        type: data.bankAccount.type,
+      },
+      transfer_settings: {
+        transfer_enabled: true,
+        transfer_interval: 'Daily',
+        transfer_day: 0,
+      },
+      automatic_anticipation_settings: {
+        enabled: false,
+      },
+    };
+
+    try {
+      const result = await this.pagarmePost('/recipients', body);
+      this.logger.log(`Recipient created: ${result.id} (code: ${data.code})`);
+      return result;
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Failed to create recipient: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(
+        errorData?.message || 'Erro ao cadastrar recebedor no Pagar.me',
+      );
+    }
+  }
+
+  async getRecipient(recipientId: string): Promise<any> {
+    return this.pagarmeGet(`/recipients/${recipientId}`);
+  }
+
+  // ─── Customers ────────────────────────────────────────────────────────
+
+  private async getOrCreatePagarmeCustomer(user: { name: string; email: string; cpf?: string; phone?: string }): Promise<string | undefined> {
+    try {
+      const nameParts = user.name.trim().split(' ');
+      const phoneDigits = user.phone?.replace(/\D/g, '') || '';
+      const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
+      const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
+
+      const customerBody: any = {
+        name: user.name,
+        email: user.email,
+        type: 'individual',
+        ...(user.cpf ? { document: user.cpf.replace(/\D/g, ''), document_type: 'CPF' } : {}),
+        phones: {
+          mobile_phone: {
+            country_code: '55',
+            area_code: ddd,
+            number: phoneNumber || '999999999',
+          },
+        },
+      };
+
+      const result = await this.pagarmePost('/customers', customerBody);
+      return result.id;
+    } catch (err: any) {
+      this.logger.warn(`Failed to create Pagar.me customer: ${err.response?.data?.message || err.message}`);
+      return undefined;
+    }
+  }
+
+  // ─── Order Checkout (Credit Card via Pagar.me) ─────────────────────────
+
+  async createOrderCheckout(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string }> {
+    const store = order.store;
+    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
+    const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
+
+    if (!vendorRecipientId) {
+      throw new BadRequestException('Vendedor não cadastrou conta de recebimento');
+    }
+    if (!platformRecipientId) {
+      throw new BadRequestException('Recipient da plataforma não configurado');
+    }
+
+    const customerId = await this.getOrCreatePagarmeCustomer(customer);
+
+    // Build split rules
+    const splitRules = this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId);
+
+    const totalCents = Math.round(Number(order.total) * 100);
+
+    const itemsSummary = order.items
+      .map((item) => {
+        const name = item.product?.name || 'Produto';
+        if (item.weightGrams && item.weightGrams > 0) {
+          return `${name} (${item.weightGrams}g)`;
+        }
+        return `${item.quantity}x ${name}`;
+      })
+      .join(', ');
+
+    // Customer data for PSP (mandatory)
+    const nameParts = customer.name.trim().split(' ');
+    const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
+    const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
+    const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
+
+    const customerObj: any = {
+      name: customer.name,
+      email: customer.email,
+      type: 'individual',
+      ...(customer.cpf ? { document: customer.cpf.replace(/\D/g, '') } : {}),
+      phones: {
+        mobile_phone: {
+          country_code: '55',
+          area_code: ddd,
+          number: phoneNumber || '999999999',
+        },
+      },
+    };
+
+    if (customerId) {
+      customerObj.id = customerId;
+    }
+
+    // Create Pagar.me order with credit_card payment
+    const orderBody: any = {
+      code: `order-${order.id}`,
+      items: [
+        {
+          amount: totalCents,
+          description: `Pedido ${order.orderNumber} - ${itemsSummary}`.substring(0, 256),
+          quantity: 1,
+          code: `order-${order.id}`,
+        },
+      ],
+      customer: customerObj,
+      payments: [
+        {
+          payment_method: 'credit_card',
+          credit_card: {
+            installments: 1,
+            statement_descriptor: 'BCMTECH',
+            capture: true,
+          },
+          split: splitRules,
+        },
+      ],
+      metadata: {
+        order_id: order.id,
+        order_number: order.orderNumber,
+      },
+      closed: false,
+    };
+
+    try {
+      const result = await this.pagarmePost('/orders', orderBody);
+
+      this.logger.log(
+        `Pagar.me order created for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id}`,
+      );
+
+      // For credit card, we need a checkout page - use payment link
+      const checkoutUrl = await this.createPaymentLink(order, totalCents, splitRules);
+
+      return { checkoutUrl, preferenceId: result.id };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Pagar.me order failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(
+        errorData?.message || 'Erro ao criar pagamento no Pagar.me',
+      );
+    }
+  }
+
+  // ─── Order PIX ─────────────────────────────────────────────────────────
+
+  async createOrderPix(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string }> {
+    const store = order.store;
+    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
+    const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
+
+    if (!vendorRecipientId) {
+      throw new BadRequestException('Vendedor não cadastrou conta de recebimento');
+    }
+    if (!platformRecipientId) {
+      throw new BadRequestException('Recipient da plataforma não configurado');
+    }
+
+    const totalCents = Math.round(Number(order.total) * 100);
+    const splitRules = this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId);
+
+    const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
+    const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
+    const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
+
+    const orderBody: any = {
+      code: `order-${order.id}`,
+      items: [
+        {
+          amount: totalCents,
+          description: `Pedido ${order.orderNumber} (PIX)`.substring(0, 256),
+          quantity: 1,
+          code: `order-${order.id}`,
+        },
+      ],
+      customer: {
+        name: customer.name,
+        email: customer.email,
+        type: 'individual',
+        ...(customer.cpf ? { document: customer.cpf.replace(/\D/g, '') } : {}),
+        phones: {
+          mobile_phone: {
+            country_code: '55',
+            area_code: ddd,
+            number: phoneNumber || '999999999',
+          },
+        },
+      },
+      payments: [
+        {
+          payment_method: 'pix',
+          pix: {
+            expires_in: 1800, // 30 minutes
+            additional_information: [
+              { name: 'Pedido', value: order.orderNumber },
+            ],
+          },
+          split: splitRules,
+        },
+      ],
+      metadata: {
+        order_id: order.id,
+        order_number: order.orderNumber,
+      },
+      closed: true,
+    };
+
+    try {
+      const result = await this.pagarmePost('/orders', orderBody);
+
+      // Extract PIX data from charge
+      const charge = result.charges?.[0];
+      const lastTransaction = charge?.last_transaction;
+      const qrCode = lastTransaction?.qr_code || '';
+      const qrCodeUrl = lastTransaction?.qr_code_url || '';
+
+      this.logger.log(
+        `Pagar.me PIX order created for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id}`,
+      );
+
+      return {
+        checkoutUrl: qrCodeUrl || '',
+        preferenceId: result.id,
+        qrCode,
+        qrCodeUrl,
+      };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Pagar.me PIX order failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(
+        errorData?.message || 'Erro ao criar pagamento PIX no Pagar.me',
+      );
+    }
+  }
+
+  // ─── Payment Link (hosted checkout) ────────────────────────────────────
+
+  private async createPaymentLink(order: Order, totalCents: number, splitRules: any[]): Promise<string> {
+    const body = {
+      name: `Pedido ${order.orderNumber}`,
+      amount: totalCents,
+      payment_settings: {
+        accepted_payment_methods: ['credit_card', 'pix'],
+        credit_card: {
+          installments: [{ number: 1, total: totalCents }],
+          statement_descriptor: 'BCMTECH',
+        },
+        pix: {
+          expires_in: 1800,
+        },
+      },
+      ...(splitRules.length > 0 ? { split: splitRules } : {}),
+      metadata: {
+        order_id: order.id,
+        order_number: order.orderNumber,
+      },
+    };
+
+    try {
+      const result = await this.pagarmePost('/paymentlinks', body);
+      // Payment link URL format: https://pagar.me/pay/{id}
+      return result.url || `https://pagar.me/pay/${result.id}`;
+    } catch (err: any) {
+      this.logger.warn(`Payment link creation failed, falling back to direct order: ${err.response?.data?.message || err.message}`);
+      // If payment link fails, return empty (order was already created)
+      return '';
+    }
+  }
+
+  // ─── Split Rules Builder ───────────────────────────────────────────────
+
+  private buildSplitRules(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string): any[] {
+    const totalCents = Math.round(Number(order.total) * 100);
+    const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
+    const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
+
+    const splitRules: any[] = [];
+
+    // Deliverer split: gets delivery fee (when platform handles delivery)
+    let delivererCents = 0;
+    const delivery = (order as any).delivery;
+    const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
+
+    if (!store?.hasOwnDelivery && deliveryFeeCents > 0 && delivererRecipientId) {
+      delivererCents = deliveryFeeCents;
+      splitRules.push({
+        amount: delivererCents,
+        recipient_id: delivererRecipientId,
+        type: 'flat',
+        options: {
+          charge_processing_fee: false,
+          charge_remainder_fee: false,
+          liable: false,
+        },
+      });
+    }
+
+    // Platform split: gets commission
+    const platformCents = commissionCents + ((!store?.hasOwnDelivery && !delivererRecipientId) ? deliveryFeeCents : 0);
+    if (platformCents > 0) {
+      splitRules.push({
+        amount: platformCents,
+        recipient_id: platformRecipientId,
+        type: 'flat',
+        options: {
+          charge_processing_fee: true,
+          charge_remainder_fee: true,
+          liable: true,
+        },
+      });
+    }
+
+    // Vendor split: gets the rest (total - commission - deliverer fee)
+    const vendorCents = totalCents - platformCents - delivererCents;
+    if (vendorCents > 0) {
+      splitRules.push({
+        amount: vendorCents,
+        recipient_id: vendorRecipientId,
+        type: 'flat',
+        options: {
+          charge_processing_fee: false,
+          charge_remainder_fee: false,
+          liable: false,
+        },
+      });
+    }
+
+    return splitRules;
+  }
+
+  // ─── Plan Upgrade ──────────────────────────────────────────────────────
 
   async createPlanUpgrade(user: VendorUser, plan: VendorPlan, billingPeriod: string = 'monthly'): Promise<Payment> {
     const planConfig = PLAN_CONFIGS[plan];
@@ -77,500 +609,211 @@ export class PaymentsService {
       this.logger.log(`Applied ${badgeDiscount}% badge subscription discount for vendor ${user.id}`);
     }
 
-    const maxInstallments = billing.months >= 12 ? 12 : billing.months >= 6 ? 6 : billing.months >= 3 ? 3 : 1;
+    const totalCents = Math.round(billing.price * 100);
 
-    const mpCustomerId = await this.getOrCreateMpCustomerVendor(user);
-    const preference = new Preference(this.mpClient);
-    const result = await preference.create({
-      body: {
-        items: [
-          {
-            id: `plan-${plan}-${billingPeriod}`,
-            title: `Plano ${plan} ${billing.label} - bcmTech Delivery`,
-            description: `Assinatura ${billing.label.toLowerCase()} do plano ${plan} (${billing.months} meses)`,
-            quantity: 1,
-            unit_price: billing.price,
-            currency_id: 'BRL',
-            category_id: 'services',
-          },
-        ],
-        payer: {
-          email: user.email,
-          first_name: user.name.split(' ')[0],
-          last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0],
-          ...(mpCustomerId ? { id: mpCustomerId } : {}),
-        } as any,
-        payment_methods: {
-          installments: maxInstallments,
+    // Create payment link for plan upgrade
+    const body = {
+      name: `Plano ${plan} ${billing.label} - bcmTech Delivery`,
+      amount: totalCents,
+      payment_settings: {
+        accepted_payment_methods: ['credit_card', 'pix'],
+        credit_card: {
+          installments: Array.from({ length: Math.min(billing.months, 12) }, (_, i) => ({
+            number: i + 1,
+            total: totalCents,
+          })),
+          statement_descriptor: 'BCMTECH',
         },
-        back_urls: {
-          success: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/plan?status=success`,
-          failure: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/plan?status=failure`,
-          pending: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/plan?status=pending`,
+        pix: {
+          expires_in: 86400, // 24 hours
         },
-        auto_return: 'approved',
-        statement_descriptor: 'BCMTECH DELIVERY',
-        external_reference: `${user.id}:${plan}:${billing.months}`,
-        notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
       },
-    });
+      metadata: {
+        type: 'plan_upgrade',
+        user_id: user.id,
+        plan,
+        billing_period: billingPeriod,
+        duration_months: billing.months,
+      },
+    };
 
-    const payment = this.paymentsRepository.create({
-      type: 'PLAN_UPGRADE',
-      description: `Upgrade para plano ${plan} (${billing.label})`,
-      amount: billing.price,
-      status: 'pending',
-      mpPreferenceId: result.id,
-      checkoutUrl: result.init_point,
-      metadata: { plan, durationMonths: billing.months, billingPeriod },
-      vendorUser: user,
-    });
+    try {
+      const result = await this.pagarmePost('/paymentlinks', body);
+      const checkoutUrl = result.url || `https://pagar.me/pay/${result.id}`;
 
-    const saved = await this.paymentsRepository.save(payment);
+      const payment = this.paymentsRepository.create({
+        type: 'PLAN_UPGRADE',
+        description: `Upgrade para plano ${plan} (${billing.label})`,
+        amount: billing.price,
+        status: 'pending',
+        pagarmeOrderId: result.id,
+        checkoutUrl,
+        metadata: { plan, durationMonths: billing.months, billingPeriod },
+        vendorUser: user,
+      });
 
-    if (user.phone) {
-      this.whatsAppService.notifyPlanUpgrade(user.phone, user.name, plan, billing.label).catch(() => {});
+      const saved = await this.paymentsRepository.save(payment);
+
+      if (user.phone) {
+        this.whatsAppService.notifyPlanUpgrade(user.phone, user.name, plan, billing.label).catch(() => {});
+      }
+
+      return saved;
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Plan upgrade payment link failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException('Erro ao criar link de pagamento para upgrade de plano');
     }
-
-    return saved;
   }
 
-  private async getOrCreateMpCustomerVendor(user: VendorUser): Promise<string | undefined> {
-    if (user.mpCustomerId) return user.mpCustomerId;
-
-    try {
-      const customerApi = new Customer(this.mpClient);
-      const search = await customerApi.search({ options: { email: user.email } });
-      if (search.results && search.results.length > 0) {
-        const mpCustomerId = search.results[0].id!;
-        await this.vendorUsersService.updateMpCustomerId(user.id, mpCustomerId);
-        return mpCustomerId;
-      }
-      const created = await customerApi.create({
-        body: {
-          email: user.email,
-          first_name: user.name.split(' ')[0],
-          last_name: user.name.split(' ').slice(1).join(' ') || undefined,
-        },
-      });
-      if (created.id) {
-        await this.vendorUsersService.updateMpCustomerId(user.id, created.id);
-        return created.id;
-      }
-    } catch {}
-    return undefined;
-  }
-
-  private async getOrCreateMpCustomerApp(user: AppUser): Promise<string | undefined> {
-    if (user.mpCustomerId) return user.mpCustomerId;
-
-    try {
-      const customerApi = new Customer(this.mpClient);
-      const search = await customerApi.search({ options: { email: user.email } });
-      if (search.results && search.results.length > 0) {
-        const mpCustomerId = search.results[0].id!;
-        await this.appUsersService.updateMpCustomerId(user.id, mpCustomerId);
-        return mpCustomerId;
-      }
-      const created = await customerApi.create({
-        body: {
-          email: user.email,
-          first_name: user.name.split(' ')[0],
-          last_name: user.name.split(' ').slice(1).join(' ') || undefined,
-        },
-      });
-      if (created.id) {
-        await this.appUsersService.updateMpCustomerId(user.id, created.id);
-        return created.id;
-      }
-    } catch {}
-    return undefined;
-  }
+  // ─── Promotion Checkout ────────────────────────────────────────────────
 
   async createPromotionCheckout(promotion: Promotion, user: VendorUser): Promise<Payment> {
-    const mpCustomerId = await this.getOrCreateMpCustomerVendor(user);
-    const preference = new Preference(this.mpClient);
-    const result = await preference.create({
-      body: {
-        items: [
-          {
-            id: `promo-${promotion.id}`,
-            title: `Promoção: ${promotion.title}`,
-            description: `Anúncio no app por ${Math.ceil((new Date(promotion.endDate).getTime() - new Date(promotion.startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1} dias`,
-            quantity: 1,
-            unit_price: Number(promotion.adCost),
-            currency_id: 'BRL',
-            category_id: 'services',
-          },
-        ],
-        payer: {
-          email: user.email,
-          first_name: user.name.split(' ')[0],
-          last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0],
-          ...(mpCustomerId ? { id: mpCustomerId } : {}),
-        } as any,
-        back_urls: {
-          success: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/promotions?status=success`,
-          failure: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/promotions?status=failure`,
-          pending: `${this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001'}/dashboard/promotions?status=pending`,
-        },
-        auto_return: 'approved',
-        statement_descriptor: 'BCMTECH DELIVERY',
-        external_reference: `promo:${promotion.id}`,
-        notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
-      },
-    });
+    const totalCents = Math.round(Number(promotion.adCost) * 100);
 
-    const payment = this.paymentsRepository.create({
-      type: 'PROMOTION',
-      description: `Promoção: ${promotion.title}`,
-      amount: Number(promotion.adCost),
-      status: 'pending',
-      mpPreferenceId: result.id,
-      checkoutUrl: result.init_point,
-      metadata: { promotionId: promotion.id },
-      vendorUser: user,
-    });
-
-    return this.paymentsRepository.save(payment);
-  }
-
-  async createOrderCheckout(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string }> {
-    const mpCustomerId = await this.getOrCreateMpCustomerApp(customer);
-
-    const store = order.store;
-    const vendorToken = store?.owner?.mpAccessToken;
-
-    // Always use vendor's token when available (platform token may be sandbox)
-    const client = vendorToken
-      ? new MercadoPagoConfig({ accessToken: vendorToken })
-      : this.mpClient;
-
-    const preference = new Preference(client);
-
-    const itemsSummary = order.items
-      .map((item) => {
-        const name = item.product?.name || 'Produto';
-        if (item.weightGrams && item.weightGrams > 0) {
-          return `${name} (${item.weightGrams}g)`;
-        }
-        return `${item.quantity}x ${name}`;
-      })
-      .join(', ');
-
-    // Calculate marketplace fee: commission + delivery fee (when platform handles delivery)
-    let marketplaceFee = Number(order.commissionAmount) || 0;
-    if (!store?.hasOwnDelivery) {
-      marketplaceFee += Number(order.deliveryFee) || 0;
-    }
-
-    // Split customer name for MP payer data
-    const nameParts = customer.name.trim().split(' ');
-    const firstName = nameParts[0];
-    const lastName = nameParts.slice(1).join(' ') || firstName;
-
-    // Build payer object with all available data
-    const payer: any = {
-      email: customer.email,
-      first_name: firstName,
-      last_name: lastName,
-      ...(mpCustomerId ? { id: mpCustomerId } : {}),
-    };
-
-    if (customer.cpf) {
-      payer.identification = { type: 'CPF', number: customer.cpf.replace(/\D/g, '') };
-    }
-
-    if (customer.phone) {
-      const phoneDigits = customer.phone.replace(/\D/g, '');
-      payer.phone = {
-        area_code: phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53',
-        number: phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits,
-      };
-    }
-
-    if (order.deliveryAddress) {
-      payer.address = {
-        street_name: order.deliveryAddress,
-        zip_code: '96330-000',
-      };
-    }
-
-    // Preference expires in 24h
-    const now = new Date();
-    const expiration = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-
-    const appUrl = this.configService.get('APP_URL') || 'http://localhost:3000';
-    const isLocalhost = appUrl.includes('localhost');
-
-    const result = await preference.create({
-      body: {
-        items: [
-          {
-            id: `order-${order.id}`,
-            title: `Pedido ${order.orderNumber}`,
-            description: itemsSummary,
-            quantity: 1,
-            unit_price: Number(order.total),
-            currency_id: 'BRL',
-            category_id: 'others',
-          },
-        ],
-        payer,
-        ...(vendorToken && marketplaceFee > 0 ? { marketplace_fee: marketplaceFee } : {}),
-        ...(!isLocalhost ? {
-          back_urls: {
-            success: `${appUrl}/payments/order-result?status=success&order=${order.id}`,
-            failure: `${appUrl}/payments/order-result?status=failure&order=${order.id}`,
-            pending: `${appUrl}/payments/order-result?status=pending&order=${order.id}`,
-          },
-          auto_return: 'approved',
-        } : {}),
-        binary_mode: true,
-        statement_descriptor: 'BCMTECH DELIVERY',
-        expires: true,
-        date_of_expiration: expiration.toISOString(),
-        payment_methods: {
-          installments: 6,
-        },
-        external_reference: `order:${order.id}`,
-        notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
-      },
-    });
-
-    const checkoutUrl = this.configService.get('MP_SANDBOX') === 'true'
-      ? result.sandbox_init_point!
-      : result.init_point!;
-
-    this.logger.log(`Checkout created for order ${order.orderNumber} | total: ${order.total} | marketplace_fee: ${marketplaceFee} | vendor_token: ${!!vendorToken} | owner_id: ${store?.owner?.id || 'none'} | sandbox: ${this.configService.get('MP_SANDBOX') === 'true'}`);
-
-    return { checkoutUrl, preferenceId: result.id! };
-  }
-
-  async createOrderPix(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string }> {
-    // PIX via Checkout Pro: same marketplace_fee split as MERCADO_PAGO
-    // Only PIX is allowed as payment method — customer is redirected to MP checkout showing only PIX
-    const store = order.store;
-    const vendorToken = store?.owner?.mpAccessToken;
-
-    const client = vendorToken
-      ? new MercadoPagoConfig({ accessToken: vendorToken })
-      : this.mpClient;
-
-    const preference = new Preference(client);
-
-    const itemsSummary = order.items
-      .map((item) => {
-        const name = item.product?.name || 'Produto';
-        if (item.weightGrams && item.weightGrams > 0) {
-          return `${name} (${item.weightGrams}g)`;
-        }
-        return `${item.quantity}x ${name}`;
-      })
-      .join(', ');
-
-    // marketplace_fee = commission + delivery fee (when platform handles delivery)
-    let marketplaceFee = Number(order.commissionAmount) || 0;
-    if (!store?.hasOwnDelivery) {
-      marketplaceFee += Number(order.deliveryFee) || 0;
-    }
-
-    const nameParts = customer.name.trim().split(' ');
-    const firstName = nameParts[0];
-    const lastName = nameParts.slice(1).join(' ') || firstName;
-
-    const payer: any = {
-      email: customer.email,
-      first_name: firstName,
-      last_name: lastName,
-    };
-
-    if (customer.cpf) {
-      payer.identification = { type: 'CPF', number: customer.cpf.replace(/\D/g, '') };
-    }
-
-    if (customer.phone) {
-      const phoneDigits = customer.phone.replace(/\D/g, '');
-      payer.phone = {
-        area_code: phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53',
-        number: phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits,
-      };
-    }
-
-    if (order.deliveryAddress) {
-      payer.address = {
-        street_name: order.deliveryAddress,
-        zip_code: '96330-000',
-      };
-    }
-
-    const now = new Date();
-    const expiration = new Date(now.getTime() + 30 * 60 * 1000); // PIX expires in 30min
-
-    const appUrl = this.configService.get('APP_URL') || 'http://localhost:3000';
-    const isLocalhost = appUrl.includes('localhost');
-
-    const result = await preference.create({
-      body: {
-        items: [
-          {
-            id: `order-${order.id}`,
-            title: `Pedido ${order.orderNumber} (PIX)`,
-            description: itemsSummary,
-            quantity: 1,
-            unit_price: Number(order.total),
-            currency_id: 'BRL',
-            category_id: 'others',
-          },
-        ],
-        payer,
-        ...(vendorToken && marketplaceFee > 0 ? { marketplace_fee: marketplaceFee } : {}),
-        ...(!isLocalhost ? {
-          back_urls: {
-            success: `${appUrl}/payments/order-result?status=success&order=${order.id}`,
-            failure: `${appUrl}/payments/order-result?status=failure&order=${order.id}`,
-            pending: `${appUrl}/payments/order-result?status=pending&order=${order.id}`,
-          },
-          auto_return: 'approved',
-        } : {}),
-        binary_mode: true,
-        statement_descriptor: 'BCMTECH DELIVERY',
-        expires: true,
-        date_of_expiration: expiration.toISOString(),
-        payment_methods: {
-          excluded_payment_types: [
-            { id: 'credit_card' },
-            { id: 'debit_card' },
-            { id: 'ticket' },
-            { id: 'atm' },
-          ],
-        },
-        external_reference: `order:${order.id}`,
-        notification_url: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/webhook`,
-      },
-    });
-
-    const checkoutUrl = this.configService.get('MP_SANDBOX') === 'true'
-      ? result.sandbox_init_point!
-      : result.init_point!;
-
-    this.logger.log(`PIX Checkout created for order ${order.orderNumber} | total: ${order.total} | marketplace_fee: ${marketplaceFee} | vendor_token: ${!!vendorToken} | sandbox: ${this.configService.get('MP_SANDBOX') === 'true'}`);
-
-    return { checkoutUrl, preferenceId: result.id! };
-  }
-
-  getMpConnectUrl(userId: string, source: string = 'web'): string {
-    const appId = this.configService.get('MP_APP_ID');
-    const webhookUrl = this.configService.get('WEBHOOK_URL') || 'http://localhost:3000';
-    const redirectUri = `${webhookUrl}/payments/mp/callback`;
-    const state = `${userId}:${source}`;
-    return `https://auth.mercadopago.com.br/authorization?client_id=${appId}&response_type=code&platform_id=mp&state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-  }
-
-  async handleMpOAuthCallback(code: string, userId: string, userType: string = 'vendor'): Promise<void> {
     const body = {
-      client_secret: this.configService.get('MP_CLIENT_SECRET'),
-      client_id: this.configService.get('MP_APP_ID'),
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: `${this.configService.get('WEBHOOK_URL') || 'http://localhost:3000'}/payments/mp/callback`,
+      name: `Promoção: ${promotion.title}`,
+      amount: totalCents,
+      payment_settings: {
+        accepted_payment_methods: ['credit_card', 'pix'],
+        credit_card: {
+          installments: [{ number: 1, total: totalCents }],
+          statement_descriptor: 'BCMTECH',
+        },
+        pix: {
+          expires_in: 86400,
+        },
+      },
+      metadata: {
+        type: 'promotion',
+        promotion_id: promotion.id,
+        user_id: user.id,
+      },
     };
-    console.log('MP OAuth request:', JSON.stringify({ ...body, client_secret: body.client_secret?.substring(0, 20) + '...' }));
-    const response = await fetch('https://api.mercadopago.com/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
 
-    const data = await response.json();
-    console.log('MP OAuth response:', JSON.stringify(data));
+    try {
+      const result = await this.pagarmePost('/paymentlinks', body);
+      const checkoutUrl = result.url || `https://pagar.me/pay/${result.id}`;
 
-    if (data.access_token) {
-      if (userType === 'app') {
-        await this.appUsersService.updateMpCredentials(
-          userId,
-          data.access_token,
-          data.refresh_token,
-          String(data.user_id),
-        );
-      } else {
-        await this.vendorUsersService.updateMpCredentials(
-          userId,
-          data.access_token,
-          data.refresh_token,
-          String(data.user_id),
-        );
-      }
-      console.log('MP credentials saved for user:', userId);
-    } else {
-      console.error('MP OAuth failed:', data);
+      const payment = this.paymentsRepository.create({
+        type: 'PROMOTION',
+        description: `Promoção: ${promotion.title}`,
+        amount: Number(promotion.adCost),
+        status: 'pending',
+        pagarmeOrderId: result.id,
+        checkoutUrl,
+        metadata: { promotionId: promotion.id },
+        vendorUser: user,
+      });
+
+      return this.paymentsRepository.save(payment);
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Promotion payment link failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException('Erro ao criar link de pagamento para promoção');
     }
   }
 
-  async disconnectMpVendor(userId: string): Promise<void> {
-    await this.vendorUsersService.disconnectMp(userId);
+  // ─── Recipient Registration (replaces MP OAuth) ────────────────────────
+
+  async registerVendorRecipient(userId: string, recipientData: any): Promise<{ recipientId: string }> {
+    const vendor = await this.vendorUsersService.findById(userId);
+    if (!vendor) throw new NotFoundException('Vendedor não encontrado');
+
+    const result = await this.createRecipient({
+      ...recipientData,
+      code: `vendor_${userId}`,
+    });
+
+    await this.vendorUsersService.updatePagarmeRecipient(userId, result.id);
+
+    return { recipientId: result.id };
   }
 
-  async disconnectMpApp(userId: string): Promise<void> {
-    await this.appUsersService.disconnectMp(userId);
+  async registerDelivererRecipient(userId: string, recipientData: any): Promise<{ recipientId: string }> {
+    const deliverer = await this.appUsersService.findById(userId);
+    if (!deliverer) throw new NotFoundException('Entregador não encontrado');
+
+    const result = await this.createRecipient({
+      ...recipientData,
+      code: `deliverer_${userId}`,
+    });
+
+    await this.appUsersService.updatePagarmeRecipient(userId, result.id);
+
+    return { recipientId: result.id };
   }
+
+  async disconnectVendor(userId: string): Promise<void> {
+    await this.vendorUsersService.disconnectPayment(userId);
+  }
+
+  async disconnectApp(userId: string): Promise<void> {
+    await this.appUsersService.disconnectPayment(userId);
+  }
+
+  // ─── Webhook ───────────────────────────────────────────────────────────
 
   async handleWebhook(body: any): Promise<void> {
-    if (body.type !== 'payment' || !['payment.created', 'payment.updated'].includes(body.action)) {
-      return;
+    const eventType = body.type;
+    const data = body.data;
+
+    if (!data) return;
+
+    this.logger.log(`Webhook received: ${eventType} | id: ${data.id}`);
+
+    // Handle order events
+    if (eventType === 'order.paid') {
+      await this.handleOrderPaid(data);
+    } else if (eventType === 'order.payment_failed') {
+      await this.handleOrderPaymentFailed(data);
+    } else if (eventType === 'order.canceled') {
+      await this.handleOrderCanceled(data);
+    } else if (eventType === 'charge.paid') {
+      // Also handle charge.paid for immediate processing
+      await this.handleChargePaid(data);
     }
+  }
 
-    const paymentId = body.data?.id;
-    if (!paymentId) return;
+  private async handleOrderPaid(data: any): Promise<void> {
+    const pagarmeOrderId = data.id;
+    const metadata = data.metadata || {};
+    const code = data.code || '';
 
-    const mpPayment = new MpPayment(this.mpClient);
-    const mpData = await mpPayment.get({ id: paymentId });
-
-    if (!mpData || !mpData.external_reference) return;
-
-    const externalRef = mpData.external_reference;
-    const status = mpData.status;
-
-    if (externalRef.startsWith('order:')) {
-      const orderId = externalRef.replace('order:', '');
-      if (status === 'approved') {
-        const orderRepo = this.paymentsRepository.manager.getRepository(Order);
-        const order = await orderRepo.findOne({
-          where: { id: orderId },
-          relations: ['customer', 'store'],
-        });
-        if (order && order.status === OrderStatus.AWAITING_PAYMENT) {
-          order.status = OrderStatus.PENDING;
-          await orderRepo.save(order);
-          this.logger.log(`Pagamento aprovado para pedido #${order.orderNumber} (${body.action})`);
-
-          // Notificar cliente
-          if (order.customer?.id) {
-            this.notificationsService.sendToAppUser(
-              order.customer.id,
-              'Pagamento confirmado!',
-              `Seu pagamento do pedido #${order.orderNumber} foi aprovado. Aguarde a confirmação da loja.`,
-              { type: 'PAYMENT_CONFIRMED', orderId: order.id },
-            ).catch(() => {});
-          }
-          if (order.customer?.phone) {
-            this.whatsAppService.sendText(
-              order.customer.phone,
-              `✅ *Pagamento confirmado!*\n\nSeu pagamento do pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) foi aprovado.\n\nAguarde a confirmação da loja!`,
-            ).catch(() => {});
-          }
-        }
+    // Check if it's a plan upgrade
+    if (metadata.type === 'plan_upgrade') {
+      const payment = await this.paymentsRepository.findOne({
+        where: { pagarmeOrderId },
+        relations: ['vendorUser'],
+      });
+      if (payment) {
+        payment.status = 'approved';
+        await this.paymentsRepository.save(payment);
+      }
+      if (metadata.user_id && metadata.plan) {
+        await this.vendorUsersService.updateVendorPlan(
+          metadata.user_id,
+          metadata.plan as VendorPlan,
+          parseInt(metadata.duration_months) || 1,
+        );
       }
       return;
     }
 
-    if (externalRef.startsWith('promo:')) {
-      const promotionId = externalRef.replace('promo:', '');
-      if (status === 'approved') {
+    // Check if it's a promotion
+    if (metadata.type === 'promotion') {
+      const payment = await this.paymentsRepository.findOne({
+        where: { pagarmeOrderId },
+      });
+      if (payment) {
+        payment.status = 'approved';
+        await this.paymentsRepository.save(payment);
+      }
+      if (metadata.promotion_id) {
         const promoRepo = this.paymentsRepository.manager.getRepository(Promotion);
         const productRepo = this.paymentsRepository.manager.getRepository('Product');
         const promotion = await promoRepo.findOne({
-          where: { id: promotionId },
+          where: { id: metadata.promotion_id },
           relations: ['product'],
         });
         if (promotion && !promotion.isPaid) {
@@ -578,9 +821,7 @@ export class PaymentsService {
           await promoRepo.save(promotion);
           if (promotion.product && promotion.promotionalPrice) {
             const now = new Date();
-            const start = new Date(promotion.startDate);
-            const end = new Date(promotion.endDate);
-            if (now >= start && now <= end) {
+            if (now >= new Date(promotion.startDate) && now <= new Date(promotion.endDate)) {
               await productRepo.update(promotion.product.id, {
                 promotionalPrice: promotion.promotionalPrice,
               });
@@ -588,165 +829,65 @@ export class PaymentsService {
           }
         }
       }
-      const prefId = (mpData as any).preference_id;
-      if (prefId) {
-        const payment = await this.paymentsRepository.findOne({ where: { mpPreferenceId: prefId } });
-        if (payment) {
-          payment.mpPaymentId = String(paymentId);
-          payment.status = status || 'pending';
-          await this.paymentsRepository.save(payment);
-        }
-      }
       return;
     }
 
-    // Handle plan upgrade payment
-    const [userId, plan, months] = externalRef.split(':');
-
-    const prefId = (mpData as any).preference_id;
-    if (prefId) {
-      const payment = await this.paymentsRepository.findOne({
-        where: { mpPreferenceId: prefId },
-        relations: ['vendorUser'],
+    // Handle order payment
+    const orderId = metadata.order_id || (code?.startsWith('order-') ? code.replace('order-', '') : null);
+    if (orderId) {
+      const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+      const order = await orderRepo.findOne({
+        where: { id: orderId },
+        relations: ['customer', 'store'],
       });
 
-      if (payment) {
-        payment.mpPaymentId = String(paymentId);
-        payment.status = status || 'pending';
-        await this.paymentsRepository.save(payment);
-      }
-    }
+      if (order && order.status === OrderStatus.AWAITING_PAYMENT) {
+        order.status = OrderStatus.PENDING;
+        await orderRepo.save(order);
+        this.logger.log(`Pagamento aprovado para pedido #${order.orderNumber}`);
 
-    if (status === 'approved') {
-      await this.vendorUsersService.updateVendorPlan(
-        userId,
-        plan as VendorPlan,
-        parseInt(months) || 1,
-      );
+        // Notify customer
+        if (order.customer?.id) {
+          this.notificationsService.sendToAppUser(
+            order.customer.id,
+            'Pagamento confirmado!',
+            `Seu pagamento do pedido #${order.orderNumber} foi aprovado. Aguarde a confirmação da loja.`,
+            { type: 'PAYMENT_CONFIRMED', orderId: order.id },
+          ).catch(() => {});
+        }
+        if (order.customer?.phone) {
+          this.whatsAppService.sendText(
+            order.customer.phone,
+            `✅ *Pagamento confirmado!*\n\nSeu pagamento do pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) foi aprovado.\n\nAguarde a confirmação da loja!`,
+          ).catch(() => {});
+        }
+      }
     }
   }
 
-  async transferToVendor(vendorId: string, amount: number, orderId: string): Promise<{ success: boolean; mpId?: string }> {
-    const vendor = await this.vendorUsersService.findById(vendorId);
-    if (!vendor?.mpUserId) {
-      this.logger.warn(`transferToVendor falhou: vendor ${vendorId} sem mpUserId`);
-      return { success: false };
-    }
+  private async handleOrderPaymentFailed(data: any): Promise<void> {
+    const metadata = data.metadata || {};
+    const orderId = metadata.order_id;
+    if (!orderId) return;
 
-    const payerEmail = this.configService.get('MP_PAYER_EMAIL', '');
-    if (!payerEmail) {
-      this.logger.error('transferToVendor falhou: MP_PAYER_EMAIL não configurado');
-      return { success: false };
-    }
-
-    const requestBody = {
-      transaction_amount: amount,
-      description: `Pagamento pedido ${orderId}`,
-      payment_method_id: 'account_money',
-      payer: {
-        email: payerEmail,
-      },
-      collector_id: Number(vendor.mpUserId),
-      external_reference: `vendor-payout:${orderId}:${vendorId}`,
-    };
-
-    this.logger.log(`transferToVendor REQUEST: vendor=${vendorId} | mpUserId=${vendor.mpUserId} | amount=R$${amount} | payerEmail=${payerEmail} | orderId=${orderId}`);
-
-    try {
-      const response = await fetch('https://api.mercadopago.com/v1/payments', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.configService.get('MP_ACCESS_TOKEN')}`,
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      const data = await response.json();
-      this.logger.log(`transferToVendor RESPONSE: status=${response.status} | body=${JSON.stringify(data)}`);
-
-      if (data.id && (data.status === 'approved' || data.status === 'pending')) {
-        const payment = this.paymentsRepository.create({
-          type: 'VENDOR_PAYOUT',
-          description: `Repasse vendedor - Pedido ${orderId}`,
-          amount,
-          status: data.status,
-          mpPaymentId: String(data.id),
-          vendorUser: vendor,
-        });
-        await this.paymentsRepository.save(payment);
-        this.logger.log(`Repasse vendedor OK: R$${amount} -> vendor ${vendorId} | mpId: ${data.id}`);
-        return { success: true, mpId: String(data.id) };
-      }
-
-      this.logger.error(`transferToVendor FALHOU: httpStatus=${response.status} | mpStatus=${data.status} | message=${data.message} | cause=${JSON.stringify(data.cause)}`);
-      return { success: false };
-    } catch (err: any) {
-      this.logger.error(`transferToVendor EXCEPTION: ${err.message}`);
-      return { success: false };
-    }
+    this.logger.warn(`Payment failed for order ${orderId}`);
   }
 
-  async transferToDeliverer(delivererId: string, amount: number, orderId: string): Promise<{ success: boolean; mpId?: string }> {
-    const deliverer = await this.appUsersService.findById(delivererId);
-    if (!deliverer?.mpUserId) {
-      this.logger.warn(`transferToDeliverer falhou: deliverer ${delivererId} sem mpUserId`);
-      return { success: false };
-    }
+  private async handleOrderCanceled(data: any): Promise<void> {
+    const metadata = data.metadata || {};
+    const orderId = metadata.order_id;
+    if (!orderId) return;
 
-    const payerEmail = this.configService.get('MP_PAYER_EMAIL', '');
-    if (!payerEmail) {
-      this.logger.error('transferToDeliverer falhou: MP_PAYER_EMAIL não configurado');
-      return { success: false };
-    }
-
-    const requestBody = {
-      transaction_amount: amount,
-      description: `Entrega do pedido ${orderId}`,
-      payment_method_id: 'account_money',
-      payer: {
-        email: payerEmail,
-      },
-      collector_id: Number(deliverer.mpUserId),
-      external_reference: `payout:${orderId}:${delivererId}`,
-    };
-
-    this.logger.log(`transferToDeliverer REQUEST: deliverer=${delivererId} | mpUserId=${deliverer.mpUserId} | amount=R$${amount} | payerEmail=${payerEmail} | orderId=${orderId}`);
-
-    try {
-      const response = await fetch('https://api.mercadopago.com/v1/payments', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.configService.get('MP_ACCESS_TOKEN')}`,
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      const data = await response.json();
-      this.logger.log(`transferToDeliverer RESPONSE: status=${response.status} | body=${JSON.stringify(data)}`);
-
-      if (data.id && (data.status === 'approved' || data.status === 'pending')) {
-        const payment = this.paymentsRepository.create({
-          type: 'DELIVERER_PAYOUT',
-          description: `Repasse entrega - Pedido ${orderId}`,
-          amount,
-          status: data.status,
-          mpPaymentId: String(data.id),
-          appUser: deliverer,
-        });
-        await this.paymentsRepository.save(payment);
-        this.logger.log(`Repasse entregador OK: R$${amount} -> deliverer ${delivererId} | mpId: ${data.id}`);
-        return { success: true, mpId: String(data.id) };
-      }
-
-      this.logger.error(`transferToDeliverer FALHOU: httpStatus=${response.status} | mpStatus=${data.status} | message=${data.message} | cause=${JSON.stringify(data.cause)}`);
-      return { success: false };
-    } catch (err: any) {
-      this.logger.error(`transferToDeliverer EXCEPTION: ${err.message}`);
-      return { success: false };
-    }
+    this.logger.warn(`Order canceled on Pagar.me: ${orderId}`);
   }
+
+  private async handleChargePaid(data: any): Promise<void> {
+    // charge.paid can be used for immediate confirmation
+    // The order.paid webhook will also fire, so this is a fallback
+    this.logger.log(`Charge paid: ${data.id}`);
+  }
+
+  // ─── Queries ───────────────────────────────────────────────────────────
 
   async findByVendor(userId: string): Promise<Payment[]> {
     return this.paymentsRepository.find({

@@ -5,7 +5,6 @@ import { DeliveriesService } from './deliveries.service';
 import { Delivery } from './entities/delivery.entity';
 import { OrdersService } from '../orders/orders.service';
 import { DeliveryOfferService } from './delivery-offer.service';
-import { PaymentsService } from '../payments/payments.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
@@ -13,7 +12,6 @@ describe('DeliveriesService', () => {
   let service: DeliveriesService;
   let deliveriesRepo: any;
   let ordersService: any;
-  let paymentsService: any;
   let pubSub: any;
 
   const mockDeliveriesRepo = {
@@ -35,11 +33,6 @@ describe('DeliveriesService', () => {
     startOffer: jest.fn(),
   };
 
-  const mockPaymentsService = {
-    transferToDeliverer: jest.fn(),
-    transferToVendor: jest.fn(),
-  };
-
   const mockPubSub = {
     publish: jest.fn(),
   };
@@ -53,7 +46,6 @@ describe('DeliveriesService', () => {
         { provide: getRepositoryToken(Delivery), useValue: mockDeliveriesRepo },
         { provide: OrdersService, useValue: mockOrdersService },
         { provide: DeliveryOfferService, useValue: mockOfferService },
-        { provide: PaymentsService, useValue: mockPaymentsService },
         { provide: PUB_SUB, useValue: mockPubSub },
       ],
     }).compile();
@@ -61,7 +53,6 @@ describe('DeliveriesService', () => {
     service = module.get<DeliveriesService>(DeliveriesService);
     deliveriesRepo = mockDeliveriesRepo;
     ordersService = mockOrdersService;
-    paymentsService = mockPaymentsService;
     pubSub = mockPubSub;
   });
 
@@ -70,8 +61,8 @@ describe('DeliveriesService', () => {
     return {
       id: 'deliverer-1',
       name: 'Pedro Entregador',
-      mpConnected: true,
-      mpUserId: '12345',
+      paymentConnected: true,
+      pagarmeRecipientId: 'rp_deliverer_1',
       ...overrides,
     };
   }
@@ -89,7 +80,7 @@ describe('DeliveriesService', () => {
       store: {
         id: 'store-1',
         hasOwnDelivery: false,
-        owner: { id: 'vendor-1', mpAccessToken: 'token' },
+        owner: { id: 'vendor-1', pagarmeRecipientId: 'rp_vendor_1' },
       },
       items: [{ product: { name: 'Pizza' } }],
       ...overrides,
@@ -113,8 +104,8 @@ describe('DeliveriesService', () => {
 
   // ─── acceptDelivery ─────────────────────────────────────────
   describe('acceptDelivery', () => {
-    it('should throw if deliverer has no MP connected', async () => {
-      const deliverer = makeDeliverer({ mpConnected: false });
+    it('should throw if deliverer has no payment connected', async () => {
+      const deliverer = makeDeliverer({ paymentConnected: false });
       await expect(
         service.acceptDelivery('order-1', deliverer as any),
       ).rejects.toThrow(BadRequestException);
@@ -194,7 +185,7 @@ describe('DeliveriesService', () => {
       await expect(service.confirmDelivery('bad-id')).rejects.toThrow(NotFoundException);
     });
 
-    describe('payment distribution for MERCADO_PAGO', () => {
+    describe('payment tracking (Pagar.me split_auto)', () => {
       it('should set vendor payout as split_auto', async () => {
         const delivery = makeDelivery();
         deliveriesRepo.findOne.mockResolvedValue(delivery);
@@ -207,7 +198,7 @@ describe('DeliveriesService', () => {
         expect(delivery.vendorPayoutStatus).toBe('split_auto');
       });
 
-      it('should set deliverer payout as pending_confirmation when platform handles delivery', async () => {
+      it('should set deliverer payout as split_auto when platform handles delivery', async () => {
         const delivery = makeDelivery();
         deliveriesRepo.findOne.mockResolvedValue(delivery);
         deliveriesRepo.save.mockResolvedValue(delivery);
@@ -215,7 +206,7 @@ describe('DeliveriesService', () => {
         await service.confirmDelivery('delivery-1');
 
         expect(delivery.payoutAmount).toBe(5.0);
-        expect(delivery.payoutStatus).toBe('pending_confirmation');
+        expect(delivery.payoutStatus).toBe('split_auto');
       });
 
       it('should NOT set deliverer payout when store has own delivery', async () => {
@@ -234,8 +225,8 @@ describe('DeliveriesService', () => {
       });
     });
 
-    describe('payment distribution for PIX', () => {
-      it('should set vendor payout as split_auto (PIX now uses Checkout Pro)', async () => {
+    describe('payment tracking for PIX', () => {
+      it('should set vendor payout as split_auto for PIX', async () => {
         const delivery = makeDelivery({
           order: makeOrder({ paymentMethod: 'PIX' }),
         });
@@ -244,12 +235,11 @@ describe('DeliveriesService', () => {
 
         await service.confirmDelivery('delivery-1');
 
-        // PIX now uses same Checkout Pro with marketplace_fee — split_auto
         expect(delivery.vendorPayoutStatus).toBe('split_auto');
         expect(delivery.vendorPayoutAmount).toBe(47.5);
       });
 
-      it('should set deliverer payout as pending_confirmation for PIX', async () => {
+      it('should set deliverer payout as split_auto for PIX', async () => {
         const delivery = makeDelivery({
           order: makeOrder({ paymentMethod: 'PIX' }),
         });
@@ -259,11 +249,11 @@ describe('DeliveriesService', () => {
         await service.confirmDelivery('delivery-1');
 
         expect(delivery.payoutAmount).toBe(5.0);
-        expect(delivery.payoutStatus).toBe('pending_confirmation');
+        expect(delivery.payoutStatus).toBe('split_auto');
       });
     });
 
-    describe('payment distribution for ON_DELIVERY', () => {
+    describe('payment tracking for ON_DELIVERY', () => {
       it('should NOT set any payout for cash payments', async () => {
         const delivery = makeDelivery({
           order: makeOrder({ paymentMethod: 'ON_DELIVERY' }),
@@ -291,72 +281,6 @@ describe('DeliveriesService', () => {
     });
   });
 
-  // ─── processDelivererPayout ─────────────────────────────────
-  describe('processDelivererPayout', () => {
-    it('should skip if delivery not found', async () => {
-      deliveriesRepo.findOne.mockResolvedValue(null);
-      await service.processDelivererPayout('bad-id');
-      expect(paymentsService.transferToDeliverer).not.toHaveBeenCalled();
-    });
-
-    it('should skip if payoutStatus is not pending_confirmation or failed', async () => {
-      deliveriesRepo.findOne.mockResolvedValue(makeDelivery({ payoutStatus: 'completed' }));
-      await service.processDelivererPayout('delivery-1');
-      expect(paymentsService.transferToDeliverer).not.toHaveBeenCalled();
-    });
-
-    it('should transfer delivery fee to deliverer on success', async () => {
-      const delivery = makeDelivery({
-        payoutStatus: 'pending_confirmation',
-        payoutAmount: 5.0,
-        order: makeOrder(),
-        deliverer: makeDeliverer(),
-      });
-      deliveriesRepo.findOne.mockResolvedValue(delivery);
-      paymentsService.transferToDeliverer.mockResolvedValue({ success: true, mpId: 'mp-123' });
-
-      await service.processDelivererPayout('delivery-1');
-
-      expect(paymentsService.transferToDeliverer).toHaveBeenCalledWith(
-        'deliverer-1',
-        5.0,
-        'order-1',
-      );
-      expect(delivery.payoutStatus).toBe('completed');
-      expect(delivery.payoutMpId).toBe('mp-123');
-    });
-
-    it('should set status to failed on transfer failure', async () => {
-      const delivery = makeDelivery({
-        payoutStatus: 'pending_confirmation',
-        payoutAmount: 5.0,
-        order: makeOrder(),
-        deliverer: makeDeliverer(),
-      });
-      deliveriesRepo.findOne.mockResolvedValue(delivery);
-      paymentsService.transferToDeliverer.mockResolvedValue({ success: false });
-
-      await service.processDelivererPayout('delivery-1');
-
-      expect(delivery.payoutStatus).toBe('failed');
-    });
-
-    it('should retry failed payouts', async () => {
-      const delivery = makeDelivery({
-        payoutStatus: 'failed',
-        payoutAmount: 5.0,
-        order: makeOrder(),
-        deliverer: makeDeliverer(),
-      });
-      deliveriesRepo.findOne.mockResolvedValue(delivery);
-      paymentsService.transferToDeliverer.mockResolvedValue({ success: true, mpId: 'mp-retry' });
-
-      await service.processDelivererPayout('delivery-1');
-
-      expect(delivery.payoutStatus).toBe('completed');
-    });
-  });
-
   // ─── findExpiredPendingConfirmations ────────────────────────
   describe('findExpiredPendingConfirmations', () => {
     it('should query deliveries delivered more than 10 min ago with no customer confirmation', async () => {
@@ -371,31 +295,7 @@ describe('DeliveriesService', () => {
       await service.findExpiredPendingConfirmations();
 
       expect(mockQb.where).toHaveBeenCalledWith('delivery.deliveredAt IS NOT NULL');
-      expect(mockQb.andWhere).toHaveBeenCalledWith(
-        'delivery.payoutStatus = :status',
-        { status: 'pending_confirmation' },
-      );
       expect(mockQb.andWhere).toHaveBeenCalledWith('order.customerConfirmedAt IS NULL');
-    });
-  });
-
-  // ─── findPendingPayouts ─────────────────────────────────────
-  describe('findPendingPayouts', () => {
-    it('should query only failed deliverer payouts', async () => {
-      const mockQb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([]),
-      };
-      deliveriesRepo.createQueryBuilder.mockReturnValue(mockQb);
-
-      await service.findPendingPayouts();
-
-      expect(mockQb.andWhere).toHaveBeenCalledWith(
-        'delivery.payoutStatus = :failed',
-        { failed: 'failed' },
-      );
     });
   });
 

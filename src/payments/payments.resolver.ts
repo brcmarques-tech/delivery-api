@@ -8,6 +8,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole, VendorPlan } from '../common/enums';
+import { GraphQLJSONObject } from '../common/graphql-json';
 
 @Resolver(() => Payment)
 export class PaymentsResolver {
@@ -37,22 +38,27 @@ export class PaymentsResolver {
     return this.paymentsService.findAll();
   }
 
-  @Query(() => String)
+  @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard)
-  mpConnectUrl(
-    @CurrentUser() user: VendorUser,
-    @Args('source', { nullable: true, defaultValue: 'web' }) source: string,
-  ): string {
-    return this.paymentsService.getMpConnectUrl(user.id, source);
+  async registerRecipient(
+    @CurrentUser() user: any,
+    @Args('recipientData', { type: () => GraphQLJSONObject }) recipientData: any,
+  ): Promise<boolean> {
+    if (user.userType === 'vendor') {
+      await this.paymentsService.registerVendorRecipient(user.id, recipientData);
+    } else {
+      await this.paymentsService.registerDelivererRecipient(user.id, recipientData);
+    }
+    return true;
   }
 
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard)
-  async disconnectMercadoPago(@CurrentUser() user: any): Promise<boolean> {
+  async disconnectPayment(@CurrentUser() user: any): Promise<boolean> {
     if (user.userType === 'vendor') {
-      await this.paymentsService.disconnectMpVendor(user.id);
+      await this.paymentsService.disconnectVendor(user.id);
     } else {
-      await this.paymentsService.disconnectMpApp(user.id);
+      await this.paymentsService.disconnectApp(user.id);
     }
     return true;
   }

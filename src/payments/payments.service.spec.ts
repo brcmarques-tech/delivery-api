@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
+import { HttpService } from '@nestjs/axios';
 import { BadRequestException } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { Payment } from './entities/payment.entity';
@@ -12,43 +13,22 @@ import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { VendorPlan, OrderStatus } from '../common/enums';
 
-// Mock mercadopago module
-jest.mock('mercadopago', () => ({
-  MercadoPagoConfig: jest.fn().mockImplementation(() => ({})),
-  Preference: jest.fn().mockImplementation(() => ({
-    create: jest.fn(),
-  })),
-  Payment: jest.fn().mockImplementation(() => ({
-    get: jest.fn(),
-  })),
-  Customer: jest.fn().mockImplementation(() => ({
-    search: jest.fn().mockResolvedValue({ results: [] }),
-    create: jest.fn().mockResolvedValue({ id: 'mp-customer-1' }),
-  })),
-}));
-
-const { Preference, Payment: MpPayment } = jest.requireMock('mercadopago');
-
-// Mock global fetch
-const mockFetch = jest.fn();
-global.fetch = mockFetch;
-
 describe('PaymentsService', () => {
   let service: PaymentsService;
   let paymentsRepo: any;
-  let storesRepo: any;
-  let configService: any;
-  let appUsersService: any;
-  let vendorUsersService: any;
-  let platformConfigService: any;
-  let whatsAppService: any;
-  let notificationsService: any;
+  let httpService: any;
 
   const mockPaymentsRepo = {
     create: jest.fn((data) => ({ id: 'payment-1', ...data })),
     save: jest.fn((data) => Promise.resolve({ id: 'payment-1', ...data })),
     findOne: jest.fn(),
     find: jest.fn(),
+    createQueryBuilder: jest.fn().mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getRawOne: jest.fn().mockResolvedValue({ total: '0' }),
+    }),
     manager: {
       getRepository: jest.fn(),
     },
@@ -59,12 +39,9 @@ describe('PaymentsService', () => {
   };
 
   const configMap: Record<string, string> = {
-    MP_ACCESS_TOKEN: 'TEST-token',
-    MP_PUBLIC_KEY: 'TEST-public',
-    MP_APP_ID: '123456',
-    MP_CLIENT_SECRET: 'test-secret',
-    MP_PAYER_EMAIL: 'platform@test.com',
-    MP_SANDBOX: 'true',
+    PAGARME_SECRET_KEY: 'sk_test_abc123',
+    PAGARME_PUBLIC_KEY: 'pk_test_abc123',
+    PAGARME_PLATFORM_RECIPIENT_ID: 'rp_platform_123',
     APP_URL: 'http://localhost:3000',
     VENDOR_APP_URL: 'http://localhost:3001',
     WEBHOOK_URL: 'http://localhost:3000',
@@ -74,19 +51,25 @@ describe('PaymentsService', () => {
     get: jest.fn((key: string, defaultValue?: string) => configMap[key] ?? defaultValue ?? ''),
   };
 
+  const mockHttpService = {
+    axiosRef: {
+      post: jest.fn(),
+      get: jest.fn(),
+      put: jest.fn(),
+    },
+  };
+
   const mockAppUsersService = {
     findById: jest.fn(),
-    updateMpCredentials: jest.fn(),
-    updateMpCustomerId: jest.fn(),
-    disconnectMp: jest.fn(),
+    updatePagarmeRecipient: jest.fn(),
+    disconnectPayment: jest.fn(),
   };
 
   const mockVendorUsersService = {
     findById: jest.fn(),
-    updateMpCredentials: jest.fn(),
-    updateMpCustomerId: jest.fn(),
+    updatePagarmeRecipient: jest.fn(),
     updateVendorPlan: jest.fn(),
-    disconnectMp: jest.fn(),
+    disconnectPayment: jest.fn(),
   };
 
   const mockPlatformConfigService = {
@@ -112,6 +95,7 @@ describe('PaymentsService', () => {
         { provide: getRepositoryToken(Payment), useValue: mockPaymentsRepo },
         { provide: getRepositoryToken(Store), useValue: mockStoresRepo },
         { provide: ConfigService, useValue: mockConfigService },
+        { provide: HttpService, useValue: mockHttpService },
         { provide: AppUsersService, useValue: mockAppUsersService },
         { provide: VendorUsersService, useValue: mockVendorUsersService },
         { provide: PlatformConfigService, useValue: mockPlatformConfigService },
@@ -122,10 +106,7 @@ describe('PaymentsService', () => {
 
     service = module.get<PaymentsService>(PaymentsService);
     paymentsRepo = mockPaymentsRepo;
-    storesRepo = mockStoresRepo;
-    configService = mockConfigService;
-    appUsersService = mockAppUsersService;
-    vendorUsersService = mockVendorUsersService;
+    httpService = mockHttpService;
   });
 
   // ─── Helper factories ───────────────────────────────────────
@@ -136,7 +117,6 @@ describe('PaymentsService', () => {
       email: 'joao@test.com',
       cpf: '12345678901',
       phone: '53999887766',
-      mpCustomerId: null,
       ...overrides,
     };
   }
@@ -147,9 +127,8 @@ describe('PaymentsService', () => {
       name: 'Maria Loja',
       email: 'maria@test.com',
       phone: '53999112233',
-      mpAccessToken: 'vendor-mp-token',
-      mpUserId: '12345',
-      mpCustomerId: null,
+      pagarmeRecipientId: 'rp_vendor_123',
+      paymentConnected: true,
       acceptedSubscriptionTermsAt: new Date(),
       ...overrides,
     };
@@ -176,7 +155,7 @@ describe('PaymentsService', () => {
       deliveryFee: 5.0,
       total: 55.0,
       commissionAmount: 2.5,
-      paymentMethod: 'MERCADO_PAGO',
+      paymentMethod: 'CREDIT_CARD',
       deliveryAddress: 'Rua Teste, 123',
       store: makeStore(),
       items: [
@@ -188,298 +167,125 @@ describe('PaymentsService', () => {
     };
   }
 
-  // ─── createOrderCheckout ────────────────────────────────────
-  describe('createOrderCheckout', () => {
-    it('should create a Checkout Pro preference with vendor token and marketplace_fee', async () => {
-      const order = makeOrder();
-      const customer = makeCustomer();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-123',
-        init_point: 'https://mp.com/checkout',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout',
-      });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
-
-      const result = await service.createOrderCheckout(order, customer);
-
-      // Should use sandbox_init_point when MP_SANDBOX=true
-      expect(result.checkoutUrl).toBe('https://sandbox.mp.com/checkout');
-      expect(result.preferenceId).toBe('pref-123');
-
-      // Verify preference body
-      const body = mockPreferenceCreate.mock.calls[0][0].body;
-      expect(body.items[0].unit_price).toBe(55.0);
-      expect(body.external_reference).toBe('order:order-1');
-      // marketplace_fee = commission (2.5) + delivery fee (5.0) = 7.5
-      expect(body.marketplace_fee).toBe(7.5);
-    });
-
-    it('should use init_point when MP_SANDBOX is not true', async () => {
-      configMap.MP_SANDBOX = 'false';
-      const order = makeOrder();
-      const customer = makeCustomer();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-456',
-        init_point: 'https://mp.com/checkout-prod',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout-prod',
-      });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
-
-      const result = await service.createOrderCheckout(order, customer);
-
-      expect(result.checkoutUrl).toBe('https://mp.com/checkout-prod');
-      configMap.MP_SANDBOX = 'true'; // restore
-    });
-
-    it('should NOT include delivery fee in marketplace_fee when store has own delivery', async () => {
-      const order = makeOrder({
-        store: makeStore({ hasOwnDelivery: true }),
-      });
-      const customer = makeCustomer();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-789',
-        init_point: 'https://mp.com/checkout',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout',
-      });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
-
-      await service.createOrderCheckout(order, customer);
-
-      const body = mockPreferenceCreate.mock.calls[0][0].body;
-      // marketplace_fee = only commission (2.5), no delivery fee
-      expect(body.marketplace_fee).toBe(2.5);
-    });
-
-    it('should not set marketplace_fee when no vendor token', async () => {
-      const order = makeOrder({
-        store: makeStore({ owner: { ...makeVendorUser(), mpAccessToken: null } }),
-      });
-      const customer = makeCustomer();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-no-vendor',
-        init_point: 'https://mp.com/checkout',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout',
-      });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
-
-      await service.createOrderCheckout(order, customer);
-
-      const body = mockPreferenceCreate.mock.calls[0][0].body;
-      expect(body.marketplace_fee).toBeUndefined();
-    });
-
-    it('should include payer CPF and phone', async () => {
-      const order = makeOrder();
-      const customer = makeCustomer({ cpf: '999.888.777-66', phone: '5398765432' });
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-payer',
-        init_point: 'https://mp.com/checkout',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout',
-      });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
-
-      await service.createOrderCheckout(order, customer);
-
-      const body = mockPreferenceCreate.mock.calls[0][0].body;
-      expect(body.payer.identification).toEqual({ type: 'CPF', number: '99988877766' });
-    });
-  });
-
   // ─── createOrderPix ─────────────────────────────────────────
   describe('createOrderPix', () => {
-    it('should create a Checkout Pro preference with PIX-only payment methods', async () => {
+    it('should create a Pagar.me order with PIX payment and split rules', async () => {
       const order = makeOrder({ paymentMethod: 'PIX' });
       const customer = makeCustomer();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-pix-1',
-        init_point: 'https://mp.com/checkout-pix',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout-pix',
+
+      // Mock customer creation
+      httpService.axiosRef.post.mockImplementation((url: string) => {
+        if (url.includes('/customers')) {
+          return Promise.resolve({ data: { id: 'cus_123' } });
+        }
+        if (url.includes('/orders')) {
+          return Promise.resolve({
+            data: {
+              id: 'or_pix_123',
+              status: 'pending',
+              charges: [{
+                id: 'ch_123',
+                status: 'pending',
+                last_transaction: {
+                  qr_code: 'pix-qr-code-string',
+                  qr_code_url: 'https://api.pagar.me/qrcode/123',
+                },
+              }],
+            },
+          });
+        }
+        return Promise.resolve({ data: {} });
       });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
 
       const result = await service.createOrderPix(order, customer);
 
-      expect(result.checkoutUrl).toBe('https://sandbox.mp.com/checkout-pix');
-      expect(result.preferenceId).toBe('pref-pix-1');
+      expect(result.preferenceId).toBe('or_pix_123');
+      expect(result.qrCode).toBe('pix-qr-code-string');
+      expect(result.qrCodeUrl).toBe('https://api.pagar.me/qrcode/123');
 
-      const body = mockPreferenceCreate.mock.calls[0][0].body;
-      // Should exclude all non-PIX payment types
-      expect(body.payment_methods.excluded_payment_types).toEqual([
-        { id: 'credit_card' },
-        { id: 'debit_card' },
-        { id: 'ticket' },
-        { id: 'atm' },
-      ]);
+      // Verify the order body sent to Pagar.me
+      const orderCall = httpService.axiosRef.post.mock.calls.find((c: any) => c[0].includes('/orders'));
+      const body = orderCall[1];
+      expect(body.payments[0].payment_method).toBe('pix');
+      expect(body.payments[0].pix.expires_in).toBe(1800);
+      expect(body.payments[0].split).toBeDefined();
+      expect(body.payments[0].split.length).toBeGreaterThanOrEqual(2); // platform + vendor at minimum
     });
 
-    it('should include marketplace_fee with vendor token (same as checkout)', async () => {
-      const order = makeOrder({ paymentMethod: 'PIX' });
-      const customer = makeCustomer();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-pix-2',
-        init_point: 'https://mp.com/checkout-pix',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout-pix',
-      });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
-
-      await service.createOrderPix(order, customer);
-
-      const body = mockPreferenceCreate.mock.calls[0][0].body;
-      // marketplace_fee = commission (2.5) + delivery fee (5.0) = 7.5
-      expect(body.marketplace_fee).toBe(7.5);
-    });
-
-    it('should set PIX preference to expire in 30 minutes', async () => {
-      const order = makeOrder({ paymentMethod: 'PIX' });
-      const customer = makeCustomer();
-      const before = Date.now();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-pix-exp',
-        init_point: 'https://mp.com/checkout-pix',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout-pix',
-      });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
-
-      await service.createOrderPix(order, customer);
-
-      const body = mockPreferenceCreate.mock.calls[0][0].body;
-      expect(body.expires).toBe(true);
-      const expiration = new Date(body.date_of_expiration).getTime();
-      const expectedMin = before + 29 * 60 * 1000;
-      const expectedMax = before + 31 * 60 * 1000;
-      expect(expiration).toBeGreaterThanOrEqual(expectedMin);
-      expect(expiration).toBeLessThanOrEqual(expectedMax);
-    });
-
-    it('should use vendor token when available', async () => {
-      const vendorToken = 'vendor-specific-token';
+    it('should throw if vendor has no pagarmeRecipientId', async () => {
       const order = makeOrder({
-        paymentMethod: 'PIX',
-        store: makeStore({ owner: makeVendorUser({ mpAccessToken: vendorToken }) }),
+        store: makeStore({ owner: makeVendorUser({ pagarmeRecipientId: null }) }),
       });
       const customer = makeCustomer();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-pix-vendor',
-        init_point: 'https://mp.com/checkout-pix',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout-pix',
-      });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
 
-      await service.createOrderPix(order, customer);
-
-      // Verify MercadoPagoConfig was called with vendor token
-      const { MercadoPagoConfig } = jest.requireMock('mercadopago');
-      const calls = MercadoPagoConfig.mock.calls;
-      const lastCall = calls[calls.length - 1];
-      expect(lastCall[0].accessToken).toBe(vendorToken);
-    });
-
-    it('should include item description with weighted items', async () => {
-      const order = makeOrder({
-        paymentMethod: 'PIX',
-        items: [
-          { product: { name: 'Carne' }, quantity: 1, weightGrams: 500 },
-          { product: { name: 'Queijo' }, quantity: 3, weightGrams: 0 },
-        ],
-      });
-      const customer = makeCustomer();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-pix-desc',
-        init_point: 'https://mp.com/checkout-pix',
-        sandbox_init_point: 'https://sandbox.mp.com/checkout-pix',
-      });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
-
-      await service.createOrderPix(order, customer);
-
-      const body = mockPreferenceCreate.mock.calls[0][0].body;
-      expect(body.items[0].description).toBe('Carne (500g), 3x Queijo');
+      await expect(service.createOrderPix(order, customer)).rejects.toThrow(
+        'Vendedor não cadastrou conta de recebimento',
+      );
     });
   });
 
-  // ─── getMpConnectUrl ────────────────────────────────────────
-  describe('getMpConnectUrl', () => {
-    it('should generate correct OAuth URL with encoded redirect', () => {
-      const url = service.getMpConnectUrl('user-1', 'web');
-      expect(url).toContain('client_id=123456');
-      expect(url).toContain('state=user-1:web');
-      expect(url).toContain('redirect_uri=');
-      expect(url).toContain(encodeURIComponent('http://localhost:3000/payments/mp/callback'));
-    });
+  // ─── buildSplitRules (tested via createOrderPix) ─────────────
+  describe('split rules', () => {
+    it('should include deliverer in split when platform handles delivery', async () => {
+      const order = makeOrder({
+        paymentMethod: 'PIX',
+        delivery: {
+          deliverer: { pagarmeRecipientId: 'rp_deliverer_456' },
+        },
+      });
+      const customer = makeCustomer();
 
-    it('should use app source for mobile', () => {
-      const url = service.getMpConnectUrl('user-2', 'app');
-      expect(url).toContain('state=user-2:app');
-    });
-  });
-
-  // ─── handleMpOAuthCallback ──────────────────────────────────
-  describe('handleMpOAuthCallback', () => {
-    it('should save vendor credentials on successful OAuth', async () => {
-      mockFetch.mockResolvedValueOnce({
-        json: () => Promise.resolve({
-          access_token: 'new-access-token',
-          refresh_token: 'new-refresh-token',
-          user_id: 9999,
-        }),
+      httpService.axiosRef.post.mockImplementation((url: string) => {
+        if (url.includes('/customers')) return Promise.resolve({ data: { id: 'cus_1' } });
+        if (url.includes('/orders')) return Promise.resolve({
+          data: { id: 'or_1', charges: [{ last_transaction: { qr_code: '', qr_code_url: '' } }] },
+        });
+        return Promise.resolve({ data: {} });
       });
 
-      await service.handleMpOAuthCallback('auth-code', 'vendor-1', 'vendor');
+      await service.createOrderPix(order, customer);
 
-      expect(vendorUsersService.updateMpCredentials).toHaveBeenCalledWith(
-        'vendor-1',
-        'new-access-token',
-        'new-refresh-token',
-        '9999',
-      );
+      const orderCall = httpService.axiosRef.post.mock.calls.find((c: any) => c[0].includes('/orders'));
+      const splitRules = orderCall[1].payments[0].split;
+
+      // Should have 3 splits: platform, vendor, deliverer
+      expect(splitRules.length).toBe(3);
+
+      const delivererSplit = splitRules.find((s: any) => s.recipient_id === 'rp_deliverer_456');
+      expect(delivererSplit).toBeDefined();
+      expect(delivererSplit.amount).toBe(500); // R$5.00 delivery fee in cents
+      expect(delivererSplit.type).toBe('flat');
     });
 
-    it('should save app user credentials when userType is app', async () => {
-      mockFetch.mockResolvedValueOnce({
-        json: () => Promise.resolve({
-          access_token: 'app-token',
-          refresh_token: 'app-refresh',
-          user_id: 8888,
-        }),
+    it('should NOT include deliverer split when store has own delivery', async () => {
+      const order = makeOrder({
+        paymentMethod: 'PIX',
+        store: makeStore({ hasOwnDelivery: true }),
+      });
+      const customer = makeCustomer();
+
+      httpService.axiosRef.post.mockImplementation((url: string) => {
+        if (url.includes('/customers')) return Promise.resolve({ data: { id: 'cus_1' } });
+        if (url.includes('/orders')) return Promise.resolve({
+          data: { id: 'or_2', charges: [{ last_transaction: { qr_code: '', qr_code_url: '' } }] },
+        });
+        return Promise.resolve({ data: {} });
       });
 
-      await service.handleMpOAuthCallback('auth-code', 'app-user-1', 'app');
+      await service.createOrderPix(order, customer);
 
-      expect(appUsersService.updateMpCredentials).toHaveBeenCalledWith(
-        'app-user-1',
-        'app-token',
-        'app-refresh',
-        '8888',
-      );
-    });
+      const orderCall = httpService.axiosRef.post.mock.calls.find((c: any) => c[0].includes('/orders'));
+      const splitRules = orderCall[1].payments[0].split;
 
-    it('should not crash on OAuth failure', async () => {
-      mockFetch.mockResolvedValueOnce({
-        json: () => Promise.resolve({ error: 'invalid_code' }),
-      });
-
-      await expect(
-        service.handleMpOAuthCallback('bad-code', 'user-1', 'vendor'),
-      ).resolves.not.toThrow();
-
-      expect(vendorUsersService.updateMpCredentials).not.toHaveBeenCalled();
+      // No deliverer split
+      const delivererSplit = splitRules.find((s: any) => s.recipient_id === 'rp_deliverer_456');
+      expect(delivererSplit).toBeUndefined();
     });
   });
 
   // ─── handleWebhook ──────────────────────────────────────────
   describe('handleWebhook', () => {
-    it('should ignore non-payment webhook types', async () => {
-      await service.handleWebhook({ type: 'merchant_order', action: 'updated' });
-      // No error, no calls
-      expect(paymentsRepo.manager.getRepository).not.toHaveBeenCalled();
-    });
-
-    it('should ignore if no payment id', async () => {
-      await service.handleWebhook({ type: 'payment', action: 'payment.created', data: {} });
-      expect(paymentsRepo.manager.getRepository).not.toHaveBeenCalled();
-    });
-
-    it('should approve order on payment.created with approved status', async () => {
+    it('should approve order on order.paid webhook', async () => {
       const mockOrder = {
         id: 'order-1',
         orderNumber: '1001',
@@ -494,17 +300,13 @@ describe('PaymentsService', () => {
       };
       paymentsRepo.manager.getRepository.mockReturnValue(mockOrderRepo);
 
-      const mockMpGet = jest.fn().mockResolvedValue({
-        external_reference: 'order:order-1',
-        status: 'approved',
-        preference_id: 'pref-1',
-      });
-      MpPayment.mockImplementation(() => ({ get: mockMpGet }));
-
       await service.handleWebhook({
-        type: 'payment',
-        action: 'payment.created',
-        data: { id: 12345 },
+        type: 'order.paid',
+        data: {
+          id: 'or_123',
+          code: 'order-order-1',
+          metadata: { order_id: 'order-1', order_number: '1001' },
+        },
       });
 
       expect(mockOrderRepo.save).toHaveBeenCalledWith(
@@ -515,7 +317,6 @@ describe('PaymentsService', () => {
     it('should NOT approve order if already past AWAITING_PAYMENT', async () => {
       const mockOrder = {
         id: 'order-2',
-        orderNumber: '1002',
         status: OrderStatus.PENDING,
         customer: { id: 'c1' },
       };
@@ -525,174 +326,44 @@ describe('PaymentsService', () => {
       };
       paymentsRepo.manager.getRepository.mockReturnValue(mockOrderRepo);
 
-      const mockMpGet = jest.fn().mockResolvedValue({
-        external_reference: 'order:order-2',
-        status: 'approved',
-      });
-      MpPayment.mockImplementation(() => ({ get: mockMpGet }));
-
       await service.handleWebhook({
-        type: 'payment',
-        action: 'payment.updated',
-        data: { id: 99 },
+        type: 'order.paid',
+        data: {
+          id: 'or_456',
+          metadata: { order_id: 'order-2' },
+        },
       });
 
       expect(mockOrderRepo.save).not.toHaveBeenCalled();
     });
 
-    it('should handle promo payment webhook', async () => {
-      const mockPromotion = { id: 'promo-1', isPaid: false, product: { id: 'prod-1' }, promotionalPrice: 9.99, startDate: new Date(Date.now() - 86400000), endDate: new Date(Date.now() + 86400000) };
-      const mockPromoRepo = { findOne: jest.fn().mockResolvedValue(mockPromotion), save: jest.fn() };
-      const mockProductRepo = { update: jest.fn() };
-      const mockPaymentRecord = { mpPaymentId: null, status: 'pending' };
-
-      paymentsRepo.manager.getRepository.mockImplementation((entity: any) => {
-        if (entity === 'Product') return mockProductRepo;
-        return mockPromoRepo;
-      });
-      paymentsRepo.findOne.mockResolvedValue(mockPaymentRecord);
-      paymentsRepo.save.mockResolvedValue(mockPaymentRecord);
-
-      const mockMpGet = jest.fn().mockResolvedValue({
-        external_reference: 'promo:promo-1',
-        status: 'approved',
-        preference_id: 'pref-promo',
-      });
-      MpPayment.mockImplementation(() => ({ get: mockMpGet }));
-
-      await service.handleWebhook({
-        type: 'payment',
-        action: 'payment.created',
-        data: { id: 555 },
-      });
-
-      expect(mockPromoRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ isPaid: true }),
-      );
-      expect(mockProductRepo.update).toHaveBeenCalledWith('prod-1', { promotionalPrice: 9.99 });
-    });
-
     it('should handle plan upgrade webhook', async () => {
-      const mockMpGet = jest.fn().mockResolvedValue({
-        external_reference: 'vendor-1:PREMIUM:3',
-        status: 'approved',
-        preference_id: 'pref-plan',
-      });
-      MpPayment.mockImplementation(() => ({ get: mockMpGet }));
-
-      const mockPaymentRecord = { mpPaymentId: null, status: 'pending', vendorUser: { id: 'vendor-1' } };
+      const mockPaymentRecord = { pagarmeOrderId: 'or_plan', status: 'pending' };
       paymentsRepo.findOne.mockResolvedValue(mockPaymentRecord);
-      paymentsRepo.save.mockResolvedValue(mockPaymentRecord);
 
       await service.handleWebhook({
-        type: 'payment',
-        action: 'payment.updated',
-        data: { id: 777 },
+        type: 'order.paid',
+        data: {
+          id: 'or_plan',
+          metadata: {
+            type: 'plan_upgrade',
+            user_id: 'vendor-1',
+            plan: 'PREMIUM',
+            duration_months: '3',
+          },
+        },
       });
 
-      expect(vendorUsersService.updateVendorPlan).toHaveBeenCalledWith(
+      expect(mockVendorUsersService.updateVendorPlan).toHaveBeenCalledWith(
         'vendor-1',
         'PREMIUM',
         3,
       );
     });
-  });
 
-  // ─── transferToVendor ───────────────────────────────────────
-  describe('transferToVendor', () => {
-    it('should fail if vendor has no mpUserId', async () => {
-      vendorUsersService.findById.mockResolvedValue({ id: 'v1', mpUserId: null });
-      const result = await service.transferToVendor('v1', 100, 'order-1');
-      expect(result.success).toBe(false);
-    });
-
-    it('should fail if MP_PAYER_EMAIL not configured', async () => {
-      vendorUsersService.findById.mockResolvedValue({ id: 'v1', mpUserId: '12345' });
-      const original = configMap.MP_PAYER_EMAIL;
-      configMap.MP_PAYER_EMAIL = '';
-
-      const result = await service.transferToVendor('v1', 100, 'order-1');
-      expect(result.success).toBe(false);
-
-      configMap.MP_PAYER_EMAIL = original;
-    });
-
-    it('should succeed on approved payment response', async () => {
-      vendorUsersService.findById.mockResolvedValue({ id: 'v1', mpUserId: '12345' });
-      mockFetch.mockResolvedValueOnce({
-        status: 201,
-        json: () => Promise.resolve({ id: 999, status: 'approved' }),
-      });
-
-      const result = await service.transferToVendor('v1', 47.5, 'order-1');
-
-      expect(result.success).toBe(true);
-      expect(result.mpId).toBe('999');
-      expect(paymentsRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'VENDOR_PAYOUT',
-          amount: 47.5,
-          status: 'approved',
-        }),
-      );
-    });
-
-    it('should fail on rejected payment response', async () => {
-      vendorUsersService.findById.mockResolvedValue({ id: 'v1', mpUserId: '12345' });
-      mockFetch.mockResolvedValueOnce({
-        status: 400,
-        json: () => Promise.resolve({ status: 'rejected', message: 'insufficient_amount' }),
-      });
-
-      const result = await service.transferToVendor('v1', 100, 'order-1');
-      expect(result.success).toBe(false);
-    });
-
-    it('should handle network error gracefully', async () => {
-      vendorUsersService.findById.mockResolvedValue({ id: 'v1', mpUserId: '12345' });
-      mockFetch.mockRejectedValueOnce(new Error('Network error'));
-
-      const result = await service.transferToVendor('v1', 100, 'order-1');
-      expect(result.success).toBe(false);
-    });
-  });
-
-  // ─── transferToDeliverer ────────────────────────────────────
-  describe('transferToDeliverer', () => {
-    it('should fail if deliverer has no mpUserId', async () => {
-      appUsersService.findById.mockResolvedValue({ id: 'd1', mpUserId: null });
-      const result = await service.transferToDeliverer('d1', 5, 'order-1');
-      expect(result.success).toBe(false);
-    });
-
-    it('should succeed on approved payment', async () => {
-      appUsersService.findById.mockResolvedValue({ id: 'd1', mpUserId: '67890' });
-      mockFetch.mockResolvedValueOnce({
-        status: 201,
-        json: () => Promise.resolve({ id: 888, status: 'approved' }),
-      });
-
-      const result = await service.transferToDeliverer('d1', 5, 'order-1');
-
-      expect(result.success).toBe(true);
-      expect(result.mpId).toBe('888');
-      expect(paymentsRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'DELIVERER_PAYOUT',
-          amount: 5,
-        }),
-      );
-    });
-
-    it('should handle pending payment status', async () => {
-      appUsersService.findById.mockResolvedValue({ id: 'd1', mpUserId: '67890' });
-      mockFetch.mockResolvedValueOnce({
-        status: 201,
-        json: () => Promise.resolve({ id: 111, status: 'pending' }),
-      });
-
-      const result = await service.transferToDeliverer('d1', 5, 'order-1');
-      expect(result.success).toBe(true);
+    it('should ignore unknown webhook types', async () => {
+      await service.handleWebhook({ type: 'unknown.event', data: { id: 'test' } });
+      expect(paymentsRepo.manager.getRepository).not.toHaveBeenCalled();
     });
   });
 
@@ -712,14 +383,12 @@ describe('PaymentsService', () => {
       ).rejects.toThrow('aceitar o contrato');
     });
 
-    it('should create payment with correct billing period', async () => {
+    it('should create payment link for plan upgrade', async () => {
       const user = makeVendorUser();
-      const mockPreferenceCreate = jest.fn().mockResolvedValue({
-        id: 'pref-plan-1',
-        init_point: 'https://mp.com/plan',
+      mockStoresRepo.find.mockResolvedValue([]);
+      httpService.axiosRef.post.mockResolvedValue({
+        data: { id: 'pl_plan_123', url: 'https://pagar.me/pay/pl_plan_123' },
       });
-      Preference.mockImplementation(() => ({ create: mockPreferenceCreate }));
-      storesRepo.find.mockResolvedValue([]);
 
       const result = await service.createPlanUpgrade(user, VendorPlan.PREMIUM, 'quarterly');
 
@@ -731,20 +400,57 @@ describe('PaymentsService', () => {
     });
   });
 
-  // ─── disconnectMp ───────────────────────────────────────────
-  describe('disconnectMp', () => {
-    it('should disconnect vendor MP', async () => {
-      await service.disconnectMpVendor('vendor-1');
-      expect(vendorUsersService.disconnectMp).toHaveBeenCalledWith('vendor-1');
-    });
+  // ─── registerRecipient ────────────────────────────────────────
+  describe('registerVendorRecipient', () => {
+    it('should create recipient and update vendor', async () => {
+      mockVendorUsersService.findById.mockResolvedValue(makeVendorUser());
+      httpService.axiosRef.post.mockResolvedValue({
+        data: { id: 'rp_new_vendor' },
+      });
 
-    it('should disconnect app user MP', async () => {
-      await service.disconnectMpApp('app-1');
-      expect(appUsersService.disconnectMp).toHaveBeenCalledWith('app-1');
+      const result = await service.registerVendorRecipient('vendor-1', {
+        name: 'Maria',
+        email: 'maria@test.com',
+        document: '12345678901',
+        type: 'individual',
+        phone: { ddd: '53', number: '999112233' },
+        address: {
+          street: 'Rua Teste',
+          streetNumber: '123',
+          neighborhood: 'Centro',
+          city: 'Arroio Grande',
+          state: 'RS',
+          zipCode: '96330000',
+        },
+        bankAccount: {
+          holderName: 'Maria',
+          bank: '260',
+          branchNumber: '0001',
+          accountNumber: '12345',
+          accountCheckDigit: '6',
+          type: 'checking',
+        },
+      });
+
+      expect(result.recipientId).toBe('rp_new_vendor');
+      expect(mockVendorUsersService.updatePagarmeRecipient).toHaveBeenCalledWith('vendor-1', 'rp_new_vendor');
     });
   });
 
-  // ─── findByVendor / findByAppUser ───────────────────────────
+  // ─── disconnect ──────────────────────────────────────────────
+  describe('disconnect', () => {
+    it('should disconnect vendor payment', async () => {
+      await service.disconnectVendor('vendor-1');
+      expect(mockVendorUsersService.disconnectPayment).toHaveBeenCalledWith('vendor-1');
+    });
+
+    it('should disconnect app user payment', async () => {
+      await service.disconnectApp('app-1');
+      expect(mockAppUsersService.disconnectPayment).toHaveBeenCalledWith('app-1');
+    });
+  });
+
+  // ─── findByVendor ────────────────────────────────────────────
   describe('findByVendor', () => {
     it('should query by vendor user id', async () => {
       paymentsRepo.find.mockResolvedValue([]);
@@ -753,6 +459,14 @@ describe('PaymentsService', () => {
         where: { vendorUser: { id: 'v1' } },
         order: { createdAt: 'DESC' },
       });
+    });
+  });
+
+  // ─── platformRevenue ─────────────────────────────────────────
+  describe('platformRevenue', () => {
+    it('should return total approved plan + promo payments', async () => {
+      const result = await service.platformRevenue();
+      expect(result).toBe(0);
     });
   });
 });

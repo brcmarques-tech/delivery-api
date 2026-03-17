@@ -1,9 +1,7 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Order } from '../orders/entities/order.entity';
-import { DeliveriesService } from './deliveries.service';
 import { OrdersService } from '../orders/orders.service';
 
 @Injectable()
@@ -14,10 +12,7 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
   constructor(
     @InjectRepository(Order)
     private ordersRepository: Repository<Order>,
-    private deliveriesService: DeliveriesService,
-    @Inject(forwardRef(() => OrdersService))
     private ordersService: OrdersService,
-    private configService: ConfigService,
   ) {}
 
   onModuleInit() {
@@ -25,7 +20,6 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
     this.intervalId = setInterval(() => {
       this.autoConfirmExpiredDeliveries();
       this.expireAwaitingPaymentOrders();
-      this.retryPendingPayouts();
     }, 60_000);
   }
 
@@ -44,40 +38,33 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
     }
   }
 
-  private async retryPendingPayouts() {
-    // Skip if MP_PAYER_EMAIL is not configured — transfers will always fail
-    if (!this.configService.get('MP_PAYER_EMAIL')) return;
-
+  private async autoConfirmExpiredDeliveries() {
+    // Auto-confirm customer receipt after 10 minutes of delivery
+    // With Pagar.me split, payments are already distributed — this just tracks confirmation
     try {
-      const pending = await this.deliveriesService.findPendingPayouts();
-      for (const delivery of pending) {
-        if (delivery.payoutStatus === 'failed') {
-          await this.deliveriesService.processDelivererPayout(delivery.id);
-          this.logger.log(`Retry payout entregador delivery ${delivery.id}`);
+      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+      const expiredOrders = await this.ordersRepository
+        .createQueryBuilder('order')
+        .leftJoinAndSelect('order.delivery', 'delivery')
+        .where('delivery.deliveredAt IS NOT NULL')
+        .andWhere('delivery.deliveredAt <= :tenMinAgo', { tenMinAgo })
+        .andWhere('order.customerConfirmedAt IS NULL')
+        .getMany();
+
+      for (const order of expiredOrders) {
+        try {
+          order.customerConfirmedAt = new Date();
+          await this.ordersRepository.save(order);
+        } catch (err) {
+          this.logger.error(`Auto-confirm failed for order ${order.id}:`, err);
         }
       }
-    } catch (err) {
-      this.logger.error('Failed to process payouts:', err);
-    }
-  }
 
-  private async autoConfirmExpiredDeliveries() {
-    const expiredDeliveries =
-      await this.deliveriesService.findExpiredPendingConfirmations();
-
-    for (const delivery of expiredDeliveries) {
-      try {
-        const order = delivery.order;
-        order.customerConfirmedAt = new Date();
-        await this.ordersRepository.save(order);
-
-        await this.deliveriesService.processDelivererPayout(delivery.id);
-      } catch (err) {
-        console.error(
-          `Auto-confirm failed for delivery ${delivery.id}:`,
-          err,
-        );
+      if (expiredOrders.length > 0) {
+        this.logger.log(`Auto-confirmed ${expiredOrders.length} deliveries`);
       }
+    } catch (err) {
+      this.logger.error('Failed to auto-confirm deliveries:', err);
     }
   }
 }

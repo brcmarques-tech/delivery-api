@@ -34,6 +34,11 @@ export class Payment {
 
   @Field({ nullable: true })
   @Column({ nullable: true })
+  pagarmeOrderId: string;
+
+  // Legacy MP fields (kept for migration compatibility)
+  @Field({ nullable: true })
+  @Column({ nullable: true })
   mpPaymentId: string;
 
   @Field({ nullable: true })

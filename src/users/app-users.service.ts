@@ -247,16 +247,17 @@ export class AppUsersService {
     });
   }
 
-  async updateMpCustomerId(id: string, mpCustomerId: string): Promise<void> {
-    await this.appUsersRepository.update(id, { mpCustomerId });
+  async updatePagarmeRecipient(id: string, recipientId: string): Promise<void> {
+    await this.appUsersRepository.update(id, {
+      pagarmeRecipientId: recipientId,
+      paymentConnected: true,
+    });
   }
 
-  async updateMpCredentials(id: string, accessToken: string, refreshToken: string, mpUserId: string): Promise<void> {
+  async disconnectPayment(id: string): Promise<void> {
     await this.appUsersRepository.update(id, {
-      mpAccessToken: accessToken,
-      mpRefreshToken: refreshToken,
-      mpUserId: mpUserId,
-      mpConnected: true,
+      pagarmeRecipientId: null as any,
+      paymentConnected: false,
     });
   }
 
@@ -276,15 +277,6 @@ export class AppUsersService {
       user.password = await bcrypt.hash(newPassword, 10);
     }
     return this.appUsersRepository.save(user);
-  }
-
-  async disconnectMp(id: string): Promise<void> {
-    await this.appUsersRepository.update(id, {
-      mpAccessToken: null as any,
-      mpRefreshToken: null as any,
-      mpUserId: null as any,
-      mpConnected: false,
-    });
   }
 
   async createSuperadmin(input: { name: string; email: string; password: string; phone: string; permissions?: Record<string, boolean> }): Promise<AppUser> {

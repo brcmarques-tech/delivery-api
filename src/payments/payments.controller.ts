@@ -17,12 +17,6 @@ export class PaymentsController {
     return { ok: true };
   }
 
-  @Get('mp/connect-url')
-  getMpConnectUrl(@Query('userId') userId: string): { url: string } {
-    const url = this.paymentsService.getMpConnectUrl(userId);
-    return { url };
-  }
-
   @Get('order-result')
   async orderResult(
     @Query('status') status: string,
@@ -30,22 +24,5 @@ export class PaymentsController {
     @Res() res: express.Response,
   ): Promise<void> {
     res.redirect(`delivery-app://order-result?status=${status || 'unknown'}&order=${orderId || ''}`);
-  }
-
-  @Get('mp/callback')
-  async handleMpCallback(
-    @Query('code') code: string,
-    @Query('state') state: string,
-    @Res() res: express.Response,
-  ): Promise<void> {
-    const [userId, source] = state.split(':');
-    const userType = source === 'app' ? 'app' : 'vendor';
-    await this.paymentsService.handleMpOAuthCallback(code, userId, userType);
-    if (source === 'app') {
-      res.redirect('delivery-app://profile?mp=connected');
-    } else {
-      const vendorUrl = this.configService.get('VENDOR_APP_URL') || 'http://localhost:3001';
-      res.redirect(`${vendorUrl}/dashboard?mp=connected`);
-    }
   }
 }
