@@ -923,6 +923,10 @@ export class PaymentsService {
       await this.handleChargeRefunded(data);
     } else if (eventType === 'charge.chargedback') {
       await this.handleChargeChargedback(data);
+    } else if (eventType === 'charge.payment_failed') {
+      await this.handleOrderPaymentFailed(data);
+    } else if (eventType.startsWith('anticipation.')) {
+      this.logger.log(`Anticipation event: ${eventType} | id: ${data.id} | status: ${data.status}`);
     }
   }
 
