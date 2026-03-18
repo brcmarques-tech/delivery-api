@@ -19,7 +19,7 @@ class CartProductSummary {
   @Field()
   productName: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   productImageUrl: string | null;
 
   @Field(() => Int)
