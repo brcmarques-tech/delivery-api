@@ -1,5 +1,7 @@
-import { Resolver, Mutation, Args } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { Resolver, Mutation, Subscription, Args } from '@nestjs/graphql';
+import { UseGuards, Inject } from '@nestjs/common';
+import { PubSub } from 'graphql-subscriptions';
+import { ObjectType, Field } from '@nestjs/graphql';
 import { AuthService } from './auth.service';
 import { OtpService } from './otp.service';
 import { AppAuthResponse } from './dto/app-auth-response';
@@ -12,12 +14,23 @@ import { SendCodeInput } from './dto/send-code.input';
 import { VerifyCodeInput } from './dto/verify-code.input';
 import { GqlAuthGuard } from './guards/gql-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
+import { PUB_SUB } from '../pubsub/pubsub.module';
+
+@ObjectType()
+class SessionKickedPayload {
+  @Field()
+  userId: string;
+
+  @Field()
+  userType: string;
+}
 
 @Resolver()
 export class AuthResolver {
   constructor(
     private authService: AuthService,
     private otpService: OtpService,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   // ---- Pré-validação de cadastro (público) ----
@@ -80,8 +93,11 @@ export class AuthResolver {
   }
 
   @Mutation(() => AppAuthResponse)
-  async loginApp(@Args('input') input: LoginInput): Promise<AppAuthResponse> {
-    return this.authService.loginApp(input.email, input.password);
+  async loginApp(
+    @Args('input') input: LoginInput,
+    @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
+  ): Promise<AppAuthResponse> {
+    return this.authService.loginApp(input.email, input.password, forceLogin);
   }
 
   @Mutation(() => VendorAuthResponse)
@@ -90,8 +106,22 @@ export class AuthResolver {
   }
 
   @Mutation(() => VendorAuthResponse)
-  async loginVendor(@Args('input') input: LoginInput): Promise<VendorAuthResponse> {
-    return this.authService.loginVendor(input.email, input.password);
+  async loginVendor(
+    @Args('input') input: LoginInput,
+    @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
+  ): Promise<VendorAuthResponse> {
+    return this.authService.loginVendor(input.email, input.password, forceLogin);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  async logout(@CurrentUser() user: any): Promise<boolean> {
+    if (user.userType === 'vendor') {
+      await this.authService.logoutVendor(user.id);
+    } else {
+      await this.authService.logoutApp(user.id);
+    }
+    return true;
   }
 
   @Mutation(() => String)
@@ -119,8 +149,11 @@ export class AuthResolver {
   // ---- Google OAuth ----
 
   @Mutation(() => VendorAuthResponse)
-  async googleAuthVendor(@Args('idToken') idToken: string): Promise<VendorAuthResponse> {
-    return this.authService.googleAuthVendor(idToken);
+  async googleAuthVendor(
+    @Args('idToken') idToken: string,
+    @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
+  ): Promise<VendorAuthResponse> {
+    return this.authService.googleAuthVendor(idToken, forceLogin);
   }
 
   @Mutation(() => AppAuthResponse)
@@ -144,5 +177,19 @@ export class AuthResolver {
     @Args('cpf') cpf: string,
   ): Promise<VendorAuthResponse> {
     return this.authService.registerVendorWithGoogle(idToken, phone, cpf);
+  }
+
+  // ---- Subscriptions ----
+
+  @Subscription(() => SessionKickedPayload, {
+    filter: (payload, variables) =>
+      payload.sessionKicked.userId === variables.userId &&
+      payload.sessionKicked.userType === variables.userType,
+  })
+  sessionKicked(
+    @Args('userId') userId: string,
+    @Args('userType', { defaultValue: 'app' }) userType: string,
+  ) {
+    return this.pubSub.asyncIterableIterator('sessionKicked');
   }
 }

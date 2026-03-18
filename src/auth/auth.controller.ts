@@ -145,12 +145,10 @@ export class AuthController {
         return res.redirect(`${baseReturnUrl}?${params.toString()}`);
       }
 
-      // Login mode: try to authenticate
-      const result = await this.authService.googleAuthMobile(userInfo, userType || 'app');
+      // Login mode: return Google access token so the client can authenticate via GraphQL
       const params = new URLSearchParams({
         mode: 'login',
-        token: result.accessToken,
-        user: JSON.stringify(result.user),
+        accessToken: tokens.access_token,
       });
       return res.redirect(`${baseReturnUrl}?${params.toString()}`);
     } catch (err: any) {
