@@ -454,7 +454,7 @@ export class PaymentsService {
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
-    const customerId = await this.getOrCreatePagarmeCustomer(customer);
+    await this.getOrCreatePagarmeCustomer(customer);
 
     // Build split rules (skip if recipients not configured)
     const splitRules = (vendorRecipientId && platformRecipientId)
@@ -474,7 +474,6 @@ export class PaymentsService {
       .join(', ');
 
     // Customer data for PSP (mandatory)
-    const nameParts = customer.name.trim().split(' ');
     const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
     const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
     const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
@@ -494,11 +493,8 @@ export class PaymentsService {
       },
     };
 
-    if (customerId) {
-      customerObj.id = customerId;
-    }
-
-    // Create Pagar.me order with credit_card payment
+    // Create Pagar.me order without payment (open order) — payment will be
+    // collected via the hosted checkout page (payment link)
     const orderBody: any = {
       code: `order-${order.id}`,
       items: [
@@ -510,17 +506,6 @@ export class PaymentsService {
         },
       ],
       customer: customerObj,
-      payments: [
-        {
-          payment_method: 'credit_card',
-          credit_card: {
-            installments: 1,
-            statement_descriptor: 'BCMTECH',
-            capture: true,
-          },
-          ...(splitRules.length > 0 ? { split: splitRules } : {}),
-        },
-      ],
       metadata: {
         order_id: order.id,
         order_number: order.orderNumber,
@@ -535,7 +520,7 @@ export class PaymentsService {
         `Pagar.me order created for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id}`,
       );
 
-      // For credit card, we need a checkout page - use payment link
+      // Create hosted checkout page where customer can enter card details
       const checkoutUrl = await this.createPaymentLink(order, totalCents, splitRules);
 
       return { checkoutUrl, preferenceId: result.id };
