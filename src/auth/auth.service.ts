@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
+import { randomBytes } from 'crypto';
 import { AppUsersService } from '../users/app-users.service';
 import { VendorUsersService } from '../users/vendor-users.service';
 import { AppUser } from '../users/entities/app-user.entity';
@@ -24,6 +25,29 @@ export class AuthService {
     private vendorUserRepo: Repository<VendorUser>,
   ) {}
 
+  private generateSessionToken(): string {
+    return randomBytes(32).toString('hex');
+  }
+
+  private async signWithSession(userId: string, role: string, userType: 'app' | 'vendor'): Promise<string> {
+    const sessionToken = this.generateSessionToken();
+    if (userType === 'vendor') {
+      await this.vendorUserRepo.update(userId, { sessionToken });
+    } else {
+      await this.appUserRepo.update(userId, { sessionToken });
+    }
+    return this.jwtService.sign({ sub: userId, role, userType, sessionToken });
+  }
+
+  async checkActiveSession(email: string, userType: string): Promise<boolean> {
+    if (userType === 'vendor') {
+      const user = await this.vendorUsersService.findByEmail(email);
+      return !!user?.sessionToken;
+    }
+    const user = await this.appUsersService.findByEmail(email);
+    return !!user?.sessionToken;
+  }
+
   async validateRegistration(email: string, cpf: string, phone: string, userType: string) {
     if (userType === 'vendor') {
       return this.vendorUsersService.validateRegistration(email, cpf, phone);
@@ -41,11 +65,11 @@ export class AuthService {
 
   async registerApp(input: RegisterAppInput): Promise<AppAuthResponse> {
     const user = await this.appUsersService.create(input);
-    const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'app' });
+    const accessToken = await this.signWithSession(user.id, user.role, 'app');
     return { accessToken, user };
   }
 
-  async loginApp(email: string, password: string): Promise<AppAuthResponse> {
+  async loginApp(email: string, password: string, forceLogin: boolean = false): Promise<AppAuthResponse> {
     const user = await this.appUsersService.findByEmail(email);
     if (!user) {
       throw new UnauthorizedException('Email nao encontrado');
@@ -56,17 +80,21 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais invalidas');
     }
 
-    const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'app' });
+    if (user.sessionToken && !forceLogin) {
+      throw new BadRequestException('ACTIVE_SESSION');
+    }
+
+    const accessToken = await this.signWithSession(user.id, user.role, 'app');
     return { accessToken, user };
   }
 
   async registerVendor(input: RegisterVendorInput): Promise<VendorAuthResponse> {
     const user = await this.vendorUsersService.create(input);
-    const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'vendor' });
+    const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
   }
 
-  async loginVendor(email: string, password: string): Promise<VendorAuthResponse> {
+  async loginVendor(email: string, password: string, forceLogin: boolean = false): Promise<VendorAuthResponse> {
     const user = await this.vendorUsersService.findByEmail(email);
     if (!user) {
       throw new UnauthorizedException('Email nao encontrado');
@@ -77,8 +105,20 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais invalidas');
     }
 
-    const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'vendor' });
+    if (user.sessionToken && !forceLogin) {
+      throw new BadRequestException('ACTIVE_SESSION');
+    }
+
+    const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
+  }
+
+  async logoutApp(userId: string): Promise<void> {
+    await this.appUserRepo.update(userId, { sessionToken: null as any });
+  }
+
+  async logoutVendor(userId: string): Promise<void> {
+    await this.vendorUserRepo.update(userId, { sessionToken: null as any });
   }
 
   async requestPasswordResetApp(email: string): Promise<string> {
@@ -132,7 +172,7 @@ export class AuthService {
     user.emailVerified = !!email_verified;
     user.password = '';
     await this.appUserRepo.save(user);
-    const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'app' });
+    const accessToken = await this.signWithSession(user.id, user.role, 'app');
     return { accessToken, user };
   }
 
@@ -151,32 +191,28 @@ export class AuthService {
     user.emailVerified = !!email_verified;
     user.password = '';
     await this.vendorUserRepo.save(user);
-    const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'vendor' });
+    const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
   }
 
   async googleAuthVendor(idToken: string): Promise<VendorAuthResponse> {
     const { sub: googleId, email, name, email_verified } = await this.verifyGoogleToken(idToken);
 
-    // Check if vendor already linked by googleId
     let user = await this.vendorUserRepo.findOne({ where: { googleId } });
     if (user) {
-      const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'vendor' });
+      const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
       return { accessToken, user };
     }
 
-    // Check if vendor exists with same email
     user = await this.vendorUserRepo.findOne({ where: { email } });
     if (user) {
-      // Link Google to existing account
       user.googleId = googleId;
       if (email_verified) user.emailVerified = true;
       await this.vendorUserRepo.save(user);
-      const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'vendor' });
+      const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
       return { accessToken, user };
     }
 
-    // No account exists - return error, must register first with full data
     throw new BadRequestException('GOOGLE_NO_ACCOUNT');
   }
 
@@ -186,7 +222,7 @@ export class AuthService {
     if (userType === 'vendor') {
       let user = await this.vendorUserRepo.findOne({ where: { googleId } });
       if (user) {
-        const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'vendor' });
+        const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
         return { accessToken, user };
       }
       user = await this.vendorUserRepo.findOne({ where: { email } });
@@ -194,7 +230,7 @@ export class AuthService {
         user.googleId = googleId;
         if (email_verified) user.emailVerified = true;
         await this.vendorUserRepo.save(user);
-        const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'vendor' });
+        const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
         return { accessToken, user };
       }
       throw new BadRequestException('GOOGLE_NO_ACCOUNT');
@@ -202,7 +238,7 @@ export class AuthService {
 
     let user = await this.appUserRepo.findOne({ where: { googleId } });
     if (user) {
-      const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'app' });
+      const accessToken = await this.signWithSession(user.id, user.role, 'app');
       return { accessToken, user };
     }
     user = await this.appUserRepo.findOne({ where: { email } });
@@ -210,7 +246,7 @@ export class AuthService {
       user.googleId = googleId;
       if (email_verified) user.emailVerified = true;
       await this.appUserRepo.save(user);
-      const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'app' });
+      const accessToken = await this.signWithSession(user.id, user.role, 'app');
       return { accessToken, user };
     }
     throw new BadRequestException('GOOGLE_NO_ACCOUNT');
@@ -221,7 +257,7 @@ export class AuthService {
 
     let user = await this.appUserRepo.findOne({ where: { googleId } });
     if (user) {
-      const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'app' });
+      const accessToken = await this.signWithSession(user.id, user.role, 'app');
       return { accessToken, user };
     }
 
@@ -230,7 +266,7 @@ export class AuthService {
       user.googleId = googleId;
       if (email_verified) user.emailVerified = true;
       await this.appUserRepo.save(user);
-      const accessToken = this.jwtService.sign({ sub: user.id, role: user.role, userType: 'app' });
+      const accessToken = await this.signWithSession(user.id, user.role, 'app');
       return { accessToken, user };
     }
 

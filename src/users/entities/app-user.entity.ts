@@ -117,6 +117,10 @@ export class AppUser {
   @Column({ type: 'timestamp', nullable: true })
   acceptedTermsAt: Date | null;
 
+  // Session token for single-session enforcement
+  @Column({ nullable: true })
+  sessionToken: string;
+
   // Push notifications
   @Column({ nullable: true })
   expoPushToken: string;

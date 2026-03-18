@@ -80,8 +80,11 @@ export class AuthResolver {
   }
 
   @Mutation(() => AppAuthResponse)
-  async loginApp(@Args('input') input: LoginInput): Promise<AppAuthResponse> {
-    return this.authService.loginApp(input.email, input.password);
+  async loginApp(
+    @Args('input') input: LoginInput,
+    @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
+  ): Promise<AppAuthResponse> {
+    return this.authService.loginApp(input.email, input.password, forceLogin);
   }
 
   @Mutation(() => VendorAuthResponse)
@@ -90,8 +93,22 @@ export class AuthResolver {
   }
 
   @Mutation(() => VendorAuthResponse)
-  async loginVendor(@Args('input') input: LoginInput): Promise<VendorAuthResponse> {
-    return this.authService.loginVendor(input.email, input.password);
+  async loginVendor(
+    @Args('input') input: LoginInput,
+    @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
+  ): Promise<VendorAuthResponse> {
+    return this.authService.loginVendor(input.email, input.password, forceLogin);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  async logout(@CurrentUser() user: any): Promise<boolean> {
+    if (user.userType === 'vendor') {
+      await this.authService.logoutVendor(user.id);
+    } else {
+      await this.authService.logoutApp(user.id);
+    }
+    return true;
   }
 
   @Mutation(() => String)

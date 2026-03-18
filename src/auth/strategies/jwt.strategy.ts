@@ -18,17 +18,23 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: { sub: string; userType?: string }) {
+  async validate(payload: { sub: string; userType?: string; sessionToken?: string }) {
     const userType = payload.userType || 'app';
 
     if (userType === 'vendor') {
       const user = await this.vendorUsersService.findById(payload.sub);
       if (!user) throw new UnauthorizedException();
+      if (payload.sessionToken && user.sessionToken !== payload.sessionToken) {
+        throw new UnauthorizedException('SESSION_EXPIRED');
+      }
       return { ...user, userType: 'vendor' };
     }
 
     const user = await this.appUsersService.findById(payload.sub);
     if (!user) throw new UnauthorizedException();
+    if (payload.sessionToken && user.sessionToken !== payload.sessionToken) {
+      throw new UnauthorizedException('SESSION_EXPIRED');
+    }
     return { ...user, userType: 'app' };
   }
 }
