@@ -266,9 +266,9 @@ export class OrdersService {
         .catch(() => {});
     }
 
-    if ((paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') && input.cardId) {
-      // Direct charge with saved card — no redirect needed
-      const { pagarmeOrderId, status } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId);
+    if ((paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') && (input.cardId || input.cardToken)) {
+      // Direct charge with saved card or tokenized card — no redirect needed
+      const { pagarmeOrderId, status } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
       savedOrder.mpPreferenceId = pagarmeOrderId;
       if (status === 'paid') {
         savedOrder.status = OrderStatus.PENDING;

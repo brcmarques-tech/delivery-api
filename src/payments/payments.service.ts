@@ -371,7 +371,7 @@ export class PaymentsService {
 
   // ─── Direct Charge (saved card) ────────────────────────────────────
 
-  async createOrderDirectCharge(order: Order, customer: AppUser, cardId: string): Promise<{ pagarmeOrderId: string; status: string }> {
+  async createOrderDirectCharge(order: Order, customer: AppUser, cardId?: string, cardToken?: string): Promise<{ pagarmeOrderId: string; status: string }> {
     const store = order.store;
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
@@ -418,7 +418,7 @@ export class PaymentsService {
             installments: 1,
             statement_descriptor: 'BCMTECH',
             capture: true,
-            card_id: cardId,
+            ...(cardToken ? { card_token: cardToken } : { card_id: cardId }),
           },
           ...(splitRules.length > 0 ? { split: splitRules } : {}),
         },

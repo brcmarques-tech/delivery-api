@@ -53,4 +53,8 @@ export class CreateOrderInput {
   @Field({ nullable: true })
   @IsOptional()
   cardId?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  cardToken?: string;
 }
