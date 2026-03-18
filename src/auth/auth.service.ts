@@ -231,7 +231,7 @@ export class AuthService {
     return { accessToken, user };
   }
 
-  async googleAuthMobile(userInfo: { sub: string; email: string; name?: string; email_verified?: boolean }, userType: string, forceLogin: boolean = false) {
+  async googleAuthMobile(userInfo: { sub: string; email: string; name?: string; email_verified?: boolean }, userType: string) {
     const { sub: googleId, email, email_verified } = userInfo;
 
     if (userType === 'vendor') {
@@ -246,10 +246,8 @@ export class AuthService {
       }
       if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
 
-      if (user.sessionToken && !forceLogin) {
-        throw new BadRequestException('ACTIVE_SESSION');
-      }
-      if (user.sessionToken && forceLogin) {
+      // Google auth always overrides — notify old session if exists
+      if (user.sessionToken) {
         this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'vendor' } });
       }
 
@@ -268,10 +266,8 @@ export class AuthService {
     }
     if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
 
-    if (user.sessionToken && !forceLogin) {
-      throw new BadRequestException('ACTIVE_SESSION');
-    }
-    if (user.sessionToken && forceLogin) {
+    // Google auth always overrides — notify old session if exists
+    if (user.sessionToken) {
       this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'app' } });
     }
 
@@ -279,7 +275,7 @@ export class AuthService {
     return { accessToken, user };
   }
 
-  async googleAuthApp(idToken: string, forceLogin: boolean = false): Promise<AppAuthResponse> {
+  async googleAuthApp(idToken: string): Promise<AppAuthResponse> {
     const { sub: googleId, email, email_verified } = await this.verifyGoogleToken(idToken);
 
     let user = await this.appUserRepo.findOne({ where: { googleId } });
@@ -293,10 +289,8 @@ export class AuthService {
     }
     if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
 
-    if (user.sessionToken && !forceLogin) {
-      throw new BadRequestException('ACTIVE_SESSION');
-    }
-    if (user.sessionToken && forceLogin) {
+    // Google auth always overrides — notify old session if exists
+    if (user.sessionToken) {
       this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'app' } });
     }
 

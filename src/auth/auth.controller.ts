@@ -62,13 +62,12 @@ export class AuthController {
     @Query('mode') mode: string,
     @Query('userType') userType: string,
     @Query('returnUrl') returnUrl: string,
-    @Query('forceLogin') forceLogin: string,
     @Res() res: express.Response,
   ) {
     const clientId = this.configService.get('GOOGLE_CLIENT_ID');
     const appUrl = this.configService.get('APP_URL');
     const state = this.jwtService.sign(
-      { mode: mode || 'login', userType: userType || 'app', returnUrl: returnUrl || 'delivery-app://google-auth', forceLogin: forceLogin === 'true' },
+      { mode: mode || 'login', userType: userType || 'app', returnUrl: returnUrl || 'delivery-app://google-auth' },
       { expiresIn: '10m' },
     );
     const redirectUri = `${appUrl}/auth/google/mobile/callback`;
@@ -102,7 +101,7 @@ export class AuthController {
       return res.redirect(`delivery-app://google-auth?error=invalid_state`);
     }
 
-    const { mode, userType, returnUrl, forceLogin } = statePayload;
+    const { mode, userType, returnUrl } = statePayload;
     const baseReturnUrl = (returnUrl || 'delivery-app://google-auth').replace(/\?.*$/, '');
     const clientId = this.configService.get('GOOGLE_CLIENT_ID');
     const clientSecret = this.configService.get('GOOGLE_CLIENT_SECRET');
@@ -147,7 +146,7 @@ export class AuthController {
       }
 
       // Login mode: try to authenticate
-      const result = await this.authService.googleAuthMobile(userInfo, userType || 'app', !!forceLogin);
+      const result = await this.authService.googleAuthMobile(userInfo, userType || 'app');
       const params = new URLSearchParams({
         mode: 'login',
         token: result.accessToken,

@@ -157,11 +157,8 @@ export class AuthResolver {
   }
 
   @Mutation(() => AppAuthResponse)
-  async googleAuthApp(
-    @Args('idToken') idToken: string,
-    @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
-  ): Promise<AppAuthResponse> {
-    return this.authService.googleAuthApp(idToken, forceLogin);
+  async googleAuthApp(@Args('idToken') idToken: string): Promise<AppAuthResponse> {
+    return this.authService.googleAuthApp(idToken);
   }
 
   @Mutation(() => AppAuthResponse)
