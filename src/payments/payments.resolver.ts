@@ -1,8 +1,9 @@
 import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { UseGuards, BadRequestException } from '@nestjs/common';
 import { Payment } from './entities/payment.entity';
 import { PaymentsService } from './payments.service';
 import { SavedCard } from './dto/saved-card.type';
+import { RecipientBalance, AnticipationSimulation, AnticipationResult } from './dto/recipient-balance.type';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -92,5 +93,50 @@ export class PaymentsResolver {
     @CurrentUser() user: AppUser,
   ): Promise<boolean> {
     return this.paymentsService.deleteCard(user.id, cardId);
+  }
+
+  // ─── Recipient Balance & Anticipation ──────────────────────────────
+
+  @Query(() => RecipientBalance)
+  @UseGuards(GqlAuthGuard)
+  async myBalance(@CurrentUser() user: any): Promise<RecipientBalance> {
+    const recipientId = user.pagarmeRecipientId;
+    if (!recipientId) {
+      return { availableAmount: 0, waitingFundsAmount: 0, transferredAmount: 0 };
+    }
+    return this.paymentsService.getRecipientBalance(recipientId);
+  }
+
+  @Query(() => AnticipationSimulation)
+  @UseGuards(GqlAuthGuard)
+  async simulateAnticipation(@CurrentUser() user: any): Promise<AnticipationSimulation> {
+    const recipientId = user.pagarmeRecipientId;
+    if (!recipientId) {
+      return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0 };
+    }
+    return this.paymentsService.simulateAnticipation(recipientId);
+  }
+
+  @Mutation(() => AnticipationResult)
+  @UseGuards(GqlAuthGuard)
+  async requestAnticipation(@CurrentUser() user: any): Promise<AnticipationResult> {
+    const recipientId = user.pagarmeRecipientId;
+    if (!recipientId) {
+      throw new BadRequestException('Você precisa cadastrar seus dados bancários primeiro');
+    }
+    return this.paymentsService.requestAnticipation(recipientId);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  async toggleAutoAnticipation(
+    @Args('enabled') enabled: boolean,
+    @CurrentUser() user: any,
+  ): Promise<boolean> {
+    const recipientId = user.pagarmeRecipientId;
+    if (!recipientId) {
+      throw new BadRequestException('Você precisa cadastrar seus dados bancários primeiro');
+    }
+    return this.paymentsService.updateRecipientAnticipationSettings(recipientId, enabled);
   }
 }

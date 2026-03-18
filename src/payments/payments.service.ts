@@ -1049,6 +1049,115 @@ export class PaymentsService {
     this.logger.log(`Charge paid: ${data.id}`);
   }
 
+  // ─── Recipient Balance & Anticipation ─────────────────────────────────
+
+  async getRecipientBalance(recipientId: string): Promise<{ availableAmount: number; waitingFundsAmount: number; transferredAmount: number }> {
+    try {
+      const result = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
+      return {
+        availableAmount: (result.available_amount || 0) / 100,
+        waitingFundsAmount: (result.waiting_funds?.amount || 0) / 100,
+        transferredAmount: (result.transferred_amount || 0) / 100,
+      };
+    } catch (err: any) {
+      this.logger.warn(`Failed to get recipient balance: ${err.response?.data?.message || err.message}`);
+      return { availableAmount: 0, waitingFundsAmount: 0, transferredAmount: 0 };
+    }
+  }
+
+  async simulateAnticipation(recipientId: string): Promise<{ originalAmount: number; anticipatedAmount: number; fee: number; feePercentage: number }> {
+    try {
+      // Get waiting funds first
+      const balance = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
+      const waitingCents = balance.waiting_funds?.amount || 0;
+
+      if (waitingCents <= 0) {
+        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0 };
+      }
+
+      // Simulate anticipation
+      const result = await this.pagarmePost(`/recipients/${recipientId}/anticipations`, {
+        payment_date: new Date().toISOString().split('T')[0],
+        timeframe: 'start',
+        requested_amount: waitingCents,
+        type: 'full',
+        simulate: true,
+      });
+
+      const originalAmount = waitingCents / 100;
+      const anticipatedAmount = (result.amount || 0) / 100;
+      const fee = originalAmount - anticipatedAmount;
+      const feePercentage = originalAmount > 0 ? (fee / originalAmount) * 100 : 0;
+
+      return { originalAmount, anticipatedAmount, fee, feePercentage: Math.round(feePercentage * 100) / 100 };
+    } catch (err: any) {
+      this.logger.warn(`Failed to simulate anticipation: ${err.response?.data?.message || err.message}`);
+      // Fallback: estimate ~3.5% fee
+      try {
+        const balance = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
+        const waitingCents = balance.waiting_funds?.amount || 0;
+        const originalAmount = waitingCents / 100;
+        const estimatedFee = originalAmount * 0.035;
+        return {
+          originalAmount,
+          anticipatedAmount: originalAmount - estimatedFee,
+          fee: Math.round(estimatedFee * 100) / 100,
+          feePercentage: 3.5,
+        };
+      } catch {
+        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0 };
+      }
+    }
+  }
+
+  async requestAnticipation(recipientId: string): Promise<{ id: string; status: string; requestedAmount: number; approvedAmount: number; fee: number; createdAt: string }> {
+    const balance = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
+    const waitingCents = balance.waiting_funds?.amount || 0;
+
+    if (waitingCents <= 0) {
+      throw new BadRequestException('Não há valores pendentes para antecipar');
+    }
+
+    try {
+      const result = await this.pagarmePost(`/recipients/${recipientId}/anticipations`, {
+        payment_date: new Date().toISOString().split('T')[0],
+        timeframe: 'start',
+        requested_amount: waitingCents,
+        type: 'full',
+      });
+
+      return {
+        id: result.id,
+        status: result.status || 'pending',
+        requestedAmount: waitingCents / 100,
+        approvedAmount: (result.amount || 0) / 100,
+        fee: (waitingCents - (result.amount || 0)) / 100,
+        createdAt: result.created_at || new Date().toISOString(),
+      };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Anticipation request failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(errorData?.message || 'Erro ao solicitar antecipação');
+    }
+  }
+
+  async updateRecipientAnticipationSettings(recipientId: string, enabled: boolean): Promise<boolean> {
+    try {
+      await this.pagarmePut(`/recipients/${recipientId}`, {
+        automatic_anticipation_settings: {
+          enabled,
+          type: enabled ? 'full' : undefined,
+          volume_percentage: enabled ? 100 : undefined,
+          delay: enabled ? 0 : undefined,
+        },
+      });
+      return true;
+    } catch (err: any) {
+      this.logger.error(`Failed to update anticipation settings: ${err.response?.data?.message || err.message}`);
+      throw new BadRequestException('Erro ao atualizar configurações de antecipação');
+    }
+  }
+
   // ─── Queries ───────────────────────────────────────────────────────────
 
   async findByVendor(userId: string): Promise<Payment[]> {
