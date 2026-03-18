@@ -695,12 +695,13 @@ export class PaymentsService {
         options: {
           charge_processing_fee: false,
           charge_remainder_fee: true,
-          liable: true,
+          liable: false,
         },
       });
     }
 
     // Vendor split: gets the rest (total - commission - deliverer fee), pays processing fees
+    // Vendor is liable for chargebacks (e.g. customer disputes due to food quality)
     const vendorCents = totalCents - platformCents - delivererCents;
     if (vendorCents > 0) {
       splitRules.push({
@@ -710,7 +711,7 @@ export class PaymentsService {
         options: {
           charge_processing_fee: true,
           charge_remainder_fee: false,
-          liable: false,
+          liable: true,
         },
       });
     }
