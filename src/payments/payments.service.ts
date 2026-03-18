@@ -918,8 +918,11 @@ export class PaymentsService {
     } else if (eventType === 'order.canceled') {
       await this.handleOrderCanceled(data);
     } else if (eventType === 'charge.paid') {
-      // Also handle charge.paid for immediate processing
       await this.handleChargePaid(data);
+    } else if (eventType === 'charge.refunded') {
+      await this.handleChargeRefunded(data);
+    } else if (eventType === 'charge.chargedback') {
+      await this.handleChargeChargedback(data);
     }
   }
 
@@ -1033,6 +1036,129 @@ export class PaymentsService {
     // charge.paid can be used for immediate confirmation
     // The order.paid webhook will also fire, so this is a fallback
     this.logger.log(`Charge paid: ${data.id}`);
+  }
+
+  private async handleChargeRefunded(data: any): Promise<void> {
+    const metadata = data.metadata || data.order?.metadata || {};
+    const orderId = metadata.order_id || (data.code?.startsWith('order-') ? data.code.replace('order-', '') : null);
+
+    this.logger.log(`Charge refunded: ${data.id} | orderId: ${orderId}`);
+
+    if (!orderId) return;
+
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const order = await orderRepo.findOne({
+      where: { id: orderId },
+      relations: ['customer', 'store', 'store.owner'],
+    });
+
+    if (order && order.status !== OrderStatus.CANCELLED) {
+      order.status = OrderStatus.CANCELLED;
+      await orderRepo.save(order);
+      this.logger.log(`Pedido #${order.orderNumber} cancelado por estorno`);
+
+      if (order.customer?.id) {
+        this.notificationsService.sendToAppUser(
+          order.customer.id,
+          'Reembolso processado',
+          `O reembolso do pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) foi processado. O valor será devolvido ao seu meio de pagamento.`,
+          { type: 'REFUND_PROCESSED', orderId: order.id },
+        ).catch(() => {});
+      }
+      if (order.customer?.phone) {
+        this.whatsAppService.sendText(
+          order.customer.phone,
+          `💰 *Reembolso processado!*\n\nO valor de R$ ${Number(order.total).toFixed(2)} do pedido #${order.orderNumber} será devolvido ao seu meio de pagamento.`,
+        ).catch(() => {});
+      }
+    }
+  }
+
+  private async handleChargeChargedback(data: any): Promise<void> {
+    const metadata = data.metadata || data.order?.metadata || {};
+    const orderId = metadata.order_id || (data.code?.startsWith('order-') ? data.code.replace('order-', '') : null);
+
+    this.logger.warn(`Chargeback received: ${data.id} | orderId: ${orderId}`);
+
+    if (!orderId) return;
+
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const order = await orderRepo.findOne({
+      where: { id: orderId },
+      relations: ['customer', 'store', 'store.owner'],
+    });
+
+    if (order) {
+      order.status = OrderStatus.CANCELLED;
+      await orderRepo.save(order);
+      this.logger.warn(`Pedido #${order.orderNumber} cancelado por chargeback`);
+
+      // Notify vendor about chargeback
+      if (order.store?.owner?.id) {
+        this.notificationsService.sendToVendorUser(
+          order.store.owner.id,
+          'Chargeback recebido',
+          `O pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) recebeu uma contestação (chargeback). O valor será debitado da sua conta.`,
+          { type: 'CHARGEBACK', orderId: order.id },
+        ).catch(() => {});
+      }
+    }
+  }
+
+  // ─── Refund ───────────────────────────────────────────────────────────
+
+  async refundOrder(orderId: string): Promise<{ success: boolean; message: string }> {
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const order = await orderRepo.findOne({
+      where: { id: orderId },
+      relations: ['customer', 'store', 'store.owner'],
+    });
+
+    if (!order) throw new NotFoundException('Pedido não encontrado');
+    if (!order.mpPreferenceId) throw new BadRequestException('Este pedido não possui pagamento online para estornar');
+    if (order.status === OrderStatus.CANCELLED) throw new BadRequestException('Este pedido já está cancelado');
+
+    try {
+      // Get the order from Pagar.me to find the charge ID
+      const pagarmeOrder = await this.pagarmeGet(`/orders/${order.mpPreferenceId}`);
+      const charge = pagarmeOrder.charges?.[0];
+
+      if (!charge) throw new BadRequestException('Cobrança não encontrada no Pagar.me');
+      if (charge.status !== 'paid') throw new BadRequestException(`Cobrança com status "${charge.status}" não pode ser estornada`);
+
+      // Request refund
+      await this.pagarmePost(`/charges/${charge.id}/refund`, {
+        amount: charge.amount,
+      });
+
+      order.status = OrderStatus.CANCELLED;
+      await orderRepo.save(order);
+
+      this.logger.log(`Refund requested for order #${order.orderNumber} | charge: ${charge.id}`);
+
+      // Notify customer
+      if (order.customer?.id) {
+        this.notificationsService.sendToAppUser(
+          order.customer.id,
+          'Pedido estornado',
+          `O pedido #${order.orderNumber} foi cancelado e o reembolso de R$ ${Number(order.total).toFixed(2)} será processado.`,
+          { type: 'REFUND_REQUESTED', orderId: order.id },
+        ).catch(() => {});
+      }
+      if (order.customer?.phone) {
+        this.whatsAppService.sendText(
+          order.customer.phone,
+          `💰 *Pedido cancelado e reembolso solicitado!*\n\nO valor de R$ ${Number(order.total).toFixed(2)} do pedido #${order.orderNumber} será devolvido ao seu meio de pagamento em até 7 dias úteis.`,
+        ).catch(() => {});
+      }
+
+      return { success: true, message: `Estorno solicitado para o pedido #${order.orderNumber}` };
+    } catch (err: any) {
+      if (err instanceof BadRequestException || err instanceof NotFoundException) throw err;
+      const errorData = err.response?.data;
+      this.logger.error(`Refund failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(errorData?.message || 'Erro ao solicitar estorno');
+    }
   }
 
   // ─── Recipient Balance & Anticipation ─────────────────────────────────

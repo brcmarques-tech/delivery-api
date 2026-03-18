@@ -483,6 +483,16 @@ export class OrdersService {
       }
     }
 
+    // Refund if already paid online
+    if (order.mpPreferenceId && order.status === OrderStatus.PENDING) {
+      try {
+        await this.paymentsService.refundOrder(orderId);
+      } catch (err: any) {
+        // Log but don't block cancellation
+        console.error('Refund on cancel failed:', err?.message);
+      }
+    }
+
     order.status = OrderStatus.CANCELLED;
     const saved = await this.ordersRepository.save(order);
     this.pubSub.publish('orderUpdated', { orderUpdated: saved });
@@ -498,6 +508,28 @@ export class OrdersService {
     }
 
     return saved;
+  }
+
+  async refundOrder(orderId: string, vendorUserId: string): Promise<Order> {
+    const order = await this.findById(orderId);
+
+    if (order.store?.owner?.id !== vendorUserId) {
+      throw new BadRequestException('Voce nao pode estornar este pedido');
+    }
+
+    const result = await this.paymentsService.refundOrder(orderId);
+    if (!result.success) throw new BadRequestException(result.message);
+
+    // Restore stock
+    for (const item of order.items) {
+      if (item.product) {
+        await this.productsService.restoreStock(item.product.id, item.quantity);
+      }
+    }
+
+    const updated = await this.findById(orderId);
+    this.pubSub.publish('orderUpdated', { orderUpdated: updated });
+    return updated;
   }
 
   async updateStatus(id: string, status: OrderStatus, user?: AppUser): Promise<Order> {

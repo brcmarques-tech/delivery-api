@@ -83,6 +83,16 @@ export class OrdersResolver {
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
+  refundOrder(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.refundOrder(orderId, user.id);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
   updateOrderStatus(
     @Args('id') id: string,
     @Args('status', { type: () => OrderStatus }) status: OrderStatus,
