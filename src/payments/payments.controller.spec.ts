@@ -40,7 +40,7 @@ describe('PaymentsController', () => {
       const body = { type: 'order.paid', data: { id: 'or_123' } };
       paymentsService.handleWebhook.mockResolvedValue(undefined);
 
-      const result = await controller.handleWebhook(body);
+      const result = await controller.handleWebhook(body, '');
 
       expect(result).toEqual({ ok: true });
       expect(paymentsService.handleWebhook).toHaveBeenCalledWith(body);
@@ -49,7 +49,7 @@ describe('PaymentsController', () => {
     it('should propagate errors from service', async () => {
       paymentsService.handleWebhook.mockRejectedValue(new Error('bad webhook'));
       await expect(
-        controller.handleWebhook({ type: 'order.paid', data: { id: 'or_1' } }),
+        controller.handleWebhook({ type: 'order.paid', data: { id: 'or_1' } }, ''),
       ).rejects.toThrow('bad webhook');
     });
   });
