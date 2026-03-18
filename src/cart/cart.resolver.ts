@@ -20,7 +20,7 @@ class CartProductSummary {
   productName: string;
 
   @Field({ nullable: true })
-  productImageUrl: string;
+  productImageUrl: string | null;
 
   @Field(() => Int)
   totalPeople: number;
