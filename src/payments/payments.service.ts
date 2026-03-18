@@ -376,11 +376,15 @@ export class PaymentsService {
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
+    this.logger.log(`Split check: vendorRecipientId=${vendorRecipientId}, platformRecipientId=${platformRecipientId}, storeOwner=${store?.owner?.id}`);
+
     const customerId = await this.ensureCustomer(customer);
     const totalCents = Math.round(Number(order.total) * 100);
     const splitRules = (vendorRecipientId && platformRecipientId)
       ? await this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId)
       : [];
+
+    this.logger.log(`Split rules: ${JSON.stringify(splitRules)}`);
 
     const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
     const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
