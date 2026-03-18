@@ -307,10 +307,15 @@ export class AppUsersService {
     if (phone) user.phone = phone;
     if (avatarUrl) user.avatarUrl = avatarUrl;
     if (newPassword) {
-      if (!currentPassword) throw new BadRequestException('Senha atual e obrigatoria para alterar a senha');
-      const valid = await bcrypt.compare(currentPassword, user.password);
-      if (!valid) throw new BadRequestException('Senha atual incorreta');
-      user.password = await bcrypt.hash(newPassword, 10);
+      if (user.googleId && !user.password) {
+        // Google-only account: allow setting first password without current
+        user.password = await bcrypt.hash(newPassword, 10);
+      } else {
+        if (!currentPassword) throw new BadRequestException('Senha atual e obrigatoria para alterar a senha');
+        const valid = await bcrypt.compare(currentPassword, user.password);
+        if (!valid) throw new BadRequestException('Senha atual incorreta');
+        user.password = await bcrypt.hash(newPassword, 10);
+      }
     }
     return this.appUsersRepository.save(user);
   }
