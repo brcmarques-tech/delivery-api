@@ -72,6 +72,10 @@ export class AppUser {
 
   @Field({ nullable: true })
   @Column({ nullable: true })
+  identityPhotoBackUrl: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
   birthDate: string;
 
   @Field({ nullable: true })

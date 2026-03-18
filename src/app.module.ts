@@ -23,6 +23,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { PubSubModule } from './pubsub/pubsub.module';
 import { CouponsModule } from './coupons/coupons.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
+import { CartModule } from './cart/cart.module';
 
 @Module({
   imports: [
@@ -85,6 +86,7 @@ import { WhatsAppModule } from './whatsapp/whatsapp.module';
     NotificationsModule,
     CouponsModule,
     WhatsAppModule,
+    CartModule,
   ],
 })
 export class AppModule {}

@@ -1,6 +1,7 @@
 import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { AppUser } from './entities/app-user.entity';
+import { ApprovalLog } from './entities/approval-log.entity';
 import { AppUsersService } from './app-users.service';
 import { MailService } from '../mail/mail.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
@@ -144,14 +145,22 @@ export class AppUsersResolver {
     @Args('phone', { nullable: true }) phone?: string,
     @Args('currentPassword', { nullable: true }) currentPassword?: string,
     @Args('newPassword', { nullable: true }) newPassword?: string,
+    @Args('avatarUrl', { nullable: true }) avatarUrl?: string,
   ): Promise<AppUser> {
-    return this.appUsersService.updateProfile(user.id, name, phone, currentPassword, newPassword);
+    return this.appUsersService.updateProfile(user.id, name, phone, currentPassword, newPassword, avatarUrl);
   }
 
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard)
   async acceptAppTerms(@CurrentUser() user: AppUser): Promise<AppUser> {
     return this.appUsersService.acceptTerms(user.id);
+  }
+
+  @Query(() => [ApprovalLog])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  approvalLogs(): Promise<ApprovalLog[]> {
+    return this.appUsersService.getApprovalLogs();
   }
 
   @Mutation(() => Boolean)

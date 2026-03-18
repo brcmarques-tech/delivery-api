@@ -3,6 +3,7 @@ import { UseGuards } from '@nestjs/common';
 import { Address } from './entities/address.entity';
 import { AddressesService } from './addresses.service';
 import { CreateAddressInput } from './dto/create-address.input';
+import { UpdateAddressInput } from './dto/update-address.input';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { AppUser } from '../users/entities/app-user.entity';
@@ -24,6 +25,15 @@ export class AddressesResolver {
     @CurrentUser() user: AppUser,
   ): Promise<Address> {
     return this.addressesService.create(input, user);
+  }
+
+  @Mutation(() => Address)
+  @UseGuards(GqlAuthGuard)
+  updateAddress(
+    @Args('input') input: UpdateAddressInput,
+    @CurrentUser() user: AppUser,
+  ): Promise<Address> {
+    return this.addressesService.update(input, user.id);
   }
 
   @Mutation(() => Address)

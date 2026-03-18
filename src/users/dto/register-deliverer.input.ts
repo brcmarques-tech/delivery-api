@@ -11,6 +11,12 @@ export class RegisterDelivererInput {
   @Field({ nullable: true })
   identityPhotoUrl?: string;
 
+  @Field({ nullable: true })
+  identityPhotoBackUrl?: string;
+
+  @Field({ nullable: true })
+  profilePhotoUrl?: string;
+
   @Field()
   birthDate: string;
 

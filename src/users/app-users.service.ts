@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { AppUser } from './entities/app-user.entity';
+import { ApprovalLog } from './entities/approval-log.entity';
 import { RegisterAppInput } from '../auth/dto/register-app.input';
 import { RegisterDelivererInput } from './dto/register-deliverer.input';
 import { UserRole } from '../common/enums';
@@ -16,6 +17,8 @@ export class AppUsersService {
   constructor(
     @InjectRepository(AppUser)
     private appUsersRepository: Repository<AppUser>,
+    @InjectRepository(ApprovalLog)
+    private approvalLogRepository: Repository<ApprovalLog>,
     private mailService: MailService,
     private configService: ConfigService,
     private whatsAppService: WhatsAppService,
@@ -158,6 +161,19 @@ export class AppUsersService {
     user.rejectionReason = null;
     const saved = await this.appUsersRepository.save(user);
 
+    await this.approvalLogRepository.save({
+      userId: user.id,
+      userName: user.name,
+      userEmail: user.email,
+      userType: 'app',
+      action: 'APPROVED',
+      role: approvedRole,
+      reason: null,
+      profilePhotoUrl: user.profilePhotoUrl || null,
+      identityPhotoUrl: user.identityPhotoUrl || null,
+      identityPhotoBackUrl: user.identityPhotoBackUrl || null,
+    });
+
     this.mailService.sendApprovalEmail(user.email, user.name, approvedRole);
     if (user.phone) {
       this.whatsAppService.notifyUserApproved(user.phone, user.name, approvedRole).catch(() => {});
@@ -181,11 +197,28 @@ export class AppUsersService {
     user.pendingRole = null;
     const saved = await this.appUsersRepository.save(user);
 
+    await this.approvalLogRepository.save({
+      userId: user.id,
+      userName: user.name,
+      userEmail: user.email,
+      userType: 'app',
+      action: 'REJECTED',
+      role: rejectedRole,
+      reason,
+      profilePhotoUrl: user.profilePhotoUrl || null,
+      identityPhotoUrl: user.identityPhotoUrl || null,
+      identityPhotoBackUrl: user.identityPhotoBackUrl || null,
+    });
+
     this.mailService.sendRejectionEmail(user.email, user.name, rejectedRole, reason);
     if (user.phone) {
       this.whatsAppService.notifyUserRejected(user.phone, user.name, rejectedRole, reason).catch(() => {});
     }
     return saved;
+  }
+
+  async getApprovalLogs(): Promise<ApprovalLog[]> {
+    return this.approvalLogRepository.find({ order: { createdAt: 'DESC' } });
   }
 
   async updateUserRole(id: string, role: UserRole): Promise<AppUser> {
@@ -222,15 +255,13 @@ export class AppUsersService {
     const age = Math.floor((Date.now() - birth.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
     if (age < 18) throw new BadRequestException('Entregador deve ter pelo menos 18 anos');
 
-    if ((input.vehicleType === 'MOTO' || input.vehicleType === 'CARRO') && !input.cnhNumber) {
-      throw new BadRequestException('CNH obrigatoria para veiculos motorizados');
-    }
-
     user.birthDate = input.birthDate;
     user.cnhNumber = input.cnhNumber ?? '';
     user.vehicleType = input.vehicleType;
     user.vehiclePlate = input.vehiclePlate ?? '';
     user.identityPhotoUrl = input.identityPhotoUrl ?? '';
+    user.identityPhotoBackUrl = input.identityPhotoBackUrl ?? '';
+    user.profilePhotoUrl = input.profilePhotoUrl ?? '';
     user.pendingRole = 'DELIVERER';
     user.rejectedAt = null;
     user.rejectionReason = null;
@@ -269,11 +300,12 @@ export class AppUsersService {
     await this.appUsersRepository.update(id, { expoPushToken: token });
   }
 
-  async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string): Promise<AppUser> {
+  async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string, avatarUrl?: string): Promise<AppUser> {
     const user = await this.appUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     if (name) user.name = name;
     if (phone) user.phone = phone;
+    if (avatarUrl) user.avatarUrl = avatarUrl;
     if (newPassword) {
       if (!currentPassword) throw new BadRequestException('Senha atual e obrigatoria para alterar a senha');
       const valid = await bcrypt.compare(currentPassword, user.password);

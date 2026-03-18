@@ -57,6 +57,11 @@ export class PlatformConfigService {
     return parseFloat(value);
   }
 
+  async getMinimumOrderPlatform(): Promise<number> {
+    const value = await this.get('minimum_order_platform', '10');
+    return parseFloat(value);
+  }
+
   async getPlanConfig(plan: string): Promise<PlanConfig> {
     const defaults: Record<string, PlanConfig> = {
       FREE: {
