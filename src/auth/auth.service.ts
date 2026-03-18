@@ -206,81 +206,101 @@ export class AuthService {
     return { accessToken, user };
   }
 
-  async googleAuthVendor(idToken: string): Promise<VendorAuthResponse> {
+  async googleAuthVendor(idToken: string, forceLogin: boolean = false): Promise<VendorAuthResponse> {
     const { sub: googleId, email, name, email_verified } = await this.verifyGoogleToken(idToken);
 
     let user = await this.vendorUserRepo.findOne({ where: { googleId } });
-    if (user) {
-      const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
-      return { accessToken, user };
-    }
-
-    user = await this.vendorUserRepo.findOne({ where: { email } });
-    if (user) {
-      user.googleId = googleId;
-      if (email_verified) user.emailVerified = true;
-      await this.vendorUserRepo.save(user);
-      const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
-      return { accessToken, user };
-    }
-
-    throw new BadRequestException('GOOGLE_NO_ACCOUNT');
-  }
-
-  async googleAuthMobile(userInfo: { sub: string; email: string; name?: string; email_verified?: boolean }, userType: string) {
-    const { sub: googleId, email, email_verified } = userInfo;
-
-    if (userType === 'vendor') {
-      let user = await this.vendorUserRepo.findOne({ where: { googleId } });
-      if (user) {
-        const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
-        return { accessToken, user };
-      }
+    if (!user) {
       user = await this.vendorUserRepo.findOne({ where: { email } });
       if (user) {
         user.googleId = googleId;
         if (email_verified) user.emailVerified = true;
         await this.vendorUserRepo.save(user);
-        const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
-        return { accessToken, user };
       }
-      throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+    }
+    if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+
+    if (user.sessionToken && !forceLogin) {
+      throw new BadRequestException('ACTIVE_SESSION');
+    }
+    if (user.sessionToken && forceLogin) {
+      this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'vendor' } });
+    }
+
+    const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
+    return { accessToken, user };
+  }
+
+  async googleAuthMobile(userInfo: { sub: string; email: string; name?: string; email_verified?: boolean }, userType: string, forceLogin: boolean = false) {
+    const { sub: googleId, email, email_verified } = userInfo;
+
+    if (userType === 'vendor') {
+      let user = await this.vendorUserRepo.findOne({ where: { googleId } });
+      if (!user) {
+        user = await this.vendorUserRepo.findOne({ where: { email } });
+        if (user) {
+          user.googleId = googleId;
+          if (email_verified) user.emailVerified = true;
+          await this.vendorUserRepo.save(user);
+        }
+      }
+      if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+
+      if (user.sessionToken && !forceLogin) {
+        throw new BadRequestException('ACTIVE_SESSION');
+      }
+      if (user.sessionToken && forceLogin) {
+        this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'vendor' } });
+      }
+
+      const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
+      return { accessToken, user };
     }
 
     let user = await this.appUserRepo.findOne({ where: { googleId } });
-    if (user) {
-      const accessToken = await this.signWithSession(user.id, user.role, 'app');
-      return { accessToken, user };
+    if (!user) {
+      user = await this.appUserRepo.findOne({ where: { email } });
+      if (user) {
+        user.googleId = googleId;
+        if (email_verified) user.emailVerified = true;
+        await this.appUserRepo.save(user);
+      }
     }
-    user = await this.appUserRepo.findOne({ where: { email } });
-    if (user) {
-      user.googleId = googleId;
-      if (email_verified) user.emailVerified = true;
-      await this.appUserRepo.save(user);
-      const accessToken = await this.signWithSession(user.id, user.role, 'app');
-      return { accessToken, user };
+    if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+
+    if (user.sessionToken && !forceLogin) {
+      throw new BadRequestException('ACTIVE_SESSION');
     }
-    throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+    if (user.sessionToken && forceLogin) {
+      this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'app' } });
+    }
+
+    const accessToken = await this.signWithSession(user.id, user.role, 'app');
+    return { accessToken, user };
   }
 
-  async googleAuthApp(idToken: string): Promise<AppAuthResponse> {
+  async googleAuthApp(idToken: string, forceLogin: boolean = false): Promise<AppAuthResponse> {
     const { sub: googleId, email, email_verified } = await this.verifyGoogleToken(idToken);
 
     let user = await this.appUserRepo.findOne({ where: { googleId } });
-    if (user) {
-      const accessToken = await this.signWithSession(user.id, user.role, 'app');
-      return { accessToken, user };
+    if (!user) {
+      user = await this.appUserRepo.findOne({ where: { email } });
+      if (user) {
+        user.googleId = googleId;
+        if (email_verified) user.emailVerified = true;
+        await this.appUserRepo.save(user);
+      }
+    }
+    if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+
+    if (user.sessionToken && !forceLogin) {
+      throw new BadRequestException('ACTIVE_SESSION');
+    }
+    if (user.sessionToken && forceLogin) {
+      this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'app' } });
     }
 
-    user = await this.appUserRepo.findOne({ where: { email } });
-    if (user) {
-      user.googleId = googleId;
-      if (email_verified) user.emailVerified = true;
-      await this.appUserRepo.save(user);
-      const accessToken = await this.signWithSession(user.id, user.role, 'app');
-      return { accessToken, user };
-    }
-
-    throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+    const accessToken = await this.signWithSession(user.id, user.role, 'app');
+    return { accessToken, user };
   }
 }

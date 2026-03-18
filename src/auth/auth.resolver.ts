@@ -149,13 +149,19 @@ export class AuthResolver {
   // ---- Google OAuth ----
 
   @Mutation(() => VendorAuthResponse)
-  async googleAuthVendor(@Args('idToken') idToken: string): Promise<VendorAuthResponse> {
-    return this.authService.googleAuthVendor(idToken);
+  async googleAuthVendor(
+    @Args('idToken') idToken: string,
+    @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
+  ): Promise<VendorAuthResponse> {
+    return this.authService.googleAuthVendor(idToken, forceLogin);
   }
 
   @Mutation(() => AppAuthResponse)
-  async googleAuthApp(@Args('idToken') idToken: string): Promise<AppAuthResponse> {
-    return this.authService.googleAuthApp(idToken);
+  async googleAuthApp(
+    @Args('idToken') idToken: string,
+    @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
+  ): Promise<AppAuthResponse> {
+    return this.authService.googleAuthApp(idToken, forceLogin);
   }
 
   @Mutation(() => AppAuthResponse)
