@@ -31,6 +31,57 @@ class StatusCount {
 }
 
 @ObjectType()
+class DayStats {
+  @Field()
+  date: string;
+
+  @Field(() => Int)
+  count: number;
+
+  @Field(() => Float)
+  revenue: number;
+}
+
+@ObjectType()
+class TopStore {
+  @Field()
+  storeId: string;
+
+  @Field()
+  storeName: string;
+
+  @Field(() => Int)
+  orderCount: number;
+
+  @Field(() => Float)
+  revenue: number;
+}
+
+@ObjectType()
+class RecentOrder {
+  @Field()
+  id: string;
+
+  @Field()
+  orderNumber: string;
+
+  @Field()
+  status: string;
+
+  @Field(() => Float)
+  total: number;
+
+  @Field()
+  customerName: string;
+
+  @Field()
+  storeName: string;
+
+  @Field()
+  createdAt: Date;
+}
+
+@ObjectType()
 class DashboardStats {
   @Field(() => Int)
   totalUsers: number;
@@ -67,6 +118,21 @@ class DashboardStats {
 
   @Field(() => Int)
   onlineDeliverers: number;
+
+  @Field(() => [DayStats])
+  ordersByDay: DayStats[];
+
+  @Field(() => [TopStore])
+  topStores: TopStore[];
+
+  @Field(() => [RecentOrder])
+  recentOrders: RecentOrder[];
+
+  @Field(() => Float)
+  avgTicket: number;
+
+  @Field(() => Float)
+  cancellationRate: number;
 }
 
 @Resolver()
@@ -89,6 +155,7 @@ export class DashboardResolver {
       appUserCount, vendorUserCount, totalStores, totalOrders, totalRevenue, platformRevenue,
       appUsersByRole, ordersByStatus, appPendingCount, vendorPendingCount,
       totalDeliveries, activeDeliveries, completedDeliveries,
+      ordersByDay, topStoresRaw, recentOrdersRaw,
     ] = await Promise.all([
       this.appUsersService.totalCount(),
       this.vendorUsersService.totalCount(),
@@ -103,12 +170,19 @@ export class DashboardResolver {
       this.deliveriesService.totalCount(),
       this.deliveriesService.activeCount(),
       this.deliveriesService.completedCount(),
+      this.ordersService.ordersByDay(30),
+      this.ordersService.topStores(5),
+      this.ordersService.recentOrders(5),
     ]);
 
     const usersByRole = [
       ...appUsersByRole.map((r) => ({ role: r.role, count: Number(r.count) })),
       { role: 'VENDOR', count: Number(vendorUserCount) },
     ];
+
+    const mappedStatus = ordersByStatus.map((s) => ({ status: s.status, count: Number(s.count) }));
+    const deliveredCount = mappedStatus.find((s) => s.status === 'DELIVERED')?.count || 0;
+    const cancelledCount = mappedStatus.find((s) => s.status === 'CANCELLED')?.count || 0;
 
     return {
       totalUsers: appUserCount + vendorUserCount,
@@ -117,12 +191,25 @@ export class DashboardResolver {
       totalRevenue,
       platformRevenue,
       usersByRole,
-      ordersByStatus: ordersByStatus.map((s) => ({ status: s.status, count: Number(s.count) })),
+      ordersByStatus: mappedStatus,
       pendingApprovals: appPendingCount + vendorPendingCount,
       totalDeliveries,
       activeDeliveries,
       completedDeliveries,
       onlineDeliverers: this.delivererTracker.getOnlineCount(),
+      ordersByDay,
+      topStores: topStoresRaw,
+      recentOrders: recentOrdersRaw.map((o) => ({
+        id: o.id,
+        orderNumber: o.orderNumber,
+        status: o.status,
+        total: Number(o.total),
+        customerName: o.customer?.name || 'Desconhecido',
+        storeName: o.store?.name || 'Desconhecida',
+        createdAt: o.createdAt,
+      })),
+      avgTicket: deliveredCount > 0 ? totalRevenue / deliveredCount : 0,
+      cancellationRate: totalOrders > 0 ? (cancelledCount / totalOrders) * 100 : 0,
     };
   }
 }

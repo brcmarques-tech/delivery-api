@@ -126,6 +126,19 @@ export class OrdersService {
       items.push(orderItem);
     }
 
+    // Pedido mínimo: plataforma exige mínimo para entregadores do app (taxas Pagar.me + comissão)
+    const platformMinimum = await this.platformConfigService.getMinimumOrderPlatform();
+    const storeMinimumOrder = store.minimumOrder ? Number(store.minimumOrder) : 0;
+    const effectiveMinimum = !store.hasOwnDelivery
+      ? Math.max(platformMinimum, storeMinimumOrder)
+      : storeMinimumOrder;
+
+    if (effectiveMinimum > 0 && subtotal < effectiveMinimum) {
+      throw new BadRequestException(
+        `Pedido minimo ${!store.hasOwnDelivery ? 'para entrega pelo app' : 'desta loja'} e R$ ${effectiveMinimum.toFixed(2)}. Seu carrinho: R$ ${subtotal.toFixed(2)}.`,
+      );
+    }
+
     let deliveryFee = 0;
 
     if (!isPickup && input.deliveryLatitude && input.deliveryLongitude) {
@@ -386,6 +399,50 @@ export class OrdersService {
       .getRawMany();
   }
 
+  async ordersByDay(days: number = 30): Promise<{ date: string; count: number; revenue: number }[]> {
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+    const result = await this.ordersRepository
+      .createQueryBuilder('order')
+      .select("TO_CHAR(order.createdAt, 'YYYY-MM-DD')", 'date')
+      .addSelect('COUNT(*)', 'count')
+      .addSelect("COALESCE(SUM(CASE WHEN order.status = 'DELIVERED' THEN order.total ELSE 0 END), 0)", 'revenue')
+      .where('order.createdAt >= :since', { since })
+      .groupBy("TO_CHAR(order.createdAt, 'YYYY-MM-DD')")
+      .orderBy('date', 'ASC')
+      .getRawMany();
+    return result.map((r: any) => ({ date: r.date, count: Number(r.count), revenue: parseFloat(r.revenue) }));
+  }
+
+  async recentOrders(limit: number = 5): Promise<Order[]> {
+    return this.ordersRepository.find({
+      relations: ['customer', 'store'],
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
+  }
+
+  async topStores(limit: number = 5): Promise<{ storeId: string; storeName: string; orderCount: number; revenue: number }[]> {
+    return this.ordersRepository
+      .createQueryBuilder('order')
+      .innerJoin('order.store', 'store')
+      .select('store.id', 'storeId')
+      .addSelect('store.name', 'storeName')
+      .addSelect('COUNT(*)', 'orderCount')
+      .addSelect("COALESCE(SUM(CASE WHEN order.status = 'DELIVERED' THEN order.total ELSE 0 END), 0)", 'revenue')
+      .groupBy('store.id')
+      .addGroupBy('store.name')
+      .orderBy('revenue', 'DESC')
+      .limit(limit)
+      .getRawMany()
+      .then((rows) => rows.map((r: any) => ({
+        storeId: r.storeId,
+        storeName: r.storeName,
+        orderCount: Number(r.orderCount),
+        revenue: parseFloat(r.revenue),
+      })));
+  }
+
   async confirmReceipt(orderId: string, customerId: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id: orderId },
@@ -487,10 +544,10 @@ export class OrdersService {
 
     const statusMessages: Record<string, string> = {
       [OrderStatus.ACCEPTED]: 'Seu pedido foi aceito!',
-      [OrderStatus.PREPARING]: 'Seu pedido esta sendo preparado',
-      [OrderStatus.READY]: 'Seu pedido esta pronto!',
+      [OrderStatus.PREPARING]: 'Seu pedido está sendo preparado',
+      [OrderStatus.READY]: 'Seu pedido está pronto!',
       [OrderStatus.PICKED_UP]: 'Entregador saiu com seu pedido',
-      [OrderStatus.DELIVERING]: 'Seu pedido esta a caminho!',
+      [OrderStatus.DELIVERING]: 'Seu pedido está a caminho!',
       [OrderStatus.DELIVERED]: 'Seu pedido foi entregue!',
       [OrderStatus.CANCELLED]: 'Seu pedido foi cancelado',
     };

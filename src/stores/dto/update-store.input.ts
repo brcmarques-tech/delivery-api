@@ -85,4 +85,12 @@ export class UpdateStoreInput {
   @Field({ nullable: true })
   @IsOptional()
   bannerUrl?: string;
+
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  latitude?: number;
+
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  longitude?: number;
 }

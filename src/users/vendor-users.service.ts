@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { VendorUser } from './entities/vendor-user.entity';
+import { ApprovalLog } from './entities/approval-log.entity';
 import { RegisterVendorInput } from '../auth/dto/register-vendor.input';
 import { UserRole, VendorPlan } from '../common/enums';
 import { MailService } from '../mail/mail.service';
@@ -16,6 +17,8 @@ export class VendorUsersService {
   constructor(
     @InjectRepository(VendorUser)
     private vendorUsersRepository: Repository<VendorUser>,
+    @InjectRepository(ApprovalLog)
+    private approvalLogRepository: Repository<ApprovalLog>,
     private mailService: MailService,
     @Inject(forwardRef(() => VerificationService))
     private verificationService: VerificationService,
@@ -162,6 +165,19 @@ export class VendorUsersService {
     user.rejectionReason = null;
     const saved = await this.vendorUsersRepository.save(user);
 
+    await this.approvalLogRepository.save({
+      userId: user.id,
+      userName: user.name,
+      userEmail: user.email,
+      userType: 'vendor',
+      action: 'APPROVED',
+      role: approvedRole,
+      reason: null,
+      profilePhotoUrl: null,
+      identityPhotoUrl: null,
+      identityPhotoBackUrl: null,
+    });
+
     this.mailService.sendApprovalEmail(user.email, user.name, approvedRole);
     if (user.phone) {
       this.whatsAppService.notifyUserApproved(user.phone, user.name, approvedRole).catch(() => {});
@@ -183,6 +199,19 @@ export class VendorUsersService {
     user.rejectionReason = reason;
     user.pendingRole = null;
     const saved = await this.vendorUsersRepository.save(user);
+
+    await this.approvalLogRepository.save({
+      userId: user.id,
+      userName: user.name,
+      userEmail: user.email,
+      userType: 'vendor',
+      action: 'REJECTED',
+      role: rejectedRole,
+      reason,
+      profilePhotoUrl: null,
+      identityPhotoUrl: null,
+      identityPhotoBackUrl: null,
+    });
 
     this.mailService.sendRejectionEmail(user.email, user.name, rejectedRole, reason);
     if (user.phone) {

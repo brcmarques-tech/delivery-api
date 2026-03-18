@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppUser } from './entities/app-user.entity';
 import { VendorUser } from './entities/vendor-user.entity';
+import { ApprovalLog } from './entities/approval-log.entity';
 import { AppUsersService } from './app-users.service';
 import { VendorUsersService } from './vendor-users.service';
 import { AppUsersResolver } from './app-users.resolver';
@@ -11,7 +12,7 @@ import { StoresModule } from '../stores/stores.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([AppUser, VendorUser]),
+    TypeOrmModule.forFeature([AppUser, VendorUser, ApprovalLog]),
     PlatformConfigModule,
     forwardRef(() => StoresModule),
   ],

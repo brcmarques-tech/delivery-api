@@ -33,7 +33,11 @@ export class StoresService {
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
-  private async geocodeAddress(input: CreateStoreInput): Promise<{ latitude: number; longitude: number }> {
+  private isInBrazil(lat: number, lng: number): boolean {
+    return lat >= -34 && lat <= 6 && lng >= -74 && lng <= -34;
+  }
+
+  private async geocodeAddress(input: { street?: string; number?: string; neighborhood?: string; city?: string; state?: string }): Promise<{ latitude: number; longitude: number }> {
     const queries = [
       `${input.street}, ${input.number}, ${input.neighborhood}, ${input.city}, ${input.state}, Brazil`,
       `${input.street}, ${input.number}, ${input.city}, ${input.state}, Brazil`,
@@ -50,8 +54,13 @@ export class StoresService {
         });
         const data = await res.json();
         if (data.length > 0) {
-          this.logger.log(`Geocoded with query: "${query}"`);
-          return { latitude: parseFloat(data[0].lat), longitude: parseFloat(data[0].lon) };
+          const lat = parseFloat(data[0].lat);
+          const lng = parseFloat(data[0].lon);
+          if (this.isInBrazil(lat, lng)) {
+            this.logger.log(`Geocoded with query: "${query}" -> ${lat}, ${lng}`);
+            return { latitude: lat, longitude: lng };
+          }
+          this.logger.warn(`Geocoding fora do Brasil para: "${query}" -> ${lat}, ${lng}`);
         }
       } catch (err) {
         this.logger.warn(`Geocoding attempt failed for: ${query}`, err);
@@ -151,9 +160,34 @@ export class StoresService {
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
     const { id, ...updates } = input;
+
+    // Detecta se o endereço mudou
+    const addressFields = ['street', 'number', 'neighborhood', 'city', 'state', 'zipCode'] as const;
+    const addressChanged = addressFields.some(
+      (f) => updates[f] !== undefined && updates[f] !== (store as any)[f],
+    );
+
     Object.entries(updates).forEach(([key, value]) => {
       if (value !== undefined) (store as any)[key] = value;
     });
+
+    // Se coordenadas foram enviadas manualmente (do mapa), usar essas
+    // Senão, recalcular via geocoding se o endereço mudou
+    if (input.latitude && input.longitude) {
+      store.latitude = input.latitude;
+      store.longitude = input.longitude;
+      this.logger.log(`Coordenadas definidas manualmente para loja ${store.name}: ${input.latitude}, ${input.longitude}`);
+    } else if (addressChanged && store.street && store.city && store.state) {
+      try {
+        const coords = await this.geocodeAddress(store);
+        store.latitude = coords.latitude;
+        store.longitude = coords.longitude;
+        this.logger.log(`Coordenadas atualizadas para loja ${store.name}: ${coords.latitude}, ${coords.longitude}`);
+      } catch (err) {
+        this.logger.warn(`Nao foi possivel recalcular coordenadas para loja ${store.name}`);
+      }
+    }
+
     const saved = await this.storesRepository.save(store);
     this.pubSub.publish('storeUpdated', { storeUpdated: saved });
     return saved;

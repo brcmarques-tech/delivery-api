@@ -77,6 +77,21 @@ export class PlatformConfigResolver {
     return result;
   }
 
+  @Query(() => Float)
+  minimumOrderPlatform(): Promise<number> {
+    return this.configService.getMinimumOrderPlatform();
+  }
+
+  @Mutation(() => PlatformConfig)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async setMinimumOrderPlatform(@Args('price', { type: () => Float }) price: number, @CurrentUser() admin: any): Promise<PlatformConfig> {
+    const result = await this.configService.set('minimum_order_platform', String(price));
+    const adminEmail = admin.notificationEmail || admin.email;
+    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Pedido minimo da plataforma alterado', `Novo valor: R$ ${price}`).catch(() => {});
+    return result;
+  }
+
   @Query(() => [PlatformConfig])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
