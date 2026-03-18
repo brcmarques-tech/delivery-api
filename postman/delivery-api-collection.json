@@ -2,17 +2,17 @@
   "info": {
     "name": "Delivery API - Fluxo Completo",
     "_postman_id": "delivery-api-collection",
-    "description": "Collection completa da Delivery API.\n\n## Como usar:\n1. Importe o environment \"Delivery API - Local\"\n2. Execute as requests na ordem das pastas\n3. Os tokens e IDs são salvos automaticamente nas variáveis\n\n## Fluxo de Pagamento:\n1. Login (Auth) → tokens salvos\n2. Criar Loja + Produto (Setup)\n3. Criar Pedido (Orders)\n4. Simular Pagamento (Payments)\n5. Fluxo de Entrega (Deliveries)\n6. Confirmar Recebimento + Verificar Valores",
+    "description": "Collection completa da Delivery API (Pagar.me).\n\n## Como usar:\n1. Importe o environment \"Delivery API\"\n2. Execute as requests na ordem das pastas\n3. Os tokens e IDs sao salvos automaticamente nas variaveis\n\n## Fluxo de Pagamento:\n1. Login (Auth) → tokens salvos\n2. Consultar Loja + Produtos (Setup)\n3. Criar Pedido (PIX, Cartao, ON_DELIVERY)\n4. Fluxo Vendedor (Aceitar → Preparar → Pronto → Entregar)\n5. Consultas (Dashboard, Pedidos)\n\n## Dados atuais:\n- Loja: Loja Teste BCM (Pelotas)\n- Produtos: X-Burger (R$25.90), Coca-Cola (R$6.00)\n- Cliente: teste@bcmtech.com / teste123 (com CPF)\n- Vendedor: admin@bcmtech.com / admin123 (com Pagar.me)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [],
   "item": [
     {
       "name": "1. Auth",
-      "description": "Login de todos os usuários. Execute na ordem.",
+      "description": "Login de todos os usuarios. Execute na ordem. Tokens sao salvos automaticamente.",
       "item": [
         {
-          "name": "Login Cliente",
+          "name": "1.1 Login Cliente",
           "event": [
             {
               "listen": "test",
@@ -23,12 +23,12 @@
                   "if (res.data && res.data.loginApp) {",
                   "  pm.environment.set('customerToken', res.data.loginApp.accessToken);",
                   "  pm.environment.set('customerId', res.data.loginApp.user.id);",
-                  "  pm.test('Login cliente OK', () => {",
+                  "  pm.test('Login cliente OK - ' + res.data.loginApp.user.name, () => {",
                   "    pm.expect(res.data.loginApp.accessToken).to.be.a('string');",
-                  "    pm.expect(res.data.loginApp.user.name).to.not.be.empty;",
                   "  });",
                   "} else {",
-                  "  pm.test('Login cliente falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "  const msg = res.errors?.[0]?.message || 'erro desconhecido';",
+                  "  pm.test('Login cliente falhou: ' + msg, () => pm.expect.fail(msg));",
                   "}"
                 ]
               }
@@ -41,14 +41,14 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "mutation LoginApp($input: LoginInput!) {\n  loginApp(input: $input) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n      mpConnected\n    }\n  }\n}",
-                "variables": "{\"input\":{\"email\":\"{{customerEmail}}\",\"password\":\"{{customerPassword}}\"}}"
+                "query": "mutation LoginApp($input: LoginInput!, $forceLogin: Boolean) {\n  loginApp(input: $input, forceLogin: $forceLogin) {\n    accessToken\n    user {\n      id\n      name\n      email\n      cpf\n      phone\n      role\n      isDeliverer\n      paymentConnected\n      emailVerified\n      phoneVerified\n      acceptedTermsAt\n    }\n  }\n}",
+                "variables": "{\"input\":{\"email\":\"{{customerEmail}}\",\"password\":\"{{customerPassword}}\"},\"forceLogin\":true}"
               }
             }
           }
         },
         {
-          "name": "Login Vendedor",
+          "name": "1.2 Login Vendedor",
           "event": [
             {
               "listen": "test",
@@ -59,11 +59,12 @@
                   "if (res.data && res.data.loginVendor) {",
                   "  pm.environment.set('vendorToken', res.data.loginVendor.accessToken);",
                   "  pm.environment.set('vendorId', res.data.loginVendor.user.id);",
-                  "  pm.test('Login vendedor OK', () => {",
+                  "  pm.test('Login vendedor OK - ' + res.data.loginVendor.user.name, () => {",
                   "    pm.expect(res.data.loginVendor.accessToken).to.be.a('string');",
                   "  });",
                   "} else {",
-                  "  pm.test('Login vendedor falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "  const msg = res.errors?.[0]?.message || 'erro desconhecido';",
+                  "  pm.test('Login vendedor falhou: ' + msg, () => pm.expect.fail(msg));",
                   "}"
                 ]
               }
@@ -76,14 +77,14 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "mutation LoginVendor($input: LoginInput!) {\n  loginVendor(input: $input) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n      mpConnected\n    }\n  }\n}",
-                "variables": "{\"input\":{\"email\":\"{{vendorEmail}}\",\"password\":\"{{vendorPassword}}\"}}"
+                "query": "mutation LoginVendor($input: LoginInput!, $forceLogin: Boolean) {\n  loginVendor(input: $input, forceLogin: $forceLogin) {\n    accessToken\n    user {\n      id\n      name\n      email\n      phone\n      role\n      pagarmeRecipientId\n      paymentConnected\n      vendorPlan\n      emailVerified\n      phoneVerified\n    }\n  }\n}",
+                "variables": "{\"input\":{\"email\":\"{{vendorEmail}}\",\"password\":\"{{vendorPassword}}\"},\"forceLogin\":true}"
               }
             }
           }
         },
         {
-          "name": "Login Entregador",
+          "name": "1.3 Login Entregador",
           "event": [
             {
               "listen": "test",
@@ -98,7 +99,8 @@
                   "    pm.expect(res.data.loginApp.accessToken).to.be.a('string');",
                   "  });",
                   "} else {",
-                  "  pm.test('Login entregador falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "  const msg = res.errors?.[0]?.message || 'erro desconhecido';",
+                  "  pm.test('Login entregador falhou: ' + msg, () => pm.expect.fail(msg));",
                   "}"
                 ]
               }
@@ -111,14 +113,14 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "mutation LoginApp($input: LoginInput!) {\n  loginApp(input: $input) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n      mpConnected\n    }\n  }\n}",
-                "variables": "{\"input\":{\"email\":\"{{delivererEmail}}\",\"password\":\"{{delivererPassword}}\"}}"
+                "query": "mutation LoginApp($input: LoginInput!, $forceLogin: Boolean) {\n  loginApp(input: $input, forceLogin: $forceLogin) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n      isDeliverer\n      paymentConnected\n    }\n  }\n}",
+                "variables": "{\"input\":{\"email\":\"{{delivererEmail}}\",\"password\":\"{{delivererPassword}}\"},\"forceLogin\":true}"
               }
             }
           }
         },
         {
-          "name": "Login Superadmin",
+          "name": "1.4 Login Superadmin",
           "event": [
             {
               "listen": "test",
@@ -129,10 +131,11 @@
                   "if (res.data && res.data.loginApp) {",
                   "  pm.environment.set('superadminToken', res.data.loginApp.accessToken);",
                   "  pm.test('Login superadmin OK', () => {",
-                  "    pm.expect(res.data.loginApp.accessToken).to.be.a('string');",
+                  "    pm.expect(res.data.loginApp.user.role).to.eql('SUPERADMIN');",
                   "  });",
                   "} else {",
-                  "  pm.test('Login superadmin falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "  const msg = res.errors?.[0]?.message || 'erro desconhecido';",
+                  "  pm.test('Login superadmin falhou: ' + msg, () => pm.expect.fail(msg));",
                   "}"
                 ]
               }
@@ -145,14 +148,20 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "mutation LoginApp($input: LoginInput!) {\n  loginApp(input: $input) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n    }\n  }\n}",
-                "variables": "{\"input\":{\"email\":\"{{superadminEmail}}\",\"password\":\"{{superadminPassword}}\"}}"
+                "query": "mutation LoginApp($input: LoginInput!, $forceLogin: Boolean) {\n  loginApp(input: $input, forceLogin: $forceLogin) {\n    accessToken\n    user {\n      id\n      name\n      email\n      role\n    }\n  }\n}",
+                "variables": "{\"input\":{\"email\":\"{{superadminEmail}}\",\"password\":\"{{superadminPassword}}\"},\"forceLogin\":true}"
               }
             }
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "2. Perfil & Loja",
+      "description": "Consultar perfis e dados da loja.",
+      "item": [
         {
-          "name": "Me App (Cliente)",
+          "name": "2.1 Me App (cliente)",
           "request": {
             "method": "POST",
             "header": [
@@ -163,13 +172,13 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "query {\n  meApp {\n    id\n    name\n    email\n    role\n    phone\n    mpConnected\n    emailVerified\n  }\n}"
+                "query": "{\n  meApp {\n    id\n    name\n    email\n    cpf\n    phone\n    role\n    isDeliverer\n    paymentConnected\n    emailVerified\n    phoneVerified\n    acceptedTermsAt\n  }\n}"
               }
             }
           }
         },
         {
-          "name": "Me Vendor",
+          "name": "2.2 Me Vendor",
           "request": {
             "method": "POST",
             "header": [
@@ -180,19 +189,13 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "query {\n  meVendor {\n    id\n    name\n    email\n    role\n    mpConnected\n    vendorPlan\n    stores {\n      id\n      name\n      isOpen\n    }\n  }\n}"
+                "query": "{\n  meVendor {\n    id\n    name\n    email\n    phone\n    role\n    pagarmeRecipientId\n    paymentConnected\n    vendorPlan\n    stores {\n      id\n      name\n      isOpen\n    }\n  }\n}"
               }
             }
           }
-        }
-      ]
-    },
-    {
-      "name": "2. Setup (Loja + Produto)",
-      "description": "Cria loja e produto para teste. Pule se já existirem.",
-      "item": [
+        },
         {
-          "name": "Listar Lojas",
+          "name": "2.3 Listar Lojas (publico)",
           "event": [
             {
               "listen": "test",
@@ -200,461 +203,11 @@
                 "type": "text/javascript",
                 "exec": [
                   "const res = pm.response.json();",
-                  "if (res.data && res.data.stores && res.data.stores.length > 0) {",
+                  "if (res.data?.stores?.length > 0) {",
                   "  const store = res.data.stores[0];",
                   "  pm.environment.set('storeId', store.id);",
-                  "  pm.test('Loja encontrada: ' + store.name, () => {",
-                  "    pm.expect(store.id).to.be.a('string');",
-                  "  });",
-                  "} else {",
-                  "  pm.test('Nenhuma loja - execute Criar Loja', () => {",
-                  "    pm.expect(res.data.stores).to.be.an('array');",
-                  "  });",
+                  "  pm.test('Lojas encontradas: ' + res.data.stores.length, () => pm.expect(store.id).to.not.be.empty);",
                   "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "query {\n  stores {\n    id\n    name\n    isOpen\n    deliveryFee\n    hasOwnDelivery\n    ownerMpConnected\n    products {\n      id\n      name\n      price\n      stock\n      isAvailable\n    }\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Criar Loja",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.createStore) {",
-                  "  pm.environment.set('storeId', res.data.createStore.id);",
-                  "  pm.test('Loja criada: ' + res.data.createStore.name, () => {",
-                  "    pm.expect(res.data.createStore.id).to.be.a('string');",
-                  "  });",
-                  "} else {",
-                  "  pm.test('Criar loja falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "mutation {\n  createStore(input: {\n    name: \"Loja Postman Test\"\n    description: \"Loja criada via Postman\"\n    phone: \"53999001122\"\n    street: \"Rua Postman\"\n    number: \"100\"\n    neighborhood: \"Centro\"\n    city: \"Pelotas\"\n    state: \"RS\"\n    zipCode: \"96010-000\"\n    latitude: -31.7654\n    longitude: -52.3456\n    deliveryFee: 5.00\n  }) {\n    id\n    name\n    deliveryFee\n    isOpen\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Criar Produto",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.createProduct) {",
-                  "  pm.environment.set('productId', res.data.createProduct.id);",
-                  "  pm.test('Produto criado: ' + res.data.createProduct.name, () => {",
-                  "    pm.expect(res.data.createProduct.id).to.be.a('string');",
-                  "  });",
-                  "} else {",
-                  "  pm.test('Criar produto falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "mutation {\n  createProduct(input: {\n    storeId: \"{{storeId}}\"\n    name: \"X-Burger Postman\"\n    description: \"Hamburguer para teste\"\n    price: 25.00\n    stock: 100\n  }) {\n    id\n    name\n    price\n    stock\n    isAvailable\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Detalhes da Loja",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.store) {",
-                  "  const products = res.data.store.products || [];",
-                  "  if (products.length > 0) {",
-                  "    pm.environment.set('productId', products[0].id);",
-                  "  }",
-                  "  pm.test('Loja: ' + res.data.store.name + ' | Produtos: ' + products.length, () => {",
-                  "    pm.expect(res.data.store.id).to.be.a('string');",
-                  "  });",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "query {\n  store(id: \"{{storeId}}\") {\n    id\n    name\n    deliveryFee\n    hasOwnDelivery\n    isOpen\n    ownerMpConnected\n    products {\n      id\n      name\n      price\n      stock\n      isAvailable\n    }\n    categories {\n      id\n      name\n    }\n    owner {\n      id\n      name\n      mpConnected\n    }\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "MP Connect URL (Vendedor)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "pm.test('MP Connect URL gerada', () => {",
-                  "  pm.expect(res.data.mpConnectUrl).to.include('mercadopago');",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "query {\n  mpConnectUrl\n}"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "3. Pedidos",
-      "description": "Criar e gerenciar pedidos.",
-      "item": [
-        {
-          "name": "Criar Pedido (MERCADO_PAGO)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.createOrder) {",
-                  "  const order = res.data.createOrder;",
-                  "  pm.environment.set('orderId', order.id);",
-                  "  pm.environment.set('orderNumber', order.orderNumber);",
-                  "  if (order.checkoutUrl) pm.environment.set('checkoutUrl', order.checkoutUrl);",
-                  "",
-                  "  pm.test('Pedido criado: #' + order.orderNumber, () => {",
-                  "    pm.expect(order.id).to.be.a('string');",
-                  "    pm.expect(order.status).to.equal('AWAITING_PAYMENT');",
-                  "  });",
-                  "",
-                  "  // Log valores",
-                  "  console.log('--- VALORES DO PEDIDO ---');",
-                  "  console.log('Subtotal: R$' + order.subtotal);",
-                  "  console.log('Taxa entrega: R$' + order.deliveryFee);",
-                  "  console.log('Total: R$' + order.total);",
-                  "  console.log('Comissao: ' + order.commissionPercent + '% = R$' + order.commissionAmount);",
-                  "  if (order.checkoutUrl) console.log('Checkout: ' + order.checkoutUrl);",
-                  "} else {",
-                  "  pm.test('Criar pedido falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    checkoutUrl\n    mpPreferenceId\n    commissionPercent\n    commissionAmount\n    deliveryAddress\n    store {\n      id\n      name\n    }\n    items {\n      id\n      quantity\n      unitPrice\n      totalPrice\n      product {\n        name\n      }\n    }\n    createdAt\n  }\n}",
-                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId}}\",\"quantity\":2}],\"paymentMethod\":\"MERCADO_PAGO\",\"deliveryAddress\":\"Rua Postman Test, 123 - Centro\",\"deliveryLatitude\":-31.7654,\"deliveryLongitude\":-52.3456}}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Criar Pedido (PIX)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.createOrder) {",
-                  "  const order = res.data.createOrder;",
-                  "  pm.environment.set('orderId', order.id);",
-                  "  pm.environment.set('orderNumber', order.orderNumber);",
-                  "  if (order.checkoutUrl) pm.environment.set('checkoutUrl', order.checkoutUrl);",
-                  "",
-                  "  pm.test('Pedido PIX criado: #' + order.orderNumber, () => {",
-                  "    pm.expect(order.id).to.be.a('string');",
-                  "    pm.expect(order.paymentMethod).to.equal('PIX');",
-                  "  });",
-                  "  if (order.checkoutUrl) console.log('PIX Checkout: ' + order.checkoutUrl);",
-                  "} else {",
-                  "  pm.test('Criar pedido PIX falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    checkoutUrl\n    commissionPercent\n    commissionAmount\n    createdAt\n  }\n}",
-                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId}}\",\"quantity\":1}],\"paymentMethod\":\"PIX\",\"deliveryAddress\":\"Rua PIX Test, 456\",\"deliveryLatitude\":-31.7654,\"deliveryLongitude\":-52.3456}}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Criar Pedido (ON_DELIVERY)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.createOrder) {",
-                  "  const order = res.data.createOrder;",
-                  "  pm.environment.set('orderId', order.id);",
-                  "  pm.environment.set('orderNumber', order.orderNumber);",
-                  "  pm.test('Pedido ON_DELIVERY criado: #' + order.orderNumber, () => {",
-                  "    pm.expect(order.status).to.equal('PENDING');",
-                  "  });",
-                  "} else {",
-                  "  pm.test('Criar pedido falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    commissionPercent\n    commissionAmount\n    createdAt\n  }\n}",
-                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId}}\",\"quantity\":1}],\"paymentMethod\":\"ON_DELIVERY\",\"deliveryAddress\":\"Rua Entrega Test, 789\",\"deliveryLatitude\":-31.7654,\"deliveryLongitude\":-52.3456}}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Consultar Pedido",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.order) {",
-                  "  const o = res.data.order;",
-                  "  pm.test('Pedido #' + o.orderNumber + ' | Status: ' + o.status, () => {",
-                  "    pm.expect(o.id).to.equal(pm.environment.get('orderId'));",
-                  "  });",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "query {\n  order(id: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    checkoutUrl\n    commissionPercent\n    commissionAmount\n    customerConfirmedAt\n    deliveryAddress\n    store {\n      id\n      name\n      hasOwnDelivery\n    }\n    items {\n      id\n      quantity\n      unitPrice\n      totalPrice\n      product {\n        name\n      }\n    }\n    delivery {\n      id\n      payoutStatus\n      payoutAmount\n      vendorPayoutStatus\n      vendorPayoutAmount\n      deliveredAt\n    }\n    createdAt\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Meus Pedidos (Cliente)",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "query {\n  myOrders {\n    id\n    orderNumber\n    status\n    total\n    paymentMethod\n    createdAt\n    store {\n      name\n    }\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Pedidos da Loja (Vendedor)",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "query {\n  storeOrders(storeId: \"{{storeId}}\") {\n    id\n    orderNumber\n    status\n    total\n    paymentMethod\n    customer {\n      name\n    }\n    createdAt\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Cancelar Pedido (Cliente)",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "mutation {\n  cancelOrder(orderId: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n  }\n}"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "4. Pagamentos",
-      "description": "Webhook, simulação de pagamento e verificações.",
-      "item": [
-        {
-          "name": "Simular Pagamento (AWAITING → PENDING)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.updateOrderStatus) {",
-                  "  pm.test('Pagamento simulado | Status: ' + res.data.updateOrderStatus.status, () => {",
-                  "    pm.expect(res.data.updateOrderStatus.status).to.equal('PENDING');",
-                  "  });",
-                  "} else {",
-                  "  pm.test('Simular pagamento falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
-                  "}"
-                ]
-              }
-            },
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Este request simula a aprovacao do pagamento que normalmente viria do webhook MP",
-                  "console.log('Simulando aprovacao de pagamento para pedido: ' + pm.environment.get('orderId'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "mutation {\n  updateOrderStatus(id: \"{{orderId}}\", status: PENDING) {\n    id\n    orderNumber\n    status\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "Webhook MP (POST)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('Webhook respondeu OK', () => {",
-                  "  pm.expect(pm.response.json().ok).to.be.true;",
-                  "});"
                 ]
               }
             }
@@ -662,41 +215,37 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "url": { "raw": "{{baseUrl}}/payments/webhook", "host": ["{{baseUrl}}"], "path": ["payments", "webhook"] },
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
             "body": {
-              "mode": "raw",
-              "raw": "{\n  \"type\": \"payment\",\n  \"action\": \"payment.created\",\n  \"data\": {\n    \"id\": 99999\n  }\n}"
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  stores {\n    id\n    name\n    isOpen\n    hasOwnDelivery\n    deliveryFee\n    minimumOrder\n    freeDelivery\n    freeDeliveryAbove\n    estimatedDeliveryMinutes\n    owner {\n      id\n      name\n      email\n      pagarmeRecipientId\n      paymentConnected\n    }\n  }\n}"
+              }
             }
           }
         },
         {
-          "name": "MP Connect URL (REST)",
+          "name": "2.4 Minhas Lojas (vendor)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('URL retornada', () => {",
-                  "  pm.expect(pm.response.json().url).to.include('mercadopago');",
-                  "});"
+                  "const res = pm.response.json();",
+                  "if (res.data?.myStores?.length > 0) {",
+                  "  const store = res.data.myStores[0];",
+                  "  pm.environment.set('storeId', store.id);",
+                  "  if (store.products?.length > 0) {",
+                  "    pm.environment.set('productId1', store.products[0].id);",
+                  "    if (store.products.length > 1) pm.environment.set('productId2', store.products[1].id);",
+                  "  }",
+                  "  pm.test('Loja: ' + store.name + ' (' + (store.products?.length || 0) + ' produtos)', () => pm.expect(store.id).to.not.be.empty);",
+                  "}"
                 ]
               }
             }
           ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/payments/mp/connect-url?userId={{vendorId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["payments", "mp", "connect-url"],
-              "query": [{ "key": "userId", "value": "{{vendorId}}" }]
-            }
-          }
-        },
-        {
-          "name": "Desconectar Mercado Pago",
           "request": {
             "method": "POST",
             "header": [
@@ -707,7 +256,7 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "mutation {\n  disconnectMercadoPago\n}"
+                "query": "{\n  myStores {\n    id\n    name\n    isOpen\n    hasOwnDelivery\n    deliveryFee\n    products {\n      id\n      name\n      price\n      stock\n      isAvailable\n    }\n  }\n}"
               }
             }
           }
@@ -715,11 +264,11 @@
       ]
     },
     {
-      "name": "5. Fluxo de Entrega",
-      "description": "Vendedor aceita → prepara → pronto → Entregador aceita → coleta → entrega.",
+      "name": "3. Pagamento Setup",
+      "description": "Configurar vendedor para receber pagamentos via Pagar.me.",
       "item": [
         {
-          "name": "5.1 Vendedor Aceita",
+          "name": "3.1 Registrar Recipient (vendor)",
           "event": [
             {
               "listen": "test",
@@ -727,9 +276,291 @@
                 "type": "text/javascript",
                 "exec": [
                   "const res = pm.response.json();",
-                  "pm.test('Pedido aceito', () => {",
-                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('ACCEPTED');",
-                  "});"
+                  "pm.test('Recipient registrado', () => pm.expect(res.data?.registerRecipient).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation RegisterRecipient($recipientData: String!) {\n  registerRecipient(recipientData: $recipientData)\n}",
+                "variables": "{\"recipientData\":\"{\\\"code\\\":\\\"vendor-test\\\",\\\"name\\\":\\\"Admin BCM\\\",\\\"email\\\":\\\"admin@bcmtech.com\\\",\\\"document\\\":\\\"11144477735\\\",\\\"type\\\":\\\"individual\\\",\\\"birthdate\\\":\\\"1990-01-15\\\",\\\"monthlyIncome\\\":500000,\\\"professionalOccupation\\\":\\\"Empresario\\\",\\\"phone\\\":{\\\"ddd\\\":\\\"53\\\",\\\"number\\\":\\\"999999999\\\"},\\\"address\\\":{\\\"street\\\":\\\"Rua Teste\\\",\\\"streetNumber\\\":\\\"100\\\",\\\"neighborhood\\\":\\\"Centro\\\",\\\"city\\\":\\\"Pelotas\\\",\\\"state\\\":\\\"RS\\\",\\\"zipCode\\\":\\\"96015000\\\"},\\\"bankAccount\\\":{\\\"holderName\\\":\\\"Admin BCM\\\",\\\"bank\\\":\\\"001\\\",\\\"branchNumber\\\":\\\"0001\\\",\\\"branchCheckDigit\\\":\\\"0\\\",\\\"accountNumber\\\":\\\"12345\\\",\\\"accountCheckDigit\\\":\\\"6\\\",\\\"type\\\":\\\"checking\\\"}}\"}"
+              }
+            }
+          }
+        },
+        {
+          "name": "3.2 Verificar Payment Status (vendor)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "const v = res.data?.meVendor;",
+                  "if (v) {",
+                  "  pm.test('Payment connected: ' + v.paymentConnected, () => pm.expect(v.paymentConnected).to.be.true);",
+                  "  pm.test('Recipient ID: ' + v.pagarmeRecipientId, () => pm.expect(v.pagarmeRecipientId).to.not.be.null);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  meVendor {\n    id\n    name\n    pagarmeRecipientId\n    paymentConnected\n    vendorPlan\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Pedidos - Criar",
+      "description": "Criar pedidos com diferentes metodos de pagamento. Requer login do cliente (pasta 1).",
+      "item": [
+        {
+          "name": "4.1 Pedido ON_DELIVERY (retirada)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data?.createOrder) {",
+                  "  const o = res.data.createOrder;",
+                  "  pm.environment.set('orderId', o.id);",
+                  "  pm.environment.set('orderNumber', o.orderNumber);",
+                  "  pm.test('Pedido ' + o.orderNumber + ' criado', () => pm.expect(o.status).to.eql('PENDING'));",
+                  "  pm.test('Total: R$' + o.total.toFixed(2), () => pm.expect(o.total).to.be.above(0));",
+                  "  pm.test('Pickup = true', () => pm.expect(o.isPickup).to.be.true);",
+                  "  pm.test('Delivery fee = 0', () => pm.expect(o.deliveryFee).to.eql(0));",
+                  "} else {",
+                  "  pm.test('Erro: ' + (res.errors?.[0]?.message || 'desconhecido'), () => pm.expect.fail());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    total\n    subtotal\n    deliveryFee\n    commissionPercent\n    commissionAmount\n    paymentMethod\n    isPickup\n  }\n}",
+                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId1}}\",\"quantity\":2}],\"paymentMethod\":\"ON_DELIVERY\",\"isPickup\":true}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "4.2 Pedido ON_DELIVERY (entrega)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data?.createOrder) {",
+                  "  const o = res.data.createOrder;",
+                  "  pm.environment.set('orderId', o.id);",
+                  "  pm.environment.set('orderNumber', o.orderNumber);",
+                  "  pm.test('Pedido entrega ' + o.orderNumber, () => pm.expect(o.status).to.eql('PENDING'));",
+                  "  pm.test('Delivery fee > 0: R$' + o.deliveryFee.toFixed(2), () => pm.expect(o.deliveryFee).to.be.above(0));",
+                  "  pm.test('Endereco: ' + o.deliveryAddress, () => pm.expect(o.deliveryAddress).to.not.be.empty);",
+                  "} else {",
+                  "  pm.test('Erro: ' + (res.errors?.[0]?.message || 'desconhecido'), () => pm.expect.fail());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    total\n    subtotal\n    deliveryFee\n    commissionPercent\n    commissionAmount\n    paymentMethod\n    isPickup\n    deliveryAddress\n  }\n}",
+                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId1}}\",\"quantity\":2},{\"productId\":\"{{productId2}}\",\"quantity\":1}],\"paymentMethod\":\"ON_DELIVERY\",\"deliveryAddress\":\"Rua Andrade Neves, 200 - Centro, Pelotas - RS\",\"deliveryLatitude\":-31.77,\"deliveryLongitude\":-52.34}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "4.3 Pedido PIX",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data?.createOrder) {",
+                  "  const o = res.data.createOrder;",
+                  "  pm.environment.set('orderId', o.id);",
+                  "  pm.environment.set('orderNumber', o.orderNumber);",
+                  "  if (o.checkoutUrl) pm.environment.set('checkoutUrl', o.checkoutUrl);",
+                  "  pm.test('PIX ' + o.orderNumber + ' - AWAITING_PAYMENT', () => pm.expect(o.status).to.eql('AWAITING_PAYMENT'));",
+                  "  pm.test('QR Code gerado', () => pm.expect(o.pixQrCode || o.checkoutUrl).to.not.be.empty);",
+                  "  pm.test('Pagar.me order: ' + o.mpPreferenceId, () => pm.expect(o.mpPreferenceId).to.not.be.empty);",
+                  "} else {",
+                  "  pm.test('Erro: ' + (res.errors?.[0]?.message || 'desconhecido'), () => pm.expect.fail());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    total\n    subtotal\n    deliveryFee\n    commissionPercent\n    commissionAmount\n    paymentMethod\n    checkoutUrl\n    pixQrCode\n    pixQrCodeBase64\n    mpPreferenceId\n  }\n}",
+                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId1}}\",\"quantity\":1},{\"productId\":\"{{productId2}}\",\"quantity\":1}],\"paymentMethod\":\"PIX\",\"deliveryAddress\":\"Rua Andrade Neves, 200 - Centro, Pelotas - RS\",\"deliveryLatitude\":-31.77,\"deliveryLongitude\":-52.34}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "4.4 Tokenizar Cartao (Pagar.me)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.id) {",
+                  "  pm.environment.set('cardToken', res.id);",
+                  "  pm.test('Card token gerado: ' + res.id, () => pm.expect(res.id).to.be.a('string'));",
+                  "} else {",
+                  "  pm.test('Tokenizacao falhou: ' + JSON.stringify(res), () => pm.expect.fail());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "https://api.pagar.me/core/v5/tokens?appId=pk_test_aMzdnWyuDCykrpN2", "host": ["https://api.pagar.me/core/v5/tokens?appId=pk_test_aMzdnWyuDCykrpN2"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"type\":\"card\",\"card\":{\"number\":\"4000000000000010\",\"holder_name\":\"TESTE BCMTECH\",\"exp_month\":12,\"exp_year\":2030,\"cvv\":\"123\"}}"
+            }
+          }
+        },
+        {
+          "name": "4.5 Pedido Cartao de Credito (com Token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data?.createOrder) {",
+                  "  const o = res.data.createOrder;",
+                  "  pm.environment.set('orderId', o.id);",
+                  "  pm.environment.set('orderNumber', o.orderNumber);",
+                  "  pm.test('Cartao ' + o.orderNumber + ' - status: ' + o.status, () => {",
+                  "    pm.expect(['PENDING', 'AWAITING_PAYMENT']).to.include(o.status);",
+                  "  });",
+                  "  pm.test('Pagar.me order ID salvo', () => pm.expect(o.mpPreferenceId).to.be.a('string'));",
+                  "} else {",
+                  "  pm.test('Erro: ' + (res.errors?.[0]?.message || 'desconhecido'), () => pm.expect.fail());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    total\n    subtotal\n    deliveryFee\n    commissionPercent\n    commissionAmount\n    paymentMethod\n    checkoutUrl\n    mpPreferenceId\n  }\n}",
+                "variables": "{\"input\":{\"storeId\":\"{{storeId}}\",\"items\":[{\"productId\":\"{{productId1}}\",\"quantity\":1},{\"productId\":\"{{productId2}}\",\"quantity\":2}],\"paymentMethod\":\"CREDIT_CARD\",\"cardToken\":\"{{cardToken}}\",\"deliveryAddress\":\"Rua Andrade Neves, 200 - Centro, Pelotas - RS\",\"deliveryLatitude\":-31.77,\"deliveryLongitude\":-52.34}}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Fluxo Vendedor",
+      "description": "Gerenciar pedidos como vendedor. Requer login do vendedor (pasta 1) e um pedido criado (pasta 4).",
+      "item": [
+        {
+          "name": "5.1 Listar Pedidos da Loja",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  storeOrders(storeId: \"{{storeId}}\") {\n    id\n    orderNumber\n    status\n    total\n    subtotal\n    deliveryFee\n    commissionAmount\n    paymentMethod\n    deliveryAddress\n    isPickup\n    customer {\n      name\n      email\n      phone\n    }\n    items {\n      quantity\n      product {\n        name\n        price\n      }\n    }\n    createdAt\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.2 Aceitar → ACCEPTED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data?.updateOrderStatus) {",
+                  "  pm.test('Status: ACCEPTED', () => pm.expect(res.data.updateOrderStatus.status).to.eql('ACCEPTED'));",
+                  "} else {",
+                  "  pm.test('Erro: ' + (res.errors?.[0]?.message || 'desconhecido'), () => pm.expect.fail());",
+                  "}"
                 ]
               }
             }
@@ -750,7 +581,7 @@
           }
         },
         {
-          "name": "5.2 Vendedor Prepara",
+          "name": "5.3 Preparando → PREPARING",
           "event": [
             {
               "listen": "test",
@@ -758,9 +589,9 @@
                 "type": "text/javascript",
                 "exec": [
                   "const res = pm.response.json();",
-                  "pm.test('Pedido em preparo', () => {",
-                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('PREPARING');",
-                  "});"
+                  "if (res.data?.updateOrderStatus) {",
+                  "  pm.test('Status: PREPARING', () => pm.expect(res.data.updateOrderStatus.status).to.eql('PREPARING'));",
+                  "}"
                 ]
               }
             }
@@ -781,7 +612,7 @@
           }
         },
         {
-          "name": "5.3 Vendedor Pronto",
+          "name": "5.4 Pronto → READY",
           "event": [
             {
               "listen": "test",
@@ -789,9 +620,9 @@
                 "type": "text/javascript",
                 "exec": [
                   "const res = pm.response.json();",
-                  "pm.test('Pedido pronto', () => {",
-                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('READY');",
-                  "});"
+                  "if (res.data?.updateOrderStatus) {",
+                  "  pm.test('Status: READY', () => pm.expect(res.data.updateOrderStatus.status).to.eql('READY'));",
+                  "}"
                 ]
               }
             }
@@ -812,24 +643,7 @@
           }
         },
         {
-          "name": "5.4 Entregas Disponíveis",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "query {\n  availableDeliveries {\n    id\n    orderNumber\n    status\n    total\n    deliveryFee\n    deliveryAddress\n    store {\n      name\n      street\n      number\n    }\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "5.5 Entregador Aceita",
+          "name": "5.5 Entregue → DELIVERED",
           "event": [
             {
               "listen": "test",
@@ -837,13 +651,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "const res = pm.response.json();",
-                  "if (res.data && res.data.acceptDelivery) {",
-                  "  pm.environment.set('deliveryId', res.data.acceptDelivery.id);",
-                  "  pm.test('Entrega aceita: ' + res.data.acceptDelivery.id.substring(0, 8), () => {",
-                  "    pm.expect(res.data.acceptDelivery.id).to.be.a('string');",
-                  "  });",
-                  "} else {",
-                  "  pm.test('Aceitar entrega falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "if (res.data?.updateOrderStatus) {",
+                  "  pm.test('Status: DELIVERED', () => pm.expect(res.data.updateOrderStatus.status).to.eql('DELIVERED'));",
                   "}"
                 ]
               }
@@ -853,19 +662,19 @@
             "method": "POST",
             "header": [
               { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
             ],
             "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "mutation {\n  acceptDelivery(orderId: \"{{orderId}}\") {\n    id\n    order {\n      id\n      orderNumber\n      status\n    }\n  }\n}"
+                "query": "mutation {\n  updateOrderStatus(id: \"{{orderId}}\", status: DELIVERED) {\n    id\n    orderNumber\n    status\n  }\n}"
               }
             }
           }
         },
         {
-          "name": "5.6 Entregador Coleta",
+          "name": "5.6 Cancelar Pedido (cliente)",
           "event": [
             {
               "listen": "test",
@@ -873,88 +682,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "const res = pm.response.json();",
-                  "pm.test('Coleta confirmada', () => {",
-                  "  pm.expect(res.data.confirmPickup.pickedUpAt).to.not.be.null;",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "mutation {\n  confirmPickup(deliveryId: \"{{deliveryId}}\") {\n    id\n    pickedUpAt\n  }\n}"
-              }
-            }
-          }
-        },
-        {
-          "name": "5.7 Entregador Entrega",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.confirmDelivery) {",
-                  "  const d = res.data.confirmDelivery;",
-                  "  pm.test('Entrega confirmada', () => {",
-                  "    pm.expect(d.deliveredAt).to.not.be.null;",
-                  "  });",
-                  "",
-                  "  console.log('--- PAYOUT STATUS ---');",
-                  "  console.log('Vendedor: ' + d.vendorPayoutStatus + ' = R$' + d.vendorPayoutAmount);",
-                  "  console.log('Entregador: ' + d.payoutStatus + ' = R$' + d.payoutAmount);",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "mutation {\n  confirmDelivery(deliveryId: \"{{deliveryId}}\") {\n    id\n    deliveredAt\n    payoutStatus\n    payoutAmount\n    vendorPayoutStatus\n    vendorPayoutAmount\n  }\n}"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "6. Confirmação + Valores",
-      "description": "Cliente confirma recebimento e verificamos a separação de valores.",
-      "item": [
-        {
-          "name": "6.1 Cliente Confirma Recebimento",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.confirmReceipt) {",
-                  "  const o = res.data.confirmReceipt;",
-                  "  pm.test('Recebimento confirmado | Status: ' + o.status, () => {",
-                  "    pm.expect(o.customerConfirmedAt).to.not.be.null;",
-                  "  });",
-                  "} else {",
-                  "  pm.test('Confirmar recebimento falhou', () => pm.expect.fail(JSON.stringify(res.errors)));",
+                  "if (res.data?.cancelOrder) {",
+                  "  pm.test('Pedido cancelado', () => pm.expect(res.data.cancelOrder.status).to.eql('CANCELLED'));",
                   "}"
                 ]
               }
@@ -970,64 +699,48 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "mutation {\n  confirmReceipt(orderId: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n    customerConfirmedAt\n    delivery {\n      payoutStatus\n      payoutAmount\n      vendorPayoutStatus\n      vendorPayoutAmount\n    }\n  }\n}"
+                "query": "mutation {\n  cancelOrder(orderId: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n  }\n}"
               }
             }
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "6. Webhook Pagar.me",
+      "description": "Simular webhook de pagamento confirmado (para pedidos PIX/Cartao em AWAITING_PAYMENT).",
+      "item": [
         {
-          "name": "6.2 Verificar Separação de Valores",
+          "name": "6.1 Simular Pagamento Aprovado",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "const res = pm.response.json();",
-                  "if (res.data && res.data.order) {",
-                  "  const o = res.data.order;",
-                  "  const d = o.delivery;",
-                  "",
-                  "  const subtotal = parseFloat(o.subtotal);",
-                  "  const deliveryFee = parseFloat(o.deliveryFee);",
-                  "  const total = parseFloat(o.total);",
-                  "  const commission = parseFloat(o.commissionAmount);",
-                  "  const vendorAmount = d ? parseFloat(d.vendorPayoutAmount || 0) : 0;",
-                  "  const delivererAmount = d ? parseFloat(d.payoutAmount || 0) : 0;",
-                  "",
-                  "  const totalDistribuido = vendorAmount + delivererAmount + commission;",
-                  "",
-                  "  console.log('══════════════════════════════════');",
-                  "  console.log('  SEPARACAO DE VALORES');",
-                  "  console.log('══════════════════════════════════');",
-                  "  console.log('Subtotal:     R$ ' + subtotal.toFixed(2));",
-                  "  console.log('Entrega:      R$ ' + deliveryFee.toFixed(2));",
-                  "  console.log('TOTAL:        R$ ' + total.toFixed(2));",
-                  "  console.log('──────────────────────────────────');",
-                  "  console.log('Vendedor:     R$ ' + vendorAmount.toFixed(2) + ' (' + (d ? d.vendorPayoutStatus : 'n/a') + ')');",
-                  "  console.log('Entregador:   R$ ' + delivererAmount.toFixed(2) + ' (' + (d ? d.payoutStatus : 'n/a') + ')');",
-                  "  console.log('Plataforma:   R$ ' + commission.toFixed(2) + ' (' + o.commissionPercent + '%)');",
-                  "  console.log('──────────────────────────────────');",
-                  "  console.log('Distribuido:  R$ ' + totalDistribuido.toFixed(2));",
-                  "  console.log('Cobrado:      R$ ' + total.toFixed(2));",
-                  "",
-                  "  pm.test('Valores batem: R$' + totalDistribuido.toFixed(2) + ' = R$' + total.toFixed(2), () => {",
-                  "    pm.expect(Math.abs(totalDistribuido - total)).to.be.below(0.01);",
-                  "  });",
-                  "",
-                  "  if (d) {",
-                  "    pm.test('Vendedor split_auto: R$' + vendorAmount.toFixed(2), () => {",
-                  "      pm.expect(d.vendorPayoutStatus).to.equal('split_auto');",
-                  "    });",
-                  "    pm.test('Entregador pending: R$' + delivererAmount.toFixed(2), () => {",
-                  "      pm.expect(['pending_confirmation', 'completed']).to.include(d.payoutStatus);",
-                  "    });",
-                  "  }",
-                  "}"
+                  "pm.test('Webhook recebido (200)', () => pm.expect(pm.response.code).to.eql(200));"
                 ]
               }
             }
           ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/payments/webhook", "host": ["{{baseUrl}}/payments/webhook"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"order.paid\",\n  \"data\": {\n    \"id\": \"{{orderId}}\",\n    \"code\": \"order-{{orderId}}\",\n    \"status\": \"paid\",\n    \"metadata\": {\n      \"order_id\": \"{{orderId}}\",\n      \"order_number\": \"{{orderNumber}}\"\n    }\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Consultas Admin",
+      "description": "Consultas do superadmin e dashboard.",
+      "item": [
+        {
+          "name": "7.1 Meus Pedidos (cliente)",
           "request": {
             "method": "POST",
             "header": [
@@ -1038,36 +751,13 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "query {\n  order(id: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    commissionPercent\n    commissionAmount\n    customerConfirmedAt\n    store {\n      name\n      hasOwnDelivery\n    }\n    delivery {\n      id\n      payoutStatus\n      payoutAmount\n      payoutMpId\n      vendorPayoutStatus\n      vendorPayoutAmount\n      vendorPayoutMpId\n      deliveredAt\n      deliverer {\n        name\n      }\n    }\n  }\n}"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "7. Admin",
-      "description": "Consultas de superadmin e dashboard.",
-      "item": [
-        {
-          "name": "Todos os Pedidos",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
-            ],
-            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
-            "body": {
-              "mode": "graphql",
-              "graphql": {
-                "query": "query {\n  allOrders {\n    id\n    orderNumber\n    status\n    total\n    paymentMethod\n    commissionAmount\n    customer {\n      name\n    }\n    store {\n      name\n    }\n    createdAt\n  }\n}"
+                "query": "{\n  myOrders {\n    id\n    orderNumber\n    status\n    total\n    subtotal\n    deliveryFee\n    commissionAmount\n    paymentMethod\n    checkoutUrl\n    deliveryAddress\n    isPickup\n    store {\n      name\n    }\n    items {\n      quantity\n      product {\n        name\n        price\n      }\n    }\n    createdAt\n  }\n}"
               }
             }
           }
         },
         {
-          "name": "Todas as Entregas",
+          "name": "7.2 Dashboard Stats (superadmin)",
           "request": {
             "method": "POST",
             "header": [
@@ -1078,13 +768,13 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "query {\n  allDeliveries {\n    id\n    payoutStatus\n    payoutAmount\n    vendorPayoutStatus\n    vendorPayoutAmount\n    deliveredAt\n    deliverer {\n      name\n    }\n    order {\n      orderNumber\n      total\n      paymentMethod\n    }\n  }\n}"
+                "query": "{\n  dashboardStats {\n    totalUsers\n    totalStores\n    totalOrders\n    totalRevenue\n    platformRevenue\n  }\n}"
               }
             }
           }
         },
         {
-          "name": "Todas as Lojas (Admin)",
+          "name": "7.3 Todos Pedidos (superadmin)",
           "request": {
             "method": "POST",
             "header": [
@@ -1095,13 +785,13 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "query {\n  allStores {\n    id\n    name\n    isOpen\n    isActive\n    ownerMpConnected\n    owner {\n      name\n      email\n      mpConnected\n    }\n  }\n}"
+                "query": "{\n  allOrders {\n    id\n    orderNumber\n    status\n    total\n    subtotal\n    deliveryFee\n    commissionPercent\n    commissionAmount\n    paymentMethod\n    customer {\n      name\n      email\n    }\n    store {\n      name\n    }\n    createdAt\n  }\n}"
               }
             }
           }
         },
         {
-          "name": "Entregadores Online",
+          "name": "7.4 Todos Usuarios (superadmin)",
           "request": {
             "method": "POST",
             "header": [
@@ -1112,7 +802,24 @@
             "body": {
               "mode": "graphql",
               "graphql": {
-                "query": "query {\n  onlineDeliverersCount\n}"
+                "query": "{\n  appUsers {\n    id\n    name\n    email\n    role\n    isDeliverer\n    paymentConnected\n    createdAt\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "7.5 Todas Lojas (superadmin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+            ],
+            "url": { "raw": "{{graphqlUrl}}", "host": ["{{graphqlUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  allStores {\n    id\n    name\n    isOpen\n    isActive\n    owner {\n      name\n      email\n      paymentConnected\n      pagarmeRecipientId\n    }\n  }\n}"
               }
             }
           }
