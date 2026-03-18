@@ -1,7 +1,8 @@
-import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
+import { PubSub } from 'graphql-subscriptions';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { AppUsersService } from '../users/app-users.service';
@@ -12,6 +13,7 @@ import { RegisterAppInput } from './dto/register-app.input';
 import { RegisterVendorInput } from './dto/register-vendor.input';
 import { AppAuthResponse } from './dto/app-auth-response';
 import { VendorAuthResponse } from './dto/vendor-auth-response';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @Injectable()
 export class AuthService {
@@ -23,6 +25,7 @@ export class AuthService {
     private appUserRepo: Repository<AppUser>,
     @InjectRepository(VendorUser)
     private vendorUserRepo: Repository<VendorUser>,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   private generateSessionToken(): string {
@@ -84,6 +87,10 @@ export class AuthService {
       throw new BadRequestException('ACTIVE_SESSION');
     }
 
+    if (user.sessionToken && forceLogin) {
+      this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'app' } });
+    }
+
     const accessToken = await this.signWithSession(user.id, user.role, 'app');
     return { accessToken, user };
   }
@@ -107,6 +114,10 @@ export class AuthService {
 
     if (user.sessionToken && !forceLogin) {
       throw new BadRequestException('ACTIVE_SESSION');
+    }
+
+    if (user.sessionToken && forceLogin) {
+      this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'vendor' } });
     }
 
     const accessToken = await this.signWithSession(user.id, user.role, 'vendor');

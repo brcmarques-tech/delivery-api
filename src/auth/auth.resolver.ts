@@ -1,5 +1,7 @@
-import { Resolver, Mutation, Args } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { Resolver, Mutation, Subscription, Args } from '@nestjs/graphql';
+import { UseGuards, Inject } from '@nestjs/common';
+import { PubSub } from 'graphql-subscriptions';
+import { ObjectType, Field } from '@nestjs/graphql';
 import { AuthService } from './auth.service';
 import { OtpService } from './otp.service';
 import { AppAuthResponse } from './dto/app-auth-response';
@@ -12,12 +14,23 @@ import { SendCodeInput } from './dto/send-code.input';
 import { VerifyCodeInput } from './dto/verify-code.input';
 import { GqlAuthGuard } from './guards/gql-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
+import { PUB_SUB } from '../pubsub/pubsub.module';
+
+@ObjectType()
+class SessionKickedPayload {
+  @Field()
+  userId: string;
+
+  @Field()
+  userType: string;
+}
 
 @Resolver()
 export class AuthResolver {
   constructor(
     private authService: AuthService,
     private otpService: OtpService,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
   // ---- Pré-validação de cadastro (público) ----
@@ -161,5 +174,19 @@ export class AuthResolver {
     @Args('cpf') cpf: string,
   ): Promise<VendorAuthResponse> {
     return this.authService.registerVendorWithGoogle(idToken, phone, cpf);
+  }
+
+  // ---- Subscriptions ----
+
+  @Subscription(() => SessionKickedPayload, {
+    filter: (payload, variables) =>
+      payload.sessionKicked.userId === variables.userId &&
+      payload.sessionKicked.userType === variables.userType,
+  })
+  sessionKicked(
+    @Args('userId') userId: string,
+    @Args('userType', { defaultValue: 'app' }) userType: string,
+  ) {
+    return this.pubSub.asyncIterableIterator('sessionKicked');
   }
 }
