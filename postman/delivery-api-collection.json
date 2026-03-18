@@ -477,7 +477,7 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "url": { "raw": "https://api.pagar.me/core/v5/tokens?appId=pk_test_aMzdnWyuDCykrpN2", "host": ["https://api.pagar.me/core/v5/tokens?appId=pk_test_aMzdnWyuDCykrpN2"] },
+            "url": { "raw": "https://api.pagar.me/core/v5/tokens?appId=pk_Vk52emF9afzp2z8d", "host": ["https://api.pagar.me/core/v5/tokens?appId=pk_Vk52emF9afzp2z8d"] },
             "body": {
               "mode": "raw",
               "raw": "{\"type\":\"card\",\"card\":{\"number\":\"4000000000000010\",\"holder_name\":\"TESTE BCMTECH\",\"exp_month\":12,\"exp_year\":2030,\"cvv\":\"123\"}}"
