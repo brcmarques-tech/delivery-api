@@ -561,7 +561,7 @@ export class PaymentsService {
             ...(cardToken ? { card_token: cardToken } : { card_id: cardId }),
             card: {
               billing_address: {
-                line_1: store?.street ? `${store.number || 'SN'}, ${store.street}, ${store.neighborhood || 'Centro'}` : 'SN, Rua Nao Informada, Centro',
+                line_1: `${store?.number || 'SN'}, ${store?.street || 'Rua Nao Informada'}, ${store?.neighborhood || 'Centro'}`,
                 zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
                 city: store?.city || 'Arroio Grande',
                 state: store?.state || 'RS',
