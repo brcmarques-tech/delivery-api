@@ -138,6 +138,12 @@ export class AppUsersService {
     });
   }
 
+  async findAllDeliverers(): Promise<AppUser[]> {
+    return this.appUsersRepository.find({
+      where: { isDeliverer: true },
+    });
+  }
+
   async findPendingApprovals(): Promise<AppUser[]> {
     return this.appUsersRepository
       .createQueryBuilder('user')

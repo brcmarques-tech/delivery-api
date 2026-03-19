@@ -24,7 +24,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (userType === 'vendor') {
       const user = await this.vendorUsersService.findById(payload.sub);
       if (!user) throw new UnauthorizedException();
-      if (payload.sessionToken && user.sessionToken !== payload.sessionToken) {
+      if (user.sessionToken && payload.sessionToken !== user.sessionToken) {
         throw new UnauthorizedException('SESSION_EXPIRED');
       }
       return { ...user, userType: 'vendor' };
@@ -32,7 +32,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     const user = await this.appUsersService.findById(payload.sub);
     if (!user) throw new UnauthorizedException();
-    if (payload.sessionToken && user.sessionToken !== payload.sessionToken) {
+    if (user.sessionToken && payload.sessionToken !== user.sessionToken) {
       throw new UnauthorizedException('SESSION_EXPIRED');
     }
     return { ...user, userType: 'app' };

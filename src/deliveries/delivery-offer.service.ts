@@ -96,7 +96,7 @@ export class DeliveryOfferService {
     );
 
     if (nearest.length === 0) {
-      // No more deliverers to offer to — make available to all
+      // No more online deliverers — broadcast via socket AND push to all offline deliverers
       this.logger.log(`No more deliverers for order ${offer.orderNumber}, broadcasting to all`);
       offer.currentDelivererId = null;
       if (this.emitToAll) {
@@ -109,6 +109,10 @@ export class DeliveryOfferService {
           itemCount: offer.itemCount,
         });
       }
+
+      // Push notification to ALL deliverers (including offline ones)
+      this.notifyAllDeliverers(offer).catch(() => {});
+
       this.pendingOffers.delete(offer.orderId);
       return;
     }
@@ -191,6 +195,25 @@ export class DeliveryOfferService {
     offer.currentDelivererId = null;
     this.logger.log(`Deliverer ${delivererId} declined order ${offer.orderNumber}`);
     this.offerToNext(offer);
+  }
+
+  /**
+   * Notify all registered deliverers via push notification (for when no one is online).
+   */
+  private async notifyAllDeliverers(offer: PendingOffer) {
+    const deliverers = await this.appUsersService.findAllDeliverers();
+    const toNotify = deliverers.filter(
+      (d) => d.expoPushToken && !offer.declinedBy.has(d.id),
+    );
+    if (toNotify.length === 0) return;
+
+    this.logger.log(`Sending push to ${toNotify.length} offline deliverers for order ${offer.orderNumber}`);
+    await this.notificationsService.sendToUsers(
+      toNotify.map((d) => d.id),
+      'Nova entrega disponivel!',
+      `Pedido #${offer.orderNumber} - R$ ${offer.deliveryFee.toFixed(2)}\nDe: ${offer.storeAddress}`,
+      { type: 'DELIVERY_OFFER', orderId: offer.orderId },
+    );
   }
 
   /**
