@@ -517,6 +517,19 @@ export class PaymentsService {
     const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
     const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
 
+    // Build billing address from delivery address or store address
+    const storeZip = store?.zipCode?.replace(/\D/g, '') || '00000000';
+    const storeCity = store?.city || 'Nao informada';
+    const storeState = store?.state || 'RS';
+    const deliveryLine = order.deliveryAddress || `${store?.street || 'Rua'}, ${store?.number || '0'}, ${store?.neighborhood || ''}`;
+    const billingAddress: any = {
+      line_1: deliveryLine.substring(0, 256),
+      zip_code: storeZip,
+      city: storeCity,
+      state: storeState,
+      country: 'BR',
+    };
+
     // Pré-autorização: capture: false — segura o limite mas não cobra
     // O split será definido na captura (quando sabemos quem é o entregador)
     const orderBody: any = {
@@ -551,7 +564,10 @@ export class PaymentsService {
             installments: 1,
             statement_descriptor: 'BCMTECH',
             capture: false,
-            ...(cardToken ? { card_token: cardToken } : { card_id: cardId }),
+            ...(cardToken
+              ? { card_token: cardToken, card: { billing_address: billingAddress } }
+              : { card_id: cardId, card: { billing_address: billingAddress } }
+            ),
           },
         },
       ],
