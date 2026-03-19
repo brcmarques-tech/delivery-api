@@ -17,6 +17,7 @@ export class DelivererTrackerService {
   private onlineDeliverers = new Map<string, DelivererLocation>();
 
   setOnline(userId: string, socketId: string, latitude: number, longitude: number, vehicleType?: string) {
+    const wasOnline = this.onlineDeliverers.has(userId);
     this.onlineDeliverers.set(userId, {
       userId,
       socketId,
@@ -25,7 +26,9 @@ export class DelivererTrackerService {
       vehicleType: vehicleType || 'MOTO',
       updatedAt: new Date(),
     });
-    this.logger.log(`Deliverer ${userId} online at ${latitude}, ${longitude}`);
+    if (!wasOnline) {
+      this.logger.log(`Deliverer ${userId} online at ${latitude}, ${longitude} (total: ${this.onlineDeliverers.size})`);
+    }
   }
 
   updateLocation(userId: string, latitude: number, longitude: number) {
@@ -34,6 +37,7 @@ export class DelivererTrackerService {
       existing.latitude = latitude;
       existing.longitude = longitude;
       existing.updatedAt = new Date();
+      this.logger.debug(`Deliverer ${userId} location: ${latitude}, ${longitude}`);
     }
   }
 

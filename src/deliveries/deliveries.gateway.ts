@@ -19,6 +19,12 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
   @WebSocketServer()
   server: Server;
 
+  // Throttle: last processed timestamp per deliverer
+  private lastLocationUpdate = new Map<string, number>();
+  private lastOnlineEvent = new Map<string, number>();
+  private static readonly LOCATION_THROTTLE_MS = 10_000; // 10s
+  private static readonly ONLINE_THROTTLE_MS = 30_000;   // 30s
+
   constructor(
     private deliveriesService: DeliveriesService,
     private trackerService: DelivererTrackerService,
@@ -35,7 +41,11 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
   }
 
   handleDisconnect(client: Socket) {
-    this.trackerService.removeBySocketId(client.id);
+    const userId = this.trackerService.removeBySocketId(client.id);
+    if (userId) {
+      this.lastLocationUpdate.delete(userId);
+      this.lastOnlineEvent.delete(userId);
+    }
   }
 
   @SubscribeMessage('joinOrder')
@@ -69,6 +79,15 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { userId: string; latitude: number; longitude: number },
   ) {
+    const now = Date.now();
+    const last = this.lastOnlineEvent.get(data.userId) || 0;
+    if (now - last < DeliveriesGateway.ONLINE_THROTTLE_MS && this.trackerService.isOnline(data.userId)) {
+      // Already online and recently processed — just update socket and return
+      client.join('deliverers');
+      return { status: 'online', onlineCount: this.trackerService.getOnlineCount() };
+    }
+    this.lastOnlineEvent.set(data.userId, now);
+
     let vehicleType = 'MOTO';
     try {
       const user = await this.appUsersService.findById(data.userId);
@@ -83,6 +102,12 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
   handleDelivererLocationUpdate(
     @MessageBody() data: { userId: string; latitude: number; longitude: number },
   ) {
+    const now = Date.now();
+    const last = this.lastLocationUpdate.get(data.userId) || 0;
+    if (now - last < DeliveriesGateway.LOCATION_THROTTLE_MS) {
+      return; // Throttled — skip this update
+    }
+    this.lastLocationUpdate.set(data.userId, now);
     this.trackerService.updateLocation(data.userId, data.latitude, data.longitude);
   }
 
@@ -92,6 +117,8 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
     @MessageBody() data: { userId: string },
   ) {
     this.trackerService.setOffline(data.userId);
+    this.lastLocationUpdate.delete(data.userId);
+    this.lastOnlineEvent.delete(data.userId);
     client.leave('deliverers');
     return { status: 'offline' };
   }
