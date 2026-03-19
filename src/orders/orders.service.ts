@@ -280,13 +280,17 @@ export class OrdersService {
         const { pagarmeOrderId, status, chargeId } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
         savedOrder.mpPreferenceId = pagarmeOrderId;
         if (chargeId) savedOrder.preAuthChargeId = chargeId;
-        // Com pré-auth, status fica PENDING (aguardando vendedor aceitar)
         savedOrder.status = OrderStatus.PENDING;
         await this.ordersRepository.save(savedOrder);
       } catch (err: any) {
-        // Pagamento falhou — cancela o pedido
         savedOrder.status = OrderStatus.CANCELLED;
         await this.ordersRepository.save(savedOrder);
+        // Restaurar estoque
+        for (const item of items) {
+          if (item.product?.id) {
+            await this.productsService.restoreStock(item.product.id, item.quantity);
+          }
+        }
         throw new BadRequestException(
           err?.message || 'Falha na pré-autorização do cartão. Verifique os dados e tente novamente.',
         );
