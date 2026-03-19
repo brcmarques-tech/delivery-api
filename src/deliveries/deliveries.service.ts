@@ -64,6 +64,8 @@ export class DeliveriesService implements OnModuleInit {
       existing.deliverer = deliverer;
       const saved = await this.deliveriesRepository.save(existing);
       this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+      // Muda status para tirar de "Disponíveis" imediatamente
+      await this.ordersService.updateStatus(orderId, OrderStatus.VENDOR_CONFIRMED_PICKUP);
       this.notifyVendorDeliveryAccepted(order, deliverer);
       return saved;
     }
@@ -75,6 +77,8 @@ export class DeliveriesService implements OnModuleInit {
 
     const saved = await this.deliveriesRepository.save(delivery);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+    // Muda status para tirar de "Disponíveis" imediatamente
+    await this.ordersService.updateStatus(orderId, OrderStatus.VENDOR_CONFIRMED_PICKUP);
     this.notifyVendorDeliveryAccepted(order, deliverer);
     return saved;
   }
@@ -108,7 +112,7 @@ export class DeliveriesService implements OnModuleInit {
     return saved;
   }
 
-  // Entregador confirma que pegou o pedido (após vendedor confirmar coleta)
+  // Entregador confirma que pegou o pedido
   async confirmPickup(deliveryId: string): Promise<Delivery> {
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
@@ -117,9 +121,6 @@ export class DeliveriesService implements OnModuleInit {
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
 
     const order = delivery.order;
-    if (order.status !== OrderStatus.VENDOR_CONFIRMED_PICKUP) {
-      throw new BadRequestException('O vendedor ainda nao confirmou a coleta');
-    }
 
     delivery.pickedUpAt = new Date();
 

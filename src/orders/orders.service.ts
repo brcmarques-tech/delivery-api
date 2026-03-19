@@ -276,12 +276,25 @@ export class OrdersService {
 
     if ((paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') && (input.cardId || input.cardToken)) {
       // Pré-autorização: segura o limite mas não cobra ainda
-      const { pagarmeOrderId, status, chargeId } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
-      savedOrder.mpPreferenceId = pagarmeOrderId;
-      if (chargeId) savedOrder.preAuthChargeId = chargeId;
-      // Com pré-auth, status fica PENDING (aguardando vendedor aceitar)
-      savedOrder.status = OrderStatus.PENDING;
-      await this.ordersRepository.save(savedOrder);
+      try {
+        const { pagarmeOrderId, status, chargeId } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
+        savedOrder.mpPreferenceId = pagarmeOrderId;
+        if (chargeId) savedOrder.preAuthChargeId = chargeId;
+        savedOrder.status = OrderStatus.PENDING;
+        await this.ordersRepository.save(savedOrder);
+      } catch (err: any) {
+        savedOrder.status = OrderStatus.CANCELLED;
+        await this.ordersRepository.save(savedOrder);
+        // Restaurar estoque
+        for (const item of items) {
+          if (item.product?.id) {
+            await this.productsService.restoreStock(item.product.id, item.quantity);
+          }
+        }
+        throw new BadRequestException(
+          err?.message || 'Falha na pré-autorização do cartão. Verifique os dados e tente novamente.',
+        );
+      }
     } else if (paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') {
       const { checkoutUrl, preferenceId } = await this.paymentsService.createOrderCheckout(savedOrder, customer);
       savedOrder.checkoutUrl = checkoutUrl;
