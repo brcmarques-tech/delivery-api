@@ -673,10 +673,14 @@ export class PaymentsService {
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
+    this.logger.log(`PIX split check: vendorRecipientId=${vendorRecipientId || 'NULL'} platformRecipientId=${platformRecipientId || 'NULL'} storeOwner=${store?.owner?.email || 'NULL'}`);
+
     const totalCents = Math.round(Number(order.total) * 100);
     const splitRules = (vendorRecipientId && platformRecipientId)
       ? await this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId)
       : [];
+
+    this.logger.log(`PIX split rules: ${JSON.stringify(splitRules)}`);
 
     const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
     const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';

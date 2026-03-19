@@ -1,5 +1,6 @@
 import { Resolver, Query, Mutation, Args, Subscription, Int, ObjectType, Field, ID, Float } from '@nestjs/graphql';
-import { UseGuards, Inject } from '@nestjs/common';
+import { UseGuards, Inject, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrdersService } from './orders.service';
@@ -82,6 +83,7 @@ export class OrdersResolver {
   constructor(
     private ordersService: OrdersService,
     @Inject(PUB_SUB) private pubSub: PubSub,
+    private configService: ConfigService,
   ) {}
 
   @Mutation(() => Order)
@@ -254,6 +256,19 @@ export class OrdersResolver {
     @Args('actualWeightGrams', { type: () => Int }) actualWeightGrams: number,
   ): Promise<Order> {
     return this.ordersService.adjustItemWeight(orderItemId, actualWeightGrams);
+  }
+
+  // DEV ONLY: simula pagamento para testes (AWAITING_PAYMENT → PENDING)
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard)
+  async simulatePayment(
+    @Args('orderId') orderId: string,
+  ): Promise<Order> {
+    const env = this.configService.get('NODE_ENV', 'development');
+    if (env === 'production') {
+      throw new BadRequestException('Mutation disponivel apenas em desenvolvimento');
+    }
+    return this.ordersService.simulatePayment(orderId);
   }
 
   @Subscription(() => Order, {

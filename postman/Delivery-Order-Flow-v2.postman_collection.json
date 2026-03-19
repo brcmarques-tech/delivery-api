@@ -1,0 +1,1519 @@
+{
+  "info": {
+    "name": "Delivery Order Flow v2 - Bateria de Testes",
+    "_postman_id": "delivery-order-flow-v2",
+    "description": "Bateria completa de testes do fluxo de pedidos v2.\n\nFluxos cobertos:\n1. Fluxo feliz completo (PENDING → COMPLETED)\n2. Rejeição pelo vendedor\n3. Cancelamento pelo cliente\n4. Disputa pelo cliente\n5. Resolução de disputa pelo superadmin\n\nExecutar na ordem: primeiro a pasta 'Setup', depois os fluxos desejados.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000/graphql" },
+    { "key": "customerEmail", "value": "cliente@bcmtech.com" },
+    { "key": "customerPassword", "value": "cliente123" },
+    { "key": "vendorEmail", "value": "admin@bcmtech.com" },
+    { "key": "vendorPassword", "value": "admin123" },
+    { "key": "delivererEmail", "value": "entregador@bcmtech.com" },
+    { "key": "delivererPassword", "value": "entrega123" },
+    { "key": "superadminEmail", "value": "superadmin@bcmtech.com" },
+    { "key": "superadminPassword", "value": "super123" },
+    { "key": "storeId", "value": "" },
+    { "key": "productId", "value": "" },
+    { "key": "customerToken", "value": "" },
+    { "key": "vendorToken", "value": "" },
+    { "key": "delivererToken", "value": "" },
+    { "key": "superadminToken", "value": "" },
+    { "key": "orderId", "value": "" },
+    { "key": "deliveryId", "value": "" },
+    { "key": "orderNumber", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "0. Setup - Autenticação",
+      "description": "Autentica todos os usuários e descobre store/product IDs. Executar PRIMEIRO.",
+      "item": [
+        {
+          "name": "Login Customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Login customer com sucesso', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.loginApp.accessToken).to.be.a('string');",
+                  "  pm.expect(res.data.loginApp.user.role).to.equal('CUSTOMER');",
+                  "});",
+                  "",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('customerToken', res.data.loginApp.accessToken);",
+                  "  console.log('Customer ID:', res.data.loginApp.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation LoginCustomer($input: LoginInput!) {\n  loginApp(input: $input, forceLogin: true) {\n    accessToken\n    user {\n      id\n      email\n      role\n    }\n  }\n}",
+                "variables": "{\"input\": {\"email\": \"{{customerEmail}}\", \"password\": \"{{customerPassword}}\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Login Vendor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Login vendor com sucesso', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.loginVendor.accessToken).to.be.a('string');",
+                  "  pm.expect(res.data.loginVendor.user.role).to.equal('VENDOR');",
+                  "});",
+                  "",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('vendorToken', res.data.loginVendor.accessToken);",
+                  "  console.log('Vendor ID:', res.data.loginVendor.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation LoginVendor($input: LoginInput!) {\n  loginVendor(input: $input, forceLogin: true) {\n    accessToken\n    user {\n      id\n      email\n      role\n    }\n  }\n}",
+                "variables": "{\"input\": {\"email\": \"{{vendorEmail}}\", \"password\": \"{{vendorPassword}}\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Login Deliverer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Login deliverer com sucesso', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.loginApp.accessToken).to.be.a('string');",
+                  "  pm.expect(res.data.loginApp.user.role).to.equal('DELIVERER');",
+                  "});",
+                  "",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('delivererToken', res.data.loginApp.accessToken);",
+                  "  console.log('Deliverer ID:', res.data.loginApp.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation LoginDeliverer($input: LoginInput!) {\n  loginApp(input: $input, forceLogin: true) {\n    accessToken\n    user {\n      id\n      email\n      role\n    }\n  }\n}",
+                "variables": "{\"input\": {\"email\": \"{{delivererEmail}}\", \"password\": \"{{delivererPassword}}\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Login Superadmin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Login superadmin com sucesso', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.loginVendor.accessToken).to.be.a('string');",
+                  "  pm.expect(res.data.loginVendor.user.role).to.equal('SUPERADMIN');",
+                  "});",
+                  "",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('superadminToken', res.data.loginVendor.accessToken);",
+                  "  console.log('Superadmin ID:', res.data.loginVendor.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation LoginSuperadmin($input: LoginInput!) {\n  loginVendor(input: $input, forceLogin: true) {\n    accessToken\n    user {\n      id\n      email\n      role\n    }\n  }\n}",
+                "variables": "{\"input\": {\"email\": \"{{superadminEmail}}\", \"password\": \"{{superadminPassword}}\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Descobrir Store",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Stores encontradas', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.stores.length).to.be.greaterThan(0);",
+                  "});",
+                  "",
+                  "if (res.data && res.data.stores.length > 0) {",
+                  "  const store = res.data.stores[0];",
+                  "  pm.collectionVariables.set('storeId', store.id);",
+                  "  console.log('Store:', store.name, '(' + store.id + ')');",
+                  "  console.log('Agora execute \"Descobrir Products\" para pegar o productId');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query {\n  stores {\n    id\n    name\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "Descobrir Products",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Store com products encontrada', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.store).to.not.be.null;",
+                  "  pm.expect(res.data.store.products).to.be.an('array');",
+                  "  pm.expect(res.data.store.products.length).to.be.greaterThan(0);",
+                  "});",
+                  "",
+                  "if (res.data && res.data.store && res.data.store.products && res.data.store.products.length > 0) {",
+                  "  const product = res.data.store.products[0];",
+                  "  pm.collectionVariables.set('productId', product.id);",
+                  "  console.log('Product:', product.name, 'R$' + product.price, 'stock:', product.stock);",
+                  "  console.log('Setup completo! storeId=' + pm.collectionVariables.get('storeId') + ' productId=' + product.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query GetStoreProducts($storeId: String!) {\n  store(id: $storeId) {\n    id\n    name\n    products {\n      id\n      name\n      price\n      stock\n    }\n  }\n}",
+                "variables": "{\"storeId\": \"{{storeId}}\"}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Fluxo Feliz Completo",
+      "description": "Pedido passa por todos os status até COMPLETED.\n\nPENDING → ACCEPTED → PREPARING → READY → VENDOR_CONFIRMED_PICKUP → PICKED_UP → DELIVERING → DELIVERER_CONFIRMED_DELIVERY → COMPLETED",
+      "item": [
+        {
+          "name": "1.1 Cliente cria pedido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedido criado com sucesso', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.createOrder.id).to.be.a('string');",
+                  "  pm.expect(res.data.createOrder.status).to.be.oneOf(['AWAITING_PAYMENT', 'PENDING']);",
+                  "});",
+                  "",
+                  "pm.test('Dados do pedido corretos', () => {",
+                  "  const order = res.data.createOrder;",
+                  "  pm.expect(order.total).to.be.greaterThan(0);",
+                  "  pm.expect(order.orderNumber).to.match(/^ORD-/);",
+                  "});",
+                  "",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('orderId', res.data.createOrder.id);",
+                  "  pm.collectionVariables.set('orderNumber', res.data.createOrder.orderNumber);",
+                  "  console.log('Pedido criado:', res.data.createOrder.orderNumber, '| Status:', res.data.createOrder.status);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    createdAt\n  }\n}",
+                "variables": "{\"input\": {\"storeId\": \"{{storeId}}\", \"items\": [{\"productId\": \"{{productId}}\", \"quantity\": 2}], \"paymentMethod\": \"pix\", \"deliveryAddress\": \"Rua Postman Teste 123, Centro\", \"deliveryLatitude\": -29.68, \"deliveryLongitude\": -53.81, \"notes\": \"Teste Postman - fluxo feliz\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.2 Simular pagamento (AWAITING_PAYMENT → PENDING)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pagamento simulado - status PENDING', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.simulatePayment.status).to.equal('PENDING');",
+                  "});",
+                  "",
+                  "console.log('Pagamento simulado! Status:', res.data?.simulatePayment?.status);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation SimulatePayment {\n  simulatePayment(orderId: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.3 Vendedor aceita (PENDING → ACCEPTED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Status mudou para ACCEPTED', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('ACCEPTED');",
+                  "});",
+                  "",
+                  "console.log('Status:', res.data?.updateOrderStatus?.status);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation AcceptOrder {\n  updateOrderStatus(id: \"{{orderId}}\", status: ACCEPTED) {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.4 Vendedor prepara (ACCEPTED → PREPARING)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Status mudou para PREPARING', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('PREPARING');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation PrepareOrder {\n  updateOrderStatus(id: \"{{orderId}}\", status: PREPARING) {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.5 Pedido pronto (PREPARING → READY)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Status mudou para READY', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('READY');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation ReadyOrder {\n  updateOrderStatus(id: \"{{orderId}}\", status: READY) {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.6 Vendedor confirma coleta (READY → VENDOR_CONFIRMED_PICKUP)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Status mudou para VENDOR_CONFIRMED_PICKUP', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.vendorConfirmPickup.status).to.equal('VENDOR_CONFIRMED_PICKUP');",
+                  "});",
+                  "",
+                  "pm.test('Timestamp vendorConfirmedPickupAt preenchido', () => {",
+                  "  pm.expect(res.data.vendorConfirmPickup.vendorConfirmedPickupAt).to.not.be.null;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation VendorConfirmPickup {\n  vendorConfirmPickup(orderId: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n    vendorConfirmedPickupAt\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.7 Entregador aceita entrega",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Entrega aceita com sucesso', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.acceptDelivery.id).to.be.a('string');",
+                  "  pm.expect(res.data.acceptDelivery.deliverer).to.not.be.null;",
+                  "});",
+                  "",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('deliveryId', res.data.acceptDelivery.id);",
+                  "  console.log('Delivery ID:', res.data.acceptDelivery.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation AcceptDelivery {\n  acceptDelivery(orderId: \"{{orderId}}\") {\n    id\n    deliverer {\n      id\n      email\n    }\n    order {\n      id\n      status\n    }\n    createdAt\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.8 Entregador confirma retirada (→ PICKED_UP)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pickup confirmado', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.confirmPickup.pickedUpAt).to.not.be.null;",
+                  "});",
+                  "",
+                  "console.log('pickedUpAt:', res.data?.confirmPickup?.pickedUpAt);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation ConfirmPickup {\n  confirmPickup(deliveryId: \"{{deliveryId}}\") {\n    id\n    pickedUpAt\n    order {\n      id\n      status\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.9 Muda para DELIVERING (PICKED_UP → DELIVERING)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Status mudou para DELIVERING', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.updateOrderStatus.status).to.equal('DELIVERING');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation DeliveringOrder {\n  updateOrderStatus(id: \"{{orderId}}\", status: DELIVERING) {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.10 Entregador confirma entrega (→ DELIVERER_CONFIRMED_DELIVERY)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Entrega confirmada pelo entregador', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.confirmDelivery.deliveredAt).to.not.be.null;",
+                  "});",
+                  "",
+                  "console.log('deliveredAt:', res.data?.confirmDelivery?.deliveredAt);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation ConfirmDelivery {\n  confirmDelivery(deliveryId: \"{{deliveryId}}\") {\n    id\n    deliveredAt\n    payoutStatus\n    order {\n      id\n      status\n      delivererConfirmedDeliveryAt\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "1.11 Cliente confirma recebimento (→ COMPLETED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedido COMPLETED', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.confirmReceipt.status).to.equal('COMPLETED');",
+                  "});",
+                  "",
+                  "pm.test('completedAt preenchido', () => {",
+                  "  pm.expect(res.data.confirmReceipt.completedAt).to.not.be.null;",
+                  "});",
+                  "",
+                  "console.log('FLUXO FELIZ COMPLETO! Pedido', res.data?.confirmReceipt?.orderNumber, '→ COMPLETED');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation ConfirmReceipt {\n  confirmReceipt(orderId: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n    completedAt\n    customerConfirmedAt\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Rejeição pelo Vendedor",
+      "description": "Vendedor rejeita pedido PENDING com motivo.\n\nPENDING → REJECTED",
+      "item": [
+        {
+          "name": "2.1 Cliente cria pedido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedido criado', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.createOrder.id).to.be.a('string');",
+                  "});",
+                  "",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('orderId', res.data.createOrder.id);",
+                  "  pm.collectionVariables.set('orderNumber', res.data.createOrder.orderNumber);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n    total\n  }\n}",
+                "variables": "{\"input\": {\"storeId\": \"{{storeId}}\", \"items\": [{\"productId\": \"{{productId}}\", \"quantity\": 1}], \"paymentMethod\": \"pix\", \"deliveryAddress\": \"Rua Rejeicao 456\", \"deliveryLatitude\": -29.68, \"deliveryLongitude\": -53.81, \"notes\": \"Teste rejeicao\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "2.2 Simular pagamento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Pagamento simulado', () => { pm.expect(res.data.simulatePayment.status).to.equal('PENDING'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation { simulatePayment(orderId: \"{{orderId}}\") { id status } }"
+              }
+            }
+          }
+        },
+        {
+          "name": "2.3 Vendedor rejeita (PENDING → REJECTED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedido rejeitado', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.rejectOrder.status).to.equal('REJECTED');",
+                  "});",
+                  "",
+                  "pm.test('Motivo e timestamp preenchidos', () => {",
+                  "  pm.expect(res.data.rejectOrder.rejectedAt).to.not.be.null;",
+                  "  pm.expect(res.data.rejectOrder.rejectionReason).to.equal('Fora do horario de funcionamento');",
+                  "});",
+                  "",
+                  "console.log('Pedido rejeitado:', res.data?.rejectOrder?.rejectionReason);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation RejectOrder {\n  rejectOrder(orderId: \"{{orderId}}\", reason: \"Fora do horario de funcionamento\") {\n    id\n    orderNumber\n    status\n    rejectedAt\n    rejectionReason\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Cancelamento pelo Cliente",
+      "description": "Cliente cancela pedido PENDING.\n\nPENDING → CANCELLED",
+      "item": [
+        {
+          "name": "3.1 Cliente cria pedido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedido criado', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "});",
+                  "",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('orderId', res.data.createOrder.id);",
+                  "  pm.collectionVariables.set('orderNumber', res.data.createOrder.orderNumber);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n  }\n}",
+                "variables": "{\"input\": {\"storeId\": \"{{storeId}}\", \"items\": [{\"productId\": \"{{productId}}\", \"quantity\": 1}], \"paymentMethod\": \"pix\", \"deliveryAddress\": \"Rua Cancelamento 789\", \"deliveryLatitude\": -29.68, \"deliveryLongitude\": -53.81, \"notes\": \"Teste cancelamento\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "3.2 Simular pagamento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Pagamento simulado', () => { pm.expect(res.data.simulatePayment.status).to.equal('PENDING'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation { simulatePayment(orderId: \"{{orderId}}\") { id status } }"
+              }
+            }
+          }
+        },
+        {
+          "name": "3.3 Cliente cancela (PENDING → CANCELLED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedido cancelado', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.cancelOrder.status).to.equal('CANCELLED');",
+                  "});",
+                  "",
+                  "console.log('Pedido cancelado com sucesso');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CancelOrder {\n  cancelOrder(orderId: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "3.4 [Negativo] Cancelar pedido já aceito deve falhar",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Cancelamento bloqueado para pedido aceito', () => {",
+                  "  pm.expect(res.errors).to.not.be.undefined;",
+                  "  pm.expect(res.errors[0].message).to.include('nao pode mais ser cancelado');",
+                  "});",
+                  "",
+                  "console.log('Corretamente bloqueado:', res.errors?.[0]?.message);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Este teste usa o orderId do fluxo feliz (que está em COMPLETED)",
+                  "// Se precisar testar com outro pedido, crie um e aceite antes",
+                  "console.log('Usando orderId atual (deve estar em status não-cancelável)');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CancelOrder {\n  cancelOrder(orderId: \"{{orderId}}\") {\n    id\n    status\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Disputa pelo Cliente",
+      "description": "Cliente nega recebimento após entregador confirmar → DISPUTED\n\nDELIVERER_CONFIRMED_DELIVERY → DISPUTED",
+      "item": [
+        {
+          "name": "4.1 Criar pedido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedido criado', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "});",
+                  "",
+                  "if (res.data) {",
+                  "  pm.collectionVariables.set('orderId', res.data.createOrder.id);",
+                  "  pm.collectionVariables.set('orderNumber', res.data.createOrder.orderNumber);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CreateOrder($input: CreateOrderInput!) {\n  createOrder(input: $input) {\n    id\n    orderNumber\n    status\n  }\n}",
+                "variables": "{\"input\": {\"storeId\": \"{{storeId}}\", \"items\": [{\"productId\": \"{{productId}}\", \"quantity\": 1}], \"paymentMethod\": \"pix\", \"deliveryAddress\": \"Rua Disputa 321\", \"deliveryLatitude\": -29.68, \"deliveryLongitude\": -53.81, \"notes\": \"Teste disputa\"}}"
+              }
+            }
+          }
+        },
+        {
+          "name": "4.2 Simular pagamento",
+          "event": [{ "listen": "test", "script": { "exec": ["const res = pm.response.json(); pm.test('OK', () => { pm.expect(res.data.simulatePayment.status).to.equal('PENDING'); });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{customerToken}}" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": { "mode": "graphql", "graphql": { "query": "mutation { simulatePayment(orderId: \"{{orderId}}\") { id status } }" } }
+          }
+        },
+        {
+          "name": "4.3 Aceitar",
+          "event": [{ "listen": "test", "script": { "exec": ["const res = pm.response.json(); pm.test('Status ACCEPTED', () => { pm.expect(res.data.updateOrderStatus.status).to.equal('ACCEPTED'); });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{vendorToken}}" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": { "mode": "graphql", "graphql": { "query": "mutation { updateOrderStatus(id: \"{{orderId}}\", status: ACCEPTED) { id status } }" } }
+          }
+        },
+        {
+          "name": "4.4 Preparar",
+          "event": [{ "listen": "test", "script": { "exec": ["const res = pm.response.json(); pm.test('OK', () => { pm.expect(res.data.updateOrderStatus.status).to.equal('PREPARING'); });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{vendorToken}}" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": { "mode": "graphql", "graphql": { "query": "mutation { updateOrderStatus(id: \"{{orderId}}\", status: PREPARING) { id status } }" } }
+          }
+        },
+        {
+          "name": "4.5 Ready",
+          "event": [{ "listen": "test", "script": { "exec": ["const res = pm.response.json(); pm.test('OK', () => { pm.expect(res.data.updateOrderStatus.status).to.equal('READY'); });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{vendorToken}}" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": { "mode": "graphql", "graphql": { "query": "mutation { updateOrderStatus(id: \"{{orderId}}\", status: READY) { id status } }" } }
+          }
+        },
+        {
+          "name": "4.6 Vendor confirma coleta",
+          "event": [{ "listen": "test", "script": { "exec": ["const res = pm.response.json(); pm.test('OK', () => { pm.expect(res.data.vendorConfirmPickup.status).to.equal('VENDOR_CONFIRMED_PICKUP'); });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{vendorToken}}" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": { "mode": "graphql", "graphql": { "query": "mutation { vendorConfirmPickup(orderId: \"{{orderId}}\") { id status } }" } }
+          }
+        },
+        {
+          "name": "4.7 Entregador aceita",
+          "event": [{ "listen": "test", "script": { "exec": ["const res = pm.response.json(); pm.test('OK', () => { pm.expect(res.data.acceptDelivery.id).to.be.a('string'); }); if (res.data) { pm.collectionVariables.set('deliveryId', res.data.acceptDelivery.id); }"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{delivererToken}}" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": { "mode": "graphql", "graphql": { "query": "mutation { acceptDelivery(orderId: \"{{orderId}}\") { id deliverer { id } } }" } }
+          }
+        },
+        {
+          "name": "4.8 Confirma pickup",
+          "event": [{ "listen": "test", "script": { "exec": ["const res = pm.response.json(); pm.test('OK', () => { pm.expect(res.data.confirmPickup.pickedUpAt).to.not.be.null; });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{delivererToken}}" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": { "mode": "graphql", "graphql": { "query": "mutation { confirmPickup(deliveryId: \"{{deliveryId}}\") { id pickedUpAt } }" } }
+          }
+        },
+        {
+          "name": "4.9 Delivering",
+          "event": [{ "listen": "test", "script": { "exec": ["const res = pm.response.json(); pm.test('OK', () => { pm.expect(res.data.updateOrderStatus.status).to.equal('DELIVERING'); });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{vendorToken}}" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": { "mode": "graphql", "graphql": { "query": "mutation { updateOrderStatus(id: \"{{orderId}}\", status: DELIVERING) { id status } }" } }
+          }
+        },
+        {
+          "name": "4.10 Entregador confirma entrega",
+          "event": [{ "listen": "test", "script": { "exec": ["const res = pm.response.json(); pm.test('OK', () => { pm.expect(res.data.confirmDelivery.deliveredAt).to.not.be.null; });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{delivererToken}}" }],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": { "mode": "graphql", "graphql": { "query": "mutation { confirmDelivery(deliveryId: \"{{deliveryId}}\") { id deliveredAt } }" } }
+          }
+        },
+        {
+          "name": "4.11 Cliente nega entrega (→ DISPUTED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedido em disputa', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.customerDenyDelivery.status).to.equal('DISPUTED');",
+                  "});",
+                  "",
+                  "pm.test('Dados da disputa preenchidos', () => {",
+                  "  pm.expect(res.data.customerDenyDelivery.disputedAt).to.not.be.null;",
+                  "  pm.expect(res.data.customerDenyDelivery.disputeReason).to.equal('Pedido nao chegou');",
+                  "});",
+                  "",
+                  "console.log('Disputa aberta:', res.data?.customerDenyDelivery?.disputeReason);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CustomerDenyDelivery {\n  customerDenyDelivery(orderId: \"{{orderId}}\", reason: \"Pedido nao chegou\") {\n    id\n    orderNumber\n    status\n    disputedAt\n    disputeReason\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "4.3 Superadmin resolve disputa (favor cliente)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "if (res.data) {",
+                  "  pm.test('Disputa resolvida', () => {",
+                  "    pm.expect(res.data.resolveDispute.disputeResolution).to.equal('CUSTOMER_FAVOR');",
+                  "    pm.expect(res.data.resolveDispute.disputeResolvedAt).to.not.be.null;",
+                  "  });",
+                  "  console.log('Disputa resolvida:', res.data.resolveDispute.disputeResolution);",
+                  "} else {",
+                  "  console.log('Erro (pode ser falta de token superadmin):', res.errors?.[0]?.message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation ResolveDispute {\n  resolveDispute(orderId: \"{{orderId}}\", resolution: \"CUSTOMER_FAVOR\") {\n    id\n    orderNumber\n    status\n    disputeResolution\n    disputeResolvedAt\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Testes Negativos (Validação)",
+      "description": "Testes que devem FALHAR — validam que o sistema bloqueia operações inválidas.",
+      "item": [
+        {
+          "name": "5.1 [NEG] Transição de status inválida",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Transição inválida bloqueada', () => {",
+                  "  pm.expect(res.errors).to.not.be.undefined;",
+                  "  pm.expect(res.errors.length).to.be.greaterThan(0);",
+                  "  pm.expect(res.errors[0].message).to.include('Nao pode mudar');",
+                  "});",
+                  "",
+                  "console.log('Corretamente bloqueado:', res.errors?.[0]?.message);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Precisa de um orderId em PENDING para este teste",
+                  "console.log('Testando transição inválida: PENDING → DELIVERING (deve falhar)');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation InvalidTransition {\n  updateOrderStatus(id: \"{{orderId}}\", status: DELIVERING) {\n    id\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.2 [NEG] Vendedor confirma pickup em status errado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('VendorConfirmPickup bloqueado fora de READY', () => {",
+                  "  pm.expect(res.errors).to.not.be.undefined;",
+                  "  pm.expect(res.errors[0].message).to.include('pronto');",
+                  "});",
+                  "",
+                  "console.log('Corretamente bloqueado:', res.errors?.[0]?.message);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation VendorConfirmPickupWrongStatus {\n  vendorConfirmPickup(orderId: \"{{orderId}}\") {\n    id\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.3 [NEG] Rejeitar pedido já aceito",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Rejeição bloqueada para pedido não-pending', () => {",
+                  "  pm.expect(res.errors).to.not.be.undefined;",
+                  "  pm.expect(res.errors[0].message).to.include('pendentes');",
+                  "});",
+                  "",
+                  "console.log('Corretamente bloqueado:', res.errors?.[0]?.message);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation RejectAcceptedOrder {\n  rejectOrder(orderId: \"{{orderId}}\", reason: \"Teste\") {\n    id\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.4 [NEG] Disputar pedido fora de DELIVERER_CONFIRMED_DELIVERY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Disputa bloqueada fora do status correto', () => {",
+                  "  pm.expect(res.errors).to.not.be.undefined;",
+                  "});",
+                  "",
+                  "console.log('Corretamente bloqueado:', res.errors?.[0]?.message);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation DenyWrongStatus {\n  customerDenyDelivery(orderId: \"{{orderId}}\", reason: \"Teste\") {\n    id\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.5 [NEG] Sem autenticação",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Bloqueado sem token', () => {",
+                  "  pm.expect(res.errors).to.not.be.undefined;",
+                  "  const msg = res.errors[0].message.toLowerCase();",
+                  "  pm.expect(msg).to.satisfy(m => m.includes('unauthorized') || m.includes('forbidden') || m.includes('unauthenticated'));",
+                  "});",
+                  "",
+                  "console.log('Corretamente bloqueado:', res.errors?.[0]?.message);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation NoAuth {\n  updateOrderStatus(id: \"fake-id\", status: ACCEPTED) {\n    id\n    status\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "5.6 [NEG] Entregador sem conta de recebimento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "// Este teste depende do estado do entregador e do pedido",
+                  "if (res.errors) {",
+                  "  const msg = res.errors[0].message;",
+                  "  if (msg.includes('conta de recebimento')) {",
+                  "    pm.test('Entregador sem conta de recebimento bloqueado', () => {",
+                  "      pm.expect(msg).to.include('conta de recebimento');",
+                  "    });",
+                  "    console.log('Corretamente bloqueado:', msg);",
+                  "  } else {",
+                  "    console.log('Erro diferente (entregador ja tem conta ou pedido ja tem entrega):', msg);",
+                  "    pm.test('Operação bloqueada (outro motivo)', () => {",
+                  "      pm.expect(res.errors.length).to.be.greaterThan(0);",
+                  "    });",
+                  "  }",
+                  "} else {",
+                  "  console.log('Entregador já tem conta - teste não aplicável');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{delivererToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation AcceptWithoutPayment {\n  acceptDelivery(orderId: \"{{orderId}}\") {\n    id\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Consultas de Verificação",
+      "description": "Queries para verificar estado dos pedidos e dados.",
+      "item": [
+        {
+          "name": "6.1 Buscar pedido por ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedido encontrado', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.order).to.not.be.null;",
+                  "});",
+                  "",
+                  "if (res.data?.order) {",
+                  "  const o = res.data.order;",
+                  "  console.log(`Pedido ${o.orderNumber} | Status: ${o.status} | Total: R$${o.total}`);",
+                  "  console.log(`Timestamps: vendorPickup=${o.vendorConfirmedPickupAt}, delivererConfirm=${o.delivererConfirmedDeliveryAt}, completed=${o.completedAt}`);",
+                  "  if (o.disputeReason) console.log(`Disputa: ${o.disputeReason} → ${o.disputeResolution || 'pendente'}`);",
+                  "  if (o.rejectionReason) console.log(`Rejeição: ${o.rejectionReason}`);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query GetOrder {\n  order(id: \"{{orderId}}\") {\n    id\n    orderNumber\n    status\n    subtotal\n    deliveryFee\n    total\n    paymentMethod\n    notes\n    deliveryAddress\n    createdAt\n    updatedAt\n    vendorConfirmedPickupAt\n    delivererConfirmedDeliveryAt\n    completedAt\n    disputedAt\n    disputeReason\n    disputeResolution\n    disputeResolvedAt\n    rejectedAt\n    rejectionReason\n    estimatedDeliveryEta\n    preAuthChargeId\n    capturedAt\n    customerConfirmedAt\n    customer {\n      id\n      email\n    }\n    store {\n      id\n      name\n    }\n    items {\n      id\n      quantity\n      unitPrice\n      totalPrice\n      product {\n        name\n      }\n    }\n    delivery {\n      id\n      pickedUpAt\n      deliveredAt\n      payoutStatus\n      deliverer {\n        id\n        email\n      }\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "6.2 Listar pedidos da loja",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedidos retornados', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.storeOrders).to.be.an('array');",
+                  "});",
+                  "",
+                  "if (res.data?.storeOrders) {",
+                  "  console.log(`Total: ${res.data.storeOrders.length} pedidos`);",
+                  "  res.data.storeOrders.forEach(o => {",
+                  "    console.log(`  ${o.orderNumber} | ${o.status} | R$${o.total}`);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{vendorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query StoreOrders {\n  storeOrders(storeId: \"{{storeId}}\") {\n    id\n    orderNumber\n    status\n    total\n    paymentMethod\n    createdAt\n    customer {\n      email\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "6.3 Listar pedidos do cliente",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "pm.test('Pedidos do cliente retornados', () => {",
+                  "  pm.expect(res.data).to.not.be.null;",
+                  "  pm.expect(res.data.myOrders).to.be.an('array');",
+                  "});",
+                  "",
+                  "if (res.data?.myOrders) {",
+                  "  console.log(`Total: ${res.data.myOrders.length} pedidos`);",
+                  "  res.data.myOrders.forEach(o => {",
+                  "    console.log(`  ${o.orderNumber} | ${o.status} | R$${o.total}`);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{customerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query MyOrders {\n  myOrders {\n    id\n    orderNumber\n    status\n    total\n    deliveryFee\n    paymentMethod\n    createdAt\n    store {\n      name\n    }\n  }\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "6.4 Listar pedidos em disputa (Superadmin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "if (res.data) {",
+                  "  pm.test('Query disputedOrders retornou', () => {",
+                  "    pm.expect(res.data.disputedOrders).to.be.an('array');",
+                  "  });",
+                  "  console.log(`${res.data.disputedOrders.length} pedidos em disputa`);",
+                  "  res.data.disputedOrders.forEach(o => {",
+                  "    console.log(`  ${o.orderNumber} | ${o.disputeReason} | Resolução: ${o.disputeResolution || 'pendente'}`);",
+                  "  });",
+                  "} else {",
+                  "  console.log('Erro:', res.errors?.[0]?.message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query DisputedOrders {\n  disputedOrders {\n    id\n    orderNumber\n    status\n    disputeReason\n    disputeResolution\n    disputedAt\n    disputeResolvedAt\n    customer {\n      email\n    }\n    delivery {\n      deliverer {\n        email\n      }\n    }\n  }\n}"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

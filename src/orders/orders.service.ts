@@ -203,7 +203,7 @@ export class OrdersService {
 
     const commissionAmount = Math.round(((subtotal - discount) * commissionPercent) / 100 * 100) / 100;
 
-    const paymentMethod = input.paymentMethod || 'ON_DELIVERY';
+    const paymentMethod = (input.paymentMethod || 'ON_DELIVERY').toUpperCase();
 
     const vendorPaymentConnected = storeOwner?.paymentConnected ?? false;
 
@@ -329,7 +329,7 @@ export class OrdersService {
   async findById(id: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id },
-      relations: ['customer', 'store', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
+      relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
     });
     if (!order) throw new NotFoundException('Pedido nao encontrado');
     return order;
@@ -665,18 +665,11 @@ export class OrdersService {
       throw new BadRequestException('Este pedido ja foi aceito e nao pode mais ser cancelado');
     }
 
-    for (const item of order.items) {
-      if (item.product) {
-        await this.productsService.restoreStock(item.product.id, item.quantity);
-      }
-    }
-
     // Cancelar pré-autorização ou estornar pagamento
     await this.handlePaymentCancellation(order);
 
-    order.status = OrderStatus.CANCELLED;
-    const saved = await this.ordersRepository.save(order);
-    this.pubSub.publish('orderUpdated', { orderUpdated: saved });
+    // updateStatus already restores stock for CANCELLED
+    const saved = await this.updateStatus(order.id, OrderStatus.CANCELLED, order.customer);
 
     // Notificar vendedor
     if (order.store?.owner?.id) {
@@ -819,6 +812,15 @@ export class OrdersService {
       console.error(`Capture pre-auth failed for order ${orderId}:`, err?.message);
       throw err;
     }
+  }
+
+  // DEV ONLY: simula pagamento (AWAITING_PAYMENT → PENDING)
+  async simulatePayment(orderId: string): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (order.status !== OrderStatus.AWAITING_PAYMENT) {
+      throw new BadRequestException('Pedido nao esta em AWAITING_PAYMENT');
+    }
+    return this.updateStatus(order.id, OrderStatus.PENDING);
   }
 
   async findDisputed(): Promise<Order[]> {
