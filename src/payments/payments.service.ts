@@ -545,6 +545,13 @@ export class PaymentsService {
             number: phoneNumber || '999999999',
           },
         },
+        address: {
+          line_1: store?.street ? `${store.number || 'SN'}, ${store.street}, ${store.neighborhood || 'Centro'}` : 'SN, Rua Nao Informada, Centro',
+          zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
+          city: store?.city || 'Arroio Grande',
+          state: store?.state || 'RS',
+          country: 'BR',
+        },
       },
       payments: [
         {
