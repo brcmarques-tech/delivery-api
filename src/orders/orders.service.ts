@@ -33,7 +33,7 @@ const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.DELIVERING]: [OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
   [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: [OrderStatus.COMPLETED, OrderStatus.DISPUTED],
   [OrderStatus.DELIVERED]: [OrderStatus.COMPLETED],
-  [OrderStatus.COMPLETED]: [],
+  [OrderStatus.COMPLETED]: [OrderStatus.DISPUTED],
   [OrderStatus.CANCELLED]: [],
   [OrderStatus.REJECTED]: [],
   [OrderStatus.EXPIRED]: [],
@@ -584,6 +584,28 @@ export class OrdersService {
     return this.updateStatus(order.id, OrderStatus.DISPUTED);
   }
 
+  // ─── Cliente disputa pedido já completado (48h) ──────────────────────
+
+  async disputeCompletedOrder(orderId: string, customerId: string, reason: string): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (order.customer.id !== customerId) {
+      throw new BadRequestException('Voce nao pode disputar este pedido');
+    }
+    if (order.status !== OrderStatus.COMPLETED) {
+      throw new BadRequestException('Este pedido nao pode ser disputado');
+    }
+
+    const completedAt = order.completedAt ? new Date(order.completedAt).getTime() : 0;
+    const hoursSinceCompleted = (Date.now() - completedAt) / (1000 * 60 * 60);
+    if (hoursSinceCompleted > 48) {
+      throw new BadRequestException('O prazo de 48 horas para reclamacao expirou');
+    }
+
+    order.disputeReason = reason;
+    await this.ordersRepository.save(order);
+    return this.updateStatus(order.id, OrderStatus.DISPUTED);
+  }
+
   // ─── Vendedor rejeita pedido ──────────────────────────────────────────
 
   async rejectOrder(orderId: string, vendorUserId: string, reason: string): Promise<Order> {
@@ -660,9 +682,9 @@ export class OrdersService {
       throw new BadRequestException('Voce nao pode cancelar este pedido');
     }
 
-    const cancellableStatuses = [OrderStatus.AWAITING_PAYMENT, OrderStatus.PENDING];
+    const cancellableStatuses = [OrderStatus.AWAITING_PAYMENT, OrderStatus.PENDING, OrderStatus.ACCEPTED];
     if (!cancellableStatuses.includes(order.status)) {
-      throw new BadRequestException('Este pedido ja foi aceito e nao pode mais ser cancelado');
+      throw new BadRequestException('Este pedido ja esta em preparo e nao pode mais ser cancelado');
     }
 
     // Cancelar pré-autorização ou estornar pagamento

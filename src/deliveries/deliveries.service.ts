@@ -8,6 +8,7 @@ import { OrdersService } from '../orders/orders.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class DeliveriesService implements OnModuleInit {
@@ -17,6 +18,7 @@ export class DeliveriesService implements OnModuleInit {
     @Inject(forwardRef(() => OrdersService))
     private ordersService: OrdersService,
     private offerService: DeliveryOfferService,
+    private notificationsService: NotificationsService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -62,6 +64,7 @@ export class DeliveriesService implements OnModuleInit {
       existing.deliverer = deliverer;
       const saved = await this.deliveriesRepository.save(existing);
       this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+      this.notifyVendorDeliveryAccepted(order, deliverer);
       return saved;
     }
 
@@ -72,7 +75,19 @@ export class DeliveriesService implements OnModuleInit {
 
     const saved = await this.deliveriesRepository.save(delivery);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+    this.notifyVendorDeliveryAccepted(order, deliverer);
     return saved;
+  }
+
+  private notifyVendorDeliveryAccepted(order: any, deliverer: AppUser) {
+    const storeOwnerId = order.store?.owner?.id || order.store?.ownerId;
+    if (!storeOwnerId) return;
+    this.notificationsService.sendToVendorUser(
+      storeOwnerId,
+      `Pedido #${order.orderNumber}`,
+      `Entregador ${deliverer.name} aceitou a entrega!`,
+      { type: 'DELIVERY_ACCEPTED', orderId: order.id },
+    ).catch(() => {});
   }
 
   async updateLocation(

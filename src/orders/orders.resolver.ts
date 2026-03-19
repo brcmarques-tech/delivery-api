@@ -181,6 +181,16 @@ export class OrdersResolver {
 
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard)
+  disputeCompletedOrder(
+    @Args('orderId') orderId: string,
+    @Args('reason') reason: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.disputeCompletedOrder(orderId, user.id, reason);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard)
   cancelOrder(
     @Args('orderId') orderId: string,
     @CurrentUser() user: AppUser,
