@@ -121,6 +121,14 @@ export class VendorUsersService {
     return this.vendorUsersRepository.findOne({ where: { email } });
   }
 
+  async findByCpfWithRecipient(cpf: string): Promise<VendorUser | null> {
+    return this.vendorUsersRepository
+      .createQueryBuilder('u')
+      .where('u.cpf = :cpf', { cpf })
+      .andWhere('u.pagarmeRecipientId IS NOT NULL')
+      .getOne();
+  }
+
   async findById(id: string): Promise<VendorUser | null> {
     return this.vendorUsersRepository.findOne({
       where: { id },

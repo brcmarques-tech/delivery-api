@@ -117,6 +117,14 @@ export class AppUsersService {
     return this.appUsersRepository.findOne({ where: { email } });
   }
 
+  async findByCpfWithRecipient(cpf: string): Promise<AppUser | null> {
+    return this.appUsersRepository
+      .createQueryBuilder('u')
+      .where('u.cpf = :cpf', { cpf })
+      .andWhere('u.pagarmeRecipientId IS NOT NULL')
+      .getOne();
+  }
+
   async findById(id: string): Promise<AppUser | null> {
     return this.appUsersRepository.findOne({
       where: { id },

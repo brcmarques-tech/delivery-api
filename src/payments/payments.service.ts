@@ -98,6 +98,69 @@ export class PaymentsService {
     return response.data;
   }
 
+  // ─── Pagar.me error translation ──────────────────────────────────────
+
+  private translatePagarmeError(errorData: any): string {
+    if (!errorData?.errors) {
+      return errorData?.message || 'Erro ao processar no Pagar.me. Tente novamente.';
+    }
+
+    const translations: Record<string, string> = {
+      // register_information - individual
+      'The document field is required': 'CPF é obrigatório',
+      'The name field is required': 'Nome é obrigatório',
+      'The email field is required': 'Email é obrigatório',
+      'The birthdate field is required': 'Data de nascimento é obrigatória',
+      'The monthly_income field is required': 'Renda mensal é obrigatória',
+      'The professional_occupation field is required': 'Profissão é obrigatória',
+      'The phone_numbers field is required': 'Telefone é obrigatório',
+      // register_information - corporation
+      'The company_name field is required': 'Razão social é obrigatória',
+      'The trading_name field is required': 'Nome fantasia é obrigatório',
+      'The annual_revenue field is required': 'Faturamento anual é obrigatório',
+      // address
+      'The street field is required': 'Rua é obrigatória',
+      'The street_number field is required': 'Número é obrigatório',
+      'The neighborhood field is required': 'Bairro é obrigatório',
+      'The city field is required': 'Cidade é obrigatória',
+      'The state field is required': 'Estado é obrigatório',
+      'The zip_code field is required': 'CEP é obrigatório',
+      // bank account
+      'The holder_name field is required': 'Nome do titular é obrigatório',
+      'The bank field is required': 'Banco é obrigatório',
+      'The branch_number field is required': 'Agência é obrigatória',
+      'The account_number field is required': 'Conta é obrigatória',
+      'The account_check_digit field is required': 'Dígito da conta é obrigatório',
+      // uniqueness
+      'External ID must be unique': 'Conta já registrada anteriormente',
+    };
+
+    const messages: string[] = [];
+    for (const field of Object.keys(errorData.errors)) {
+      const fieldErrors = errorData.errors[field];
+      if (Array.isArray(fieldErrors)) {
+        for (const msg of fieldErrors) {
+          const translated = translations[msg];
+          if (translated) {
+            messages.push(translated);
+          } else if (msg.includes('is required')) {
+            const fieldName = field.split('.').pop()?.replace(/_/g, ' ') || field;
+            messages.push(`Campo "${fieldName}" é obrigatório`);
+          } else if (msg.includes('is invalid') || msg.includes('is not valid')) {
+            const fieldName = field.split('.').pop()?.replace(/_/g, ' ') || field;
+            messages.push(`Campo "${fieldName}" é inválido`);
+          } else if (msg.includes('must be unique')) {
+            messages.push('Conta já registrada anteriormente');
+          } else {
+            messages.push(msg);
+          }
+        }
+      }
+    }
+
+    return messages.length > 0 ? messages.join('. ') + '.' : 'Erro de validação no Pagar.me.';
+  }
+
   // ─── Recipients (Recebedores) ─────────────────────────────────────────
 
   async createRecipient(data: {
@@ -170,8 +233,8 @@ export class PaymentsService {
       // Pagar.me expects DD/MM/YYYY format
       const [y, m, d] = (data.birthdate || '').split('-');
       registerInfo.birthdate = y && m && d ? `${d}/${m}/${y}` : data.birthdate;
-      registerInfo.monthly_income = data.monthlyIncome;
-      registerInfo.professional_occupation = data.professionalOccupation;
+      registerInfo.monthly_income = data.monthlyIncome || 300000; // R$ 3.000,00 em centavos
+      registerInfo.professional_occupation = data.professionalOccupation || 'Autônomo';
       if (data.motherName) registerInfo.mother_name = data.motherName;
       registerInfo.address = {
         street: data.address.street,
@@ -207,8 +270,8 @@ export class PaymentsService {
           type: 'individual',
           mother_name: p.motherName || '',
           birthdate: (() => { const [y2, m2, d2] = (p.birthdate || '').split('-'); return y2 && m2 && d2 ? `${d2}/${m2}/${y2}` : p.birthdate; })(),
-          monthly_income: p.monthlyIncome,
-          professional_occupation: p.professionalOccupation,
+          monthly_income: p.monthlyIncome || 300000,
+          professional_occupation: p.professionalOccupation || 'Empresário',
           self_declared_legal_representative: p.selfDeclaredLegalRepresentative,
           phone_numbers: [{ ddd: p.phone.ddd, number: p.phone.number, type: 'mobile' }],
           address: {
@@ -255,9 +318,80 @@ export class PaymentsService {
     } catch (err: any) {
       const errorData = err.response?.data;
       this.logger.error(`Failed to create recipient: ${JSON.stringify(errorData || err.message)}`);
-      throw new BadRequestException(
-        errorData?.message || 'Erro ao cadastrar recebedor no Pagar.me',
-      );
+      throw new BadRequestException(this.translatePagarmeError(errorData));
+    }
+  }
+
+  async updateRecipient(recipientId: string, data: any): Promise<any> {
+    const registerInfo: any = {
+      email: data.email,
+      document: data.document.replace(/\D/g, ''),
+      type: data.type,
+      phone_numbers: [
+        { ddd: data.phone.ddd, number: data.phone.number, type: 'mobile' },
+      ],
+    };
+
+    if (data.type === 'individual') {
+      registerInfo.name = data.name;
+      const [y, m, d] = (data.birthdate || '').split('-');
+      registerInfo.birthdate = y && m && d ? `${d}/${m}/${y}` : data.birthdate;
+      registerInfo.monthly_income = data.monthlyIncome || 300000;
+      registerInfo.professional_occupation = data.professionalOccupation || 'Autônomo';
+      if (data.address) {
+        registerInfo.address = {
+          street: data.address.street,
+          street_number: data.address.streetNumber,
+          complementary: data.address.complementary || 'N/A',
+          reference_point: data.address.referencePoint || 'N/A',
+          neighborhood: data.address.neighborhood,
+          city: data.address.city,
+          state: data.address.state,
+          zip_code: data.address.zipCode.replace(/\D/g, ''),
+        };
+      }
+    } else if (data.type === 'corporation') {
+      if (data.companyName) registerInfo.company_name = data.companyName;
+      if (data.tradingName) registerInfo.trading_name = data.tradingName;
+      if (data.annualRevenue) registerInfo.annual_revenue = data.annualRevenue;
+      if (data.address) {
+        registerInfo.main_address = {
+          street: data.address.street,
+          street_number: data.address.streetNumber,
+          complementary: data.address.complementary || 'N/A',
+          reference_point: data.address.referencePoint || 'N/A',
+          neighborhood: data.address.neighborhood,
+          city: data.address.city,
+          state: data.address.state,
+          zip_code: data.address.zipCode.replace(/\D/g, ''),
+        };
+      }
+    }
+
+    const body: any = {
+      register_information: registerInfo,
+      default_bank_account: {
+        holder_name: data.bankAccount.holderName,
+        holder_type: data.type,
+        holder_document: data.document.replace(/\D/g, ''),
+        bank: data.bankAccount.bank,
+        branch_number: data.bankAccount.branchNumber,
+        ...(data.bankAccount.branchCheckDigit ? { branch_check_digit: data.bankAccount.branchCheckDigit } : {}),
+        account_number: data.bankAccount.accountNumber,
+        account_check_digit: data.bankAccount.accountCheckDigit,
+        type: data.bankAccount.type,
+      },
+    };
+
+    try {
+      this.logger.log(`Updating recipient: ${recipientId}`);
+      const result = await this.pagarmePut(`/recipients/${recipientId}`, body);
+      this.logger.log(`Recipient updated: ${recipientId}`);
+      return result;
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Failed to update recipient: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(this.translatePagarmeError(errorData));
     }
   }
 
@@ -864,32 +998,110 @@ export class PaymentsService {
 
   // ─── Recipient Registration (replaces MP OAuth) ────────────────────────
 
+  private async findExistingRecipientByCpf(cpf: string, excludeUserId: string): Promise<string | null> {
+    const cleanCpf = cpf.replace(/\D/g, '');
+
+    // Checar se algum entregador com esse CPF já tem recipient
+    const deliverer = await this.appUsersService.findByCpfWithRecipient(cleanCpf);
+    if (deliverer && deliverer.id !== excludeUserId && deliverer.pagarmeRecipientId) {
+      return deliverer.pagarmeRecipientId;
+    }
+
+    // Checar se algum vendedor com esse CPF já tem recipient
+    const vendor = await this.vendorUsersService.findByCpfWithRecipient(cleanCpf);
+    if (vendor && vendor.id !== excludeUserId && vendor.pagarmeRecipientId) {
+      return vendor.pagarmeRecipientId;
+    }
+
+    return null;
+  }
+
   async registerVendorRecipient(userId: string, recipientData: any): Promise<{ recipientId: string }> {
     const vendor = await this.vendorUsersService.findById(userId);
     if (!vendor) throw new NotFoundException('Vendedor não encontrado');
 
-    const result = await this.createRecipient({
-      ...recipientData,
-      code: `vendor_${userId}`,
-    });
+    // Se já tem recipient, atualiza
+    if (vendor.pagarmeRecipientId) {
+      await this.updateRecipient(vendor.pagarmeRecipientId, recipientData);
+      return { recipientId: vendor.pagarmeRecipientId };
+    }
 
-    await this.vendorUsersService.updatePagarmeRecipient(userId, result.id);
+    // Reutilizar recipient se o mesmo CPF já existe em outro papel (ex: entregador)
+    const existingRecipientId = await this.findExistingRecipientByCpf(recipientData.document, userId);
+    if (existingRecipientId) {
+      this.logger.log(`Reusing existing recipient ${existingRecipientId} for vendor ${userId} (same CPF)`);
+      await this.updateRecipient(existingRecipientId, recipientData);
+      await this.vendorUsersService.updatePagarmeRecipient(userId, existingRecipientId);
+      return { recipientId: existingRecipientId };
+    }
 
-    return { recipientId: result.id };
+    try {
+      const result = await this.createRecipient({
+        ...recipientData,
+        code: `vendor_${userId}`,
+      });
+      await this.vendorUsersService.updatePagarmeRecipient(userId, result.id);
+      return { recipientId: result.id };
+    } catch (err: any) {
+      const errorMsg = JSON.stringify(err.response?.data || err.message || '');
+      if (errorMsg.includes('unique') || errorMsg.includes('External ID') || errorMsg.includes('external_id')) {
+        this.logger.warn(`Vendor recipient vendor_${userId} already exists on Pagar.me, recovering...`);
+        try {
+          const existing = await this.pagarmeGet(`/recipients?code=vendor_${userId}`);
+          const recipientId = existing?.data?.[0]?.id;
+          if (recipientId) {
+            await this.vendorUsersService.updatePagarmeRecipient(userId, recipientId);
+            await this.updateRecipient(recipientId, recipientData);
+            return { recipientId };
+          }
+        } catch { /* fall through */ }
+      }
+      throw err;
+    }
   }
 
   async registerDelivererRecipient(userId: string, recipientData: any): Promise<{ recipientId: string }> {
     const deliverer = await this.appUsersService.findById(userId);
     if (!deliverer) throw new NotFoundException('Entregador não encontrado');
 
-    const result = await this.createRecipient({
-      ...recipientData,
-      code: `deliverer_${userId}`,
-    });
+    // Se já tem recipient, atualiza
+    if (deliverer.pagarmeRecipientId) {
+      await this.updateRecipient(deliverer.pagarmeRecipientId, recipientData);
+      return { recipientId: deliverer.pagarmeRecipientId };
+    }
 
-    await this.appUsersService.updatePagarmeRecipient(userId, result.id);
+    // Reutilizar recipient se o mesmo CPF já existe em outro papel (ex: vendedor)
+    const existingRecipientId = await this.findExistingRecipientByCpf(recipientData.document, userId);
+    if (existingRecipientId) {
+      this.logger.log(`Reusing existing recipient ${existingRecipientId} for deliverer ${userId} (same CPF)`);
+      await this.updateRecipient(existingRecipientId, recipientData);
+      await this.appUsersService.updatePagarmeRecipient(userId, existingRecipientId);
+      return { recipientId: existingRecipientId };
+    }
 
-    return { recipientId: result.id };
+    try {
+      const result = await this.createRecipient({
+        ...recipientData,
+        code: `deliverer_${userId}`,
+      });
+      await this.appUsersService.updatePagarmeRecipient(userId, result.id);
+      return { recipientId: result.id };
+    } catch (err: any) {
+      const errorMsg = JSON.stringify(err.response?.data || err.message || '');
+      if (errorMsg.includes('unique') || errorMsg.includes('External ID') || errorMsg.includes('external_id')) {
+        this.logger.warn(`Deliverer recipient deliverer_${userId} already exists on Pagar.me, recovering...`);
+        try {
+          const existing = await this.pagarmeGet(`/recipients?code=deliverer_${userId}`);
+          const recipientId = existing?.data?.[0]?.id;
+          if (recipientId) {
+            await this.appUsersService.updatePagarmeRecipient(userId, recipientId);
+            await this.updateRecipient(recipientId, recipientData);
+            return { recipientId };
+          }
+        } catch { /* fall through */ }
+      }
+      throw err;
+    }
   }
 
   async disconnectVendor(userId: string): Promise<void> {
