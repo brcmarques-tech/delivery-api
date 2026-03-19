@@ -559,12 +559,14 @@ export class PaymentsService {
             statement_descriptor: 'BCMTECH',
             capture: false,
             ...(cardToken ? { card_token: cardToken } : { card_id: cardId }),
-            billing_address: {
-              line_1: store?.street ? `${store.number || 'SN'}, ${store.street}, ${store.neighborhood || 'Centro'}` : 'SN, Rua Nao Informada, Centro',
-              zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
-              city: store?.city || 'Arroio Grande',
-              state: store?.state || 'RS',
-              country: 'BR',
+            card: {
+              billing_address: {
+                line_1: store?.street ? `${store.number || 'SN'}, ${store.street}, ${store.neighborhood || 'Centro'}` : 'SN, Rua Nao Informada, Centro',
+                zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
+                city: store?.city || 'Arroio Grande',
+                state: store?.state || 'RS',
+                country: 'BR',
+              },
             },
           },
         },
