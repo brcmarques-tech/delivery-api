@@ -28,7 +28,7 @@ const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY],
   [OrderStatus.READY]: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
-  [OrderStatus.VENDOR_CONFIRMED_PICKUP]: [OrderStatus.PICKED_UP],
+  [OrderStatus.VENDOR_CONFIRMED_PICKUP]: [OrderStatus.PICKED_UP, OrderStatus.DELIVERING],
   [OrderStatus.PICKED_UP]: [OrderStatus.DELIVERING],
   [OrderStatus.DELIVERING]: [OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
   [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: [OrderStatus.COMPLETED, OrderStatus.DISPUTED],
