@@ -639,12 +639,12 @@ export class OrdersService {
       }
       return this.updateStatus(order.id, OrderStatus.CANCELLED);
     } else {
-      // DELIVERER_FAVOR — libera dinheiro do entregador (PIX: transfere)
-      if (order.paymentMethod === 'PIX') {
+      // DELIVERER_FAVOR — settle payment (transfer to vendor + deliverer)
+      if (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD') {
         try {
-          await this.paymentsService.transferDeliveryFeeToDeliverer(order);
+          await this.paymentsService.settlePayment(order);
         } catch (err: any) {
-          console.error('Transfer on dispute resolution failed:', err?.message);
+          console.error('Settlement on dispute resolution failed:', err?.message);
         }
       }
       return this.updateStatus(order.id, OrderStatus.COMPLETED);
@@ -800,12 +800,13 @@ export class OrdersService {
   // ─── Completar pedido com pagamento (captura cartão / transferência PIX) ──
 
   // Capturar cartão quando entregador confirma coleta (PICKED_UP)
-  async captureCardOnPickup(orderId: string, delivererRecipientId: string): Promise<void> {
+  // No split — all funds go to platform. Settlement happens after delivery.
+  async captureCardOnPickup(orderId: string): Promise<void> {
     const order = await this.findById(orderId);
     if (!order.preAuthChargeId) return;
 
     try {
-      await this.paymentsService.capturePreAuth(order, delivererRecipientId);
+      await this.paymentsService.capturePreAuth(order);
       order.capturedAt = new Date();
       await this.ordersRepository.save(order);
     } catch (err: any) {
@@ -832,12 +833,12 @@ export class OrdersService {
   }
 
   async completeOrderWithPayment(order: Order): Promise<Order> {
-    // PIX: transferir taxa de entrega pro entregador
-    if (order.paymentMethod === 'PIX' && !order.isPickup && !order.store?.hasOwnDelivery) {
+    // Settle payment: transfer vendor and deliverer shares from platform
+    if (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD') {
       try {
-        await this.paymentsService.transferDeliveryFeeToDeliverer(order);
+        await this.paymentsService.settlePayment(order);
       } catch (err: any) {
-        console.error('Transfer delivery fee failed:', err?.message);
+        console.error('Settlement failed:', err?.message);
       }
     }
 

@@ -108,10 +108,11 @@ export class DeliveriesService implements OnModuleInit {
 
     delivery.pickedUpAt = new Date();
 
-    // Capturar pré-autorização do cartão com split incluindo entregador
-    if (order.preAuthChargeId && delivery.deliverer?.pagarmeRecipientId) {
+    // Capturar pré-autorização do cartão (sem split — tudo pra plataforma)
+    // Settlement (transfers) happens after delivery is confirmed
+    if (order.preAuthChargeId) {
       try {
-        await this.ordersService.captureCardOnPickup(order.id, delivery.deliverer.pagarmeRecipientId);
+        await this.ordersService.captureCardOnPickup(order.id);
       } catch (err: any) {
         console.error('Capture on pickup failed:', err?.message);
       }

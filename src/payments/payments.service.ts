@@ -589,10 +589,8 @@ export class PaymentsService {
 
     await this.getOrCreatePagarmeCustomer(customer);
 
-    // Build split rules (skip if recipients not configured)
-    const splitRules = (vendorRecipientId && platformRecipientId)
-      ? await this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId)
-      : [];
+    // No split at payment time — all money goes to platform.
+    // Transfers to vendor/deliverer happen after delivery is confirmed.
 
     const totalCents = Math.round(Number(order.total) * 100);
 
@@ -654,7 +652,7 @@ export class PaymentsService {
       );
 
       // Create hosted checkout page where customer can enter card details
-      const checkoutUrl = await this.createPaymentLink(order, totalCents, splitRules);
+      const checkoutUrl = await this.createPaymentLink(order, totalCents, []);
 
       return { checkoutUrl, preferenceId: result.id };
     } catch (err: any) {
@@ -676,11 +674,9 @@ export class PaymentsService {
     this.logger.log(`PIX split check: vendorRecipientId=${vendorRecipientId || 'NULL'} platformRecipientId=${platformRecipientId || 'NULL'} storeOwner=${store?.owner?.email || 'NULL'}`);
 
     const totalCents = Math.round(Number(order.total) * 100);
-    const splitRules = (vendorRecipientId && platformRecipientId)
-      ? await this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId)
-      : [];
 
-    this.logger.log(`PIX split rules: ${JSON.stringify(splitRules)}`);
+    // No split at payment time — all money goes to platform.
+    // Transfers to vendor/deliverer happen after delivery is confirmed.
 
     const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
     const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
@@ -719,7 +715,6 @@ export class PaymentsService {
               { name: 'Pedido', value: order.orderNumber },
             ],
           },
-          ...(splitRules.length > 0 ? { split: splitRules } : {}),
         },
       ],
       metadata: {
@@ -759,34 +754,20 @@ export class PaymentsService {
 
   // ─── Pre-Auth Capture & Cancel ─────────────────────────────────────────
 
-  // Captura a pré-autorização com split incluindo o entregador
-  async capturePreAuth(order: Order, delivererRecipientId?: string): Promise<{ status: string }> {
+  // Captura a pré-autorização SEM split — tudo vai pra plataforma.
+  // Transfers to vendor/deliverer happen after delivery is confirmed.
+  async capturePreAuth(order: Order): Promise<{ status: string }> {
     if (!order.preAuthChargeId) {
       throw new BadRequestException('Pedido nao possui pre-autorizacao');
     }
 
-    const store = order.store;
-    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
-    const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
     const totalCents = Math.round(Number(order.total) * 100);
-
-    let splitRules: any[] = [];
-    if (vendorRecipientId && platformRecipientId) {
-      if (delivererRecipientId && !store?.hasOwnDelivery) {
-        splitRules = await this.buildSplitRulesWithDeliverer(order, store, vendorRecipientId, platformRecipientId, delivererRecipientId);
-      } else {
-        splitRules = await this.buildSplitRulesWithoutDeliverer(order, store, vendorRecipientId, platformRecipientId);
-      }
-    }
 
     try {
       const body: any = { amount: totalCents, code: `order-${order.id}` };
-      if (splitRules.length > 0) {
-        body.split = splitRules;
-      }
 
       const result = await this.pagarmePost(`/charges/${order.preAuthChargeId}/capture`, body);
-      this.logger.log(`Pre-auth captured for order #${order.orderNumber} | charge: ${order.preAuthChargeId} | split: ${splitRules.length > 0}`);
+      this.logger.log(`Pre-auth captured for order #${order.orderNumber} | charge: ${order.preAuthChargeId} | no split (platform holds funds)`);
 
       return { status: result.status || 'paid' };
     } catch (err: any) {
@@ -809,47 +790,79 @@ export class PaymentsService {
     }
   }
 
-  // Transfere a taxa de entrega da plataforma pro entregador (usado no PIX após COMPLETED)
-  async transferDeliveryFeeToDeliverer(order: Order): Promise<{ transferId?: string }> {
+  // Settle payment after delivery is confirmed.
+  // Transfers vendor and deliverer shares from platform account.
+  async settlePayment(order: Order): Promise<void> {
     const store = order.store;
-    if (store?.hasOwnDelivery || order.isPickup) {
-      return {}; // Sem entregador da plataforma
-    }
-
-    const delivery = (order as any).delivery;
-    const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
-    if (!delivererRecipientId) {
-      this.logger.warn(`No deliverer recipient for order #${order.orderNumber}, skipping transfer`);
-      return {};
-    }
-
+    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
+    const totalCents = Math.round(Number(order.total) * 100);
+    const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
     const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
-    if (deliveryFeeCents <= 0) return {};
 
     const deliveryCommissionPercent = await this.platformConfigService.getDeliveryCommissionPercent();
-    const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
-    const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
 
-    if (delivererAmount <= 0) return {};
+    // 1. Transfer to deliverer (if applicable)
+    if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0) {
+      const delivery = (order as any).delivery;
+      const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
 
-    try {
-      const result = await this.pagarmePost('/transfers', {
-        amount: delivererAmount,
-        recipient_id: delivererRecipientId,
-        metadata: {
-          order_id: order.id,
-          order_number: order.orderNumber,
-          type: 'delivery_fee',
-        },
-      });
-      this.logger.log(`Transfer to deliverer for order #${order.orderNumber} | amount: ${delivererAmount} cents | transfer: ${result.id}`);
-      return { transferId: result.id };
-    } catch (err: any) {
-      const errorData = err.response?.data;
-      this.logger.error(`Transfer to deliverer failed: ${JSON.stringify(errorData || err.message)}`);
-      // Não lançar erro — o pedido já foi entregue, a transferência pode ser retentada
-      return {};
+      if (delivererRecipientId) {
+        const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+        const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
+
+        if (delivererAmount > 0) {
+          try {
+            const result = await this.pagarmePost('/transfers', {
+              amount: delivererAmount,
+              recipient_id: delivererRecipientId,
+              metadata: {
+                order_id: order.id,
+                order_number: order.orderNumber,
+                type: 'delivery_fee',
+              },
+            });
+            this.logger.log(`Transfer to deliverer for order #${order.orderNumber} | amount: ${delivererAmount} cents | transfer: ${result.id}`);
+          } catch (err: any) {
+            this.logger.error(`Transfer to deliverer failed: ${JSON.stringify(err.response?.data || err.message)}`);
+          }
+        }
+      } else {
+        this.logger.warn(`No deliverer recipient for order #${order.orderNumber}, skipping deliverer transfer`);
+      }
     }
+
+    // 2. Transfer to vendor
+    if (vendorRecipientId) {
+      // Vendor gets: total - commission - delivery fee (if platform delivery)
+      const platformDeliveryFee = (!store?.hasOwnDelivery && !order.isPickup) ? deliveryFeeCents : 0;
+      const vendorAmount = totalCents - commissionCents - platformDeliveryFee;
+
+      if (vendorAmount > 0) {
+        try {
+          const result = await this.pagarmePost('/transfers', {
+            amount: vendorAmount,
+            recipient_id: vendorRecipientId,
+            metadata: {
+              order_id: order.id,
+              order_number: order.orderNumber,
+              type: 'vendor_payment',
+            },
+          });
+          this.logger.log(`Transfer to vendor for order #${order.orderNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
+        } catch (err: any) {
+          this.logger.error(`Transfer to vendor failed: ${JSON.stringify(err.response?.data || err.message)}`);
+        }
+      }
+    } else {
+      this.logger.warn(`No vendor recipient for order #${order.orderNumber}, skipping vendor transfer`);
+    }
+
+    // Platform keeps: commission + delivery commission (stays in platform account automatically)
+    const deliveryCommissionCents = (!store?.hasOwnDelivery && !order.isPickup)
+      ? Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100))
+      : 0;
+    const platformKeeps = commissionCents + deliveryCommissionCents;
+    this.logger.log(`Settlement for order #${order.orderNumber} | platform keeps: ${platformKeeps} cents`);
   }
 
   // ─── Payment Link (hosted checkout) ────────────────────────────────────
