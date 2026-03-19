@@ -8,6 +8,7 @@ const OFFER_TIMEOUT_MS = 30_000; // 30 seconds per deliverer
 
 interface PendingOffer {
   orderId: string;
+  customerId: string;
   storeLat: number;
   storeLng: number;
   storeAddress: string;
@@ -52,6 +53,7 @@ export class DeliveryOfferService {
    */
   startOffer(order: {
     id: string;
+    customerId: string;
     orderNumber: string;
     storeLat: number;
     storeLng: number;
@@ -65,6 +67,7 @@ export class DeliveryOfferService {
 
     const offer: PendingOffer = {
       orderId: order.id,
+      customerId: order.customerId,
       storeLat: order.storeLat,
       storeLng: order.storeLng,
       storeAddress: order.storeAddress,
@@ -73,7 +76,7 @@ export class DeliveryOfferService {
       itemCount: order.itemCount,
       orderNumber: order.orderNumber,
       currentDelivererId: null,
-      declinedBy: new Set(),
+      declinedBy: new Set([order.customerId]), // Exclui o próprio comprador
       timer: null,
       resolved: false,
     };

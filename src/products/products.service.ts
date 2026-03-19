@@ -202,6 +202,22 @@ export class ProductsService {
     }
   }
 
+  async searchPublic(query: string, limit = 20): Promise<Product[]> {
+    if (!query.trim()) return [];
+
+    return this.productsRepository
+      .createQueryBuilder('product')
+      .leftJoinAndSelect('product.store', 'store')
+      .leftJoinAndSelect('product.category', 'category')
+      .where('store.isActive = :active', { active: true })
+      .andWhere('product.isAvailable = :available', { available: true })
+      .andWhere('product.isActive = :isActive', { isActive: true })
+      .andWhere('(LOWER(product.name) LIKE :q OR LOWER(product.description) LIKE :q)', { q: `%${query.toLowerCase()}%` })
+      .orderBy('product.name')
+      .limit(limit)
+      .getMany();
+  }
+
   async searchCatalog(query: string, limit = 20): Promise<Product[]> {
     if (!query.trim()) return [];
 

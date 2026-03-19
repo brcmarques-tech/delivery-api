@@ -343,6 +343,101 @@ export class OrdersService {
     });
   }
 
+  async getPopularProducts(limit = 12): Promise<any[]> {
+    const rows = await this.ordersRepository.query(
+      `SELECT p.id, p.name, p.description, p.price, p."promotionalPrice", p."imageUrl",
+              p."isAvailable", p."isVariableWeight", p.unit,
+              s.id AS "storeId", s.name AS "storeName", s."logoUrl" AS "storeLogoUrl",
+              s."isOpen" AS "storeIsOpen",
+              c.id AS "categoryId", c.name AS "categoryName",
+              SUM(oi.quantity) AS "totalSold"
+       FROM order_items oi
+       JOIN products p ON oi."productId" = p.id
+       JOIN stores s ON p."storeId" = s.id
+       LEFT JOIN categories c ON p."categoryId" = c.id
+       JOIN orders o ON oi."orderId" = o.id
+       WHERE o.status NOT IN ('CANCELLED', 'EXPIRED')
+         AND p."isAvailable" = true
+         AND p."isActive" = true
+         AND s."isActive" = true
+         AND o."createdAt" >= NOW() - INTERVAL '30 days'
+       GROUP BY p.id, p.name, p.description, p.price, p."promotionalPrice", p."imageUrl",
+                p."isAvailable", p."isVariableWeight", p.unit,
+                s.id, s.name, s."logoUrl", s."isOpen",
+                c.id, c.name
+       ORDER BY "totalSold" DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows;
+  }
+
+  async getReorderSuggestions(customerId: string, limit = 10): Promise<any[]> {
+    const rows = await this.ordersRepository.query(
+      `SELECT DISTINCT ON (p.id) p.id, p.name, p.description, p.price, p."promotionalPrice", p."imageUrl",
+              p."isAvailable",
+              s.id AS "storeId", s.name AS "storeName", s."logoUrl" AS "storeLogoUrl",
+              s."isOpen" AS "storeIsOpen",
+              MAX(o."createdAt") AS "lastOrderedAt"
+       FROM order_items oi
+       JOIN products p ON oi."productId" = p.id
+       JOIN stores s ON p."storeId" = s.id
+       JOIN orders o ON oi."orderId" = o.id
+       WHERE o."customerId" = $1
+         AND o.status NOT IN ('CANCELLED', 'EXPIRED')
+         AND p."isAvailable" = true
+         AND p."isActive" = true
+         AND s."isActive" = true
+       GROUP BY p.id, p.name, p.description, p.price, p."promotionalPrice", p."imageUrl",
+                p."isAvailable",
+                s.id, s.name, s."logoUrl", s."isOpen"
+       ORDER BY p.id, "lastOrderedAt" DESC
+       LIMIT $2`,
+      [customerId, limit],
+    );
+    return rows;
+  }
+
+  async getFrequentStores(customerId: string, limit = 6): Promise<any[]> {
+    const rows = await this.ordersRepository.query(
+      `SELECT s.id, s.name, s.description, s."logoUrl", s."bannerUrl", s."isOpen",
+              s."freeDelivery", s."deliveryFee", s."verificationLevel",
+              COUNT(o.id) AS "orderCount",
+              MAX(o."createdAt") AS "lastOrderAt"
+       FROM orders o
+       JOIN stores s ON o."storeId" = s.id
+       WHERE o."customerId" = $1
+         AND o.status NOT IN ('CANCELLED', 'EXPIRED')
+         AND s."isActive" = true
+       GROUP BY s.id, s.name, s.description, s."logoUrl", s."bannerUrl", s."isOpen",
+                s."freeDelivery", s."deliveryFee", s."verificationLevel"
+       ORDER BY "orderCount" DESC, "lastOrderAt" DESC
+       LIMIT $2`,
+      [customerId, limit],
+    );
+    return rows;
+  }
+
+  async getTopStoresWeekly(limit = 5): Promise<any[]> {
+    const rows = await this.ordersRepository.query(
+      `SELECT s.id, s.name, s.description, s."logoUrl", s."bannerUrl", s."isOpen",
+              s."freeDelivery", s."deliveryFee", s."verificationLevel",
+              COUNT(o.id) AS "orderCount",
+              COALESCE(SUM(o.total), 0) AS "totalRevenue"
+       FROM orders o
+       JOIN stores s ON o."storeId" = s.id
+       WHERE o.status NOT IN ('CANCELLED', 'EXPIRED')
+         AND s."isActive" = true
+         AND o."createdAt" >= NOW() - INTERVAL '7 days'
+       GROUP BY s.id, s.name, s.description, s."logoUrl", s."bannerUrl", s."isOpen",
+                s."freeDelivery", s."deliveryFee", s."verificationLevel"
+       ORDER BY "orderCount" DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows;
+  }
+
   async expireAwaitingPaymentOrders(): Promise<number> {
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
     const expired = await this.ordersRepository.find({

@@ -35,7 +35,7 @@ export class CartResolver {
 
   @Mutation(() => CartItem)
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.CUSTOMER)
+  @Roles(UserRole.CUSTOMER, UserRole.DELIVERER)
   addToCart(
     @Args('input') input: AddToCartInput,
     @CurrentUser() user: AppUser,
@@ -45,7 +45,7 @@ export class CartResolver {
 
   @Mutation(() => CartItem)
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.CUSTOMER)
+  @Roles(UserRole.CUSTOMER, UserRole.DELIVERER)
   updateCartItem(
     @Args('input') input: UpdateCartItemInput,
     @CurrentUser() user: AppUser,
@@ -55,7 +55,7 @@ export class CartResolver {
 
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.CUSTOMER)
+  @Roles(UserRole.CUSTOMER, UserRole.DELIVERER)
   removeFromCart(
     @Args('cartItemId') cartItemId: string,
     @CurrentUser() user: AppUser,
@@ -65,14 +65,14 @@ export class CartResolver {
 
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.CUSTOMER)
+  @Roles(UserRole.CUSTOMER, UserRole.DELIVERER)
   clearCart(@CurrentUser() user: AppUser): Promise<boolean> {
     return this.cartService.clearCart(user.id);
   }
 
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.CUSTOMER)
+  @Roles(UserRole.CUSTOMER, UserRole.DELIVERER)
   clearCartByStore(
     @Args('storeId') storeId: string,
     @CurrentUser() user: AppUser,
@@ -82,7 +82,7 @@ export class CartResolver {
 
   @Query(() => [CartItem])
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.CUSTOMER)
+  @Roles(UserRole.CUSTOMER, UserRole.DELIVERER)
   myCart(@CurrentUser() user: AppUser): Promise<CartItem[]> {
     return this.cartService.getMyCart(user.id);
   }
@@ -98,7 +98,7 @@ export class CartResolver {
 
   @Query(() => [CartItem])
   @UseGuards(GqlAuthGuard, RolesGuard)
-  @Roles(UserRole.CUSTOMER)
+  @Roles(UserRole.CUSTOMER, UserRole.DELIVERER)
   myCartByStore(
     @Args('storeId') storeId: string,
     @CurrentUser() user: AppUser,

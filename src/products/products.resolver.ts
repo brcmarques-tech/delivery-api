@@ -110,6 +110,14 @@ export class ProductsResolver {
   }
 
   @Query(() => [Product])
+  searchProducts(
+    @Args('query') query: string,
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 20 }) limit?: number,
+  ): Promise<Product[]> {
+    return this.productsService.searchPublic(query, limit);
+  }
+
+  @Query(() => [Product])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   searchCatalog(

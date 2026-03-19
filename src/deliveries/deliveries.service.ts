@@ -26,6 +26,7 @@ export class DeliveriesService implements OnModuleInit {
       if (!store) return;
       this.offerService.startOffer({
         id: order.id,
+        customerId: order.customer?.id || '',
         orderNumber: order.orderNumber,
         storeLat: Number(store.latitude),
         storeLng: Number(store.longitude),

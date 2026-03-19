@@ -6,6 +6,7 @@ import { PubSub } from 'graphql-subscriptions';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { Store } from './entities/store.entity';
+import { StoreFollow } from './entities/store-follow.entity';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
 import { VendorUser } from '../users/entities/vendor-user.entity';
@@ -22,6 +23,8 @@ export class StoresService {
   constructor(
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
+    @InjectRepository(StoreFollow)
+    private storeFollowRepository: Repository<StoreFollow>,
     @InjectRepository(AppUser)
     private appUsersRepository: Repository<AppUser>,
     @InjectRepository(VendorUser)
@@ -289,5 +292,54 @@ export class StoresService {
 
   async saveStore(store: Store): Promise<Store> {
     return this.storesRepository.save(store);
+  }
+
+  // Follow system
+  async followStore(userId: string, storeId: string): Promise<boolean> {
+    const store = await this.storesRepository.findOne({ where: { id: storeId } });
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+
+    const existing = await this.storeFollowRepository.findOne({
+      where: { user: { id: userId }, store: { id: storeId } },
+    });
+    if (existing) return true; // already following
+
+    const follow = this.storeFollowRepository.create({
+      user: { id: userId } as AppUser,
+      store: { id: storeId } as Store,
+    });
+    await this.storeFollowRepository.save(follow);
+    return true;
+  }
+
+  async unfollowStore(userId: string, storeId: string): Promise<boolean> {
+    await this.storeFollowRepository.delete({
+      user: { id: userId },
+      store: { id: storeId },
+    });
+    return true;
+  }
+
+  async isFollowing(userId: string, storeId: string): Promise<boolean> {
+    const count = await this.storeFollowRepository.count({
+      where: { user: { id: userId }, store: { id: storeId } },
+    });
+    return count > 0;
+  }
+
+  async getFollowedStores(userId: string): Promise<Store[]> {
+    const follows = await this.storeFollowRepository.find({
+      where: { user: { id: userId } },
+      relations: ['store', 'store.owner'],
+      order: { createdAt: 'DESC' },
+    });
+    const stores = follows.map((f) => f.store).filter((s) => s.isActive);
+    return this.sortByPriority(stores);
+  }
+
+  async getFollowerCount(storeId: string): Promise<number> {
+    return this.storeFollowRepository.count({
+      where: { store: { id: storeId } },
+    });
   }
 }

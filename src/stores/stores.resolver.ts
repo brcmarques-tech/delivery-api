@@ -1,8 +1,9 @@
-import { Resolver, Query, Mutation, Args, Float, ResolveField, Parent, Subscription } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Float, Int, ResolveField, Parent, Subscription } from '@nestjs/graphql';
 import { UseGuards, Inject } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
 import { StoresService } from './stores.service';
+import { AppUser } from '../users/entities/app-user.entity';
 import { VerificationService } from './verification.service';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
@@ -227,6 +228,45 @@ export class StoresResolver {
     const adminEmail = admin.notificationEmail || admin.email;
     this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Verificacao de loja alterada', `Loja: ${store.name}\nNivel: ${level}${score !== undefined ? `\nScore: ${score}` : ''}`).catch(() => {});
     return result;
+  }
+
+  // Follow system
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  followStore(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<boolean> {
+    return this.storesService.followStore(user.id, storeId);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  unfollowStore(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<boolean> {
+    return this.storesService.unfollowStore(user.id, storeId);
+  }
+
+  @Query(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  isFollowingStore(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<boolean> {
+    return this.storesService.isFollowing(user.id, storeId);
+  }
+
+  @Query(() => [Store])
+  @UseGuards(GqlAuthGuard)
+  followedStores(@CurrentUser() user: AppUser): Promise<Store[]> {
+    return this.storesService.getFollowedStores(user.id);
+  }
+
+  @Query(() => Int)
+  followerCount(@Args('storeId') storeId: string): Promise<number> {
+    return this.storesService.getFollowerCount(storeId);
   }
 
   @ResolveField(() => Boolean)

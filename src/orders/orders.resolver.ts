@@ -1,4 +1,4 @@
-import { Resolver, Query, Mutation, Args, Subscription, Int } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Subscription, Int, ObjectType, Field, ID, Float } from '@nestjs/graphql';
 import { UseGuards, Inject } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
@@ -11,6 +11,71 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole, OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+
+@ObjectType()
+class PopularProduct {
+  @Field(() => ID) id: string;
+  @Field() name: string;
+  @Field({ nullable: true }) description: string;
+  @Field(() => Float) price: number;
+  @Field(() => Float, { nullable: true }) promotionalPrice: number;
+  @Field({ nullable: true }) imageUrl: string;
+  @Field() isAvailable: boolean;
+  @Field({ nullable: true }) unit: string;
+  @Field() storeId: string;
+  @Field() storeName: string;
+  @Field({ nullable: true }) storeLogoUrl: string;
+  @Field() storeIsOpen: boolean;
+  @Field({ nullable: true }) categoryId: string;
+  @Field({ nullable: true }) categoryName: string;
+  @Field(() => Int) totalSold: number;
+}
+
+@ObjectType()
+class ReorderProduct {
+  @Field(() => ID) id: string;
+  @Field() name: string;
+  @Field({ nullable: true }) description: string;
+  @Field(() => Float) price: number;
+  @Field(() => Float, { nullable: true }) promotionalPrice: number;
+  @Field({ nullable: true }) imageUrl: string;
+  @Field() isAvailable: boolean;
+  @Field() storeId: string;
+  @Field() storeName: string;
+  @Field({ nullable: true }) storeLogoUrl: string;
+  @Field() storeIsOpen: boolean;
+  @Field() lastOrderedAt: Date;
+}
+
+@ObjectType()
+class WeeklyTopStore {
+  @Field(() => ID) id: string;
+  @Field() name: string;
+  @Field({ nullable: true }) description: string;
+  @Field({ nullable: true }) logoUrl: string;
+  @Field({ nullable: true }) bannerUrl: string;
+  @Field() isOpen: boolean;
+  @Field() freeDelivery: boolean;
+  @Field(() => Float) deliveryFee: number;
+  @Field({ nullable: true }) verificationLevel: string;
+  @Field(() => Int) orderCount: number;
+  @Field(() => Float) totalRevenue: number;
+}
+
+@ObjectType()
+class FrequentStore {
+  @Field(() => ID) id: string;
+  @Field() name: string;
+  @Field({ nullable: true }) description: string;
+  @Field({ nullable: true }) logoUrl: string;
+  @Field({ nullable: true }) bannerUrl: string;
+  @Field() isOpen: boolean;
+  @Field() freeDelivery: boolean;
+  @Field(() => Float) deliveryFee: number;
+  @Field({ nullable: true }) verificationLevel: string;
+  @Field(() => Int) orderCount: number;
+  @Field() lastOrderAt: Date;
+}
 
 @Resolver(() => Order)
 export class OrdersResolver {
@@ -38,6 +103,38 @@ export class OrdersResolver {
   @UseGuards(GqlAuthGuard)
   myOrders(@CurrentUser() user: AppUser): Promise<Order[]> {
     return this.ordersService.findByCustomer(user.id);
+  }
+
+  @Query(() => [PopularProduct])
+  popularProducts(
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 12 }) limit?: number,
+  ): Promise<PopularProduct[]> {
+    return this.ordersService.getPopularProducts(limit);
+  }
+
+  @Query(() => [ReorderProduct])
+  @UseGuards(GqlAuthGuard)
+  reorderSuggestions(
+    @CurrentUser() user: AppUser,
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 10 }) limit?: number,
+  ): Promise<ReorderProduct[]> {
+    return this.ordersService.getReorderSuggestions(user.id, limit);
+  }
+
+  @Query(() => [FrequentStore])
+  @UseGuards(GqlAuthGuard)
+  frequentStores(
+    @CurrentUser() user: AppUser,
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 6 }) limit?: number,
+  ): Promise<FrequentStore[]> {
+    return this.ordersService.getFrequentStores(user.id, limit);
+  }
+
+  @Query(() => [WeeklyTopStore])
+  topStoresWeekly(
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 5 }) limit?: number,
+  ): Promise<WeeklyTopStore[]> {
+    return this.ordersService.getTopStoresWeekly(limit);
   }
 
   @Query(() => [Order])

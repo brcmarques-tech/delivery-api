@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Store } from './entities/store.entity';
+import { StoreFollow } from './entities/store-follow.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { Coupon } from '../coupons/entities/coupon.entity';
@@ -13,7 +14,7 @@ import { DeliveriesModule } from '../deliveries/deliveries.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Store, VendorUser, AppUser, Coupon]),
+    TypeOrmModule.forFeature([Store, StoreFollow, VendorUser, AppUser, Coupon]),
     PlatformConfigModule,
     forwardRef(() => DeliveriesModule),
   ],
