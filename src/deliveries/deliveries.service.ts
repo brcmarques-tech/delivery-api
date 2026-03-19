@@ -47,13 +47,30 @@ export class DeliveriesService implements OnModuleInit {
 
     const order = await this.ordersService.findById(orderId);
 
+    // Check if delivery already exists for this order (e.g. from offer system)
+    const existing = await this.deliveriesRepository.findOne({
+      where: { order: { id: orderId } },
+      relations: ['order', 'deliverer'],
+    });
+
+    if (existing) {
+      // If already assigned to another deliverer, reject
+      if (existing.deliverer && existing.deliverer.id !== deliverer.id) {
+        throw new BadRequestException('Esta entrega já foi aceita por outro entregador.');
+      }
+      // Assign this deliverer to existing delivery
+      existing.deliverer = deliverer;
+      const saved = await this.deliveriesRepository.save(existing);
+      this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+      return saved;
+    }
+
     const delivery = this.deliveriesRepository.create({
       order,
       deliverer,
     });
 
     const saved = await this.deliveriesRepository.save(delivery);
-    // Não muda mais pra PICKED_UP direto — vendedor precisa confirmar primeiro
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
     return saved;
   }
