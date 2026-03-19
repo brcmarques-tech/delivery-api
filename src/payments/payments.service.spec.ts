@@ -61,12 +61,14 @@ describe('PaymentsService', () => {
 
   const mockAppUsersService = {
     findById: jest.fn(),
+    findByCpfWithRecipient: jest.fn().mockResolvedValue(null),
     updatePagarmeRecipient: jest.fn(),
     disconnectPayment: jest.fn(),
   };
 
   const mockVendorUsersService = {
     findById: jest.fn(),
+    findByCpfWithRecipient: jest.fn().mockResolvedValue(null),
     updatePagarmeRecipient: jest.fn(),
     updateVendorPlan: jest.fn(),
     disconnectPayment: jest.fn(),
@@ -170,11 +172,10 @@ describe('PaymentsService', () => {
 
   // ─── createOrderPix ─────────────────────────────────────────
   describe('createOrderPix', () => {
-    it('should create a Pagar.me order with PIX payment and split rules', async () => {
+    it('should create a Pagar.me order with PIX payment WITHOUT split (platform holds funds)', async () => {
       const order = makeOrder({ paymentMethod: 'PIX' });
       const customer = makeCustomer();
 
-      // Mock customer creation
       httpService.axiosRef.post.mockImplementation((url: string) => {
         if (url.includes('/customers')) {
           return Promise.resolve({ data: { id: 'cus_123' } });
@@ -204,85 +205,93 @@ describe('PaymentsService', () => {
       expect(result.qrCode).toBe('pix-qr-code-string');
       expect(result.qrCodeUrl).toBe('https://api.pagar.me/qrcode/123');
 
-      // Verify the order body sent to Pagar.me
+      // Verify NO split rules — all money goes to platform
       const orderCall = httpService.axiosRef.post.mock.calls.find((c: any) => c[0].includes('/orders'));
       const body = orderCall[1];
       expect(body.payments[0].payment_method).toBe('pix');
       expect(body.payments[0].pix.expires_in).toBe(1800);
-      expect(body.payments[0].split).toBeDefined();
-      expect(body.payments[0].split.length).toBeGreaterThanOrEqual(2); // platform + vendor at minimum
-    });
-
-    it('should work without split when vendor has no pagarmeRecipientId', async () => {
-      const order = makeOrder({
-        store: makeStore({ owner: makeVendorUser({ pagarmeRecipientId: null }) }),
-      });
-      const customer = makeCustomer();
-
-      const result = await service.createOrderPix(order, customer);
-      expect(result.preferenceId).toBeDefined();
-
-      const body = mockHttpService.axiosRef.post.mock.calls[0][1];
       expect(body.payments[0].split).toBeUndefined();
     });
   });
 
-  // ─── buildSplitRules (tested via createOrderPix) ─────────────
-  describe('split rules', () => {
-    it('should include deliverer in split when platform handles delivery', async () => {
+  // ─── settlePayment (post-delivery transfers) ─────────────
+  describe('settlePayment', () => {
+    it('should transfer to vendor and deliverer after delivery', async () => {
       const order = makeOrder({
         paymentMethod: 'PIX',
+        isPickup: false,
         delivery: {
           deliverer: { pagarmeRecipientId: 'rp_deliverer_456' },
         },
       });
-      const customer = makeCustomer();
 
-      httpService.axiosRef.post.mockImplementation((url: string) => {
-        if (url.includes('/customers')) return Promise.resolve({ data: { id: 'cus_1' } });
-        if (url.includes('/orders')) return Promise.resolve({
-          data: { id: 'or_1', charges: [{ last_transaction: { qr_code: '', qr_code_url: '' } }] },
-        });
-        return Promise.resolve({ data: {} });
+      httpService.axiosRef.post.mockResolvedValue({
+        data: { id: 'tr_123', status: 'pending' },
       });
 
-      await service.createOrderPix(order, customer);
+      await service.settlePayment(order);
 
-      const orderCall = httpService.axiosRef.post.mock.calls.find((c: any) => c[0].includes('/orders'));
-      const splitRules = orderCall[1].payments[0].split;
+      // Should make 2 transfer calls: deliverer + vendor
+      const transferCalls = httpService.axiosRef.post.mock.calls.filter(
+        (c: any) => c[0].includes('/transfers'),
+      );
+      expect(transferCalls.length).toBe(2);
 
-      // Should have 3 splits: platform, vendor, deliverer
-      expect(splitRules.length).toBe(3);
+      // Deliverer transfer: R$5.00 delivery fee - 1% commission = R$4.95 = 495 cents
+      const delivererCall = transferCalls.find((c: any) => c[1].recipient_id === 'rp_deliverer_456');
+      expect(delivererCall).toBeDefined();
+      expect(delivererCall[1].amount).toBe(495);
 
-      const delivererSplit = splitRules.find((s: any) => s.recipient_id === 'rp_deliverer_456');
-      expect(delivererSplit).toBeDefined();
-      expect(delivererSplit.amount).toBe(495); // R$5.00 delivery fee minus 1% platform commission (R$0.05)
-      expect(delivererSplit.type).toBe('flat');
+      // Vendor transfer: R$55.00 total - R$2.50 commission - R$5.00 delivery fee = R$47.50 = 4750 cents
+      const vendorCall = transferCalls.find((c: any) => c[1].recipient_id === 'rp_vendor_123');
+      expect(vendorCall).toBeDefined();
+      expect(vendorCall[1].amount).toBe(4750);
     });
 
-    it('should NOT include deliverer split when store has own delivery', async () => {
+    it('should NOT transfer delivery fee when store has own delivery', async () => {
       const order = makeOrder({
         paymentMethod: 'PIX',
+        isPickup: false,
         store: makeStore({ hasOwnDelivery: true }),
       });
-      const customer = makeCustomer();
 
-      httpService.axiosRef.post.mockImplementation((url: string) => {
-        if (url.includes('/customers')) return Promise.resolve({ data: { id: 'cus_1' } });
-        if (url.includes('/orders')) return Promise.resolve({
-          data: { id: 'or_2', charges: [{ last_transaction: { qr_code: '', qr_code_url: '' } }] },
-        });
-        return Promise.resolve({ data: {} });
+      httpService.axiosRef.post.mockResolvedValue({
+        data: { id: 'tr_456', status: 'pending' },
       });
 
-      await service.createOrderPix(order, customer);
+      await service.settlePayment(order);
 
-      const orderCall = httpService.axiosRef.post.mock.calls.find((c: any) => c[0].includes('/orders'));
-      const splitRules = orderCall[1].payments[0].split;
+      const transferCalls = httpService.axiosRef.post.mock.calls.filter(
+        (c: any) => c[0].includes('/transfers'),
+      );
+      // Only vendor transfer (no deliverer)
+      expect(transferCalls.length).toBe(1);
 
-      // No deliverer split
-      const delivererSplit = splitRules.find((s: any) => s.recipient_id === 'rp_deliverer_456');
-      expect(delivererSplit).toBeUndefined();
+      // Vendor gets total - commission (no delivery fee deducted since store handles delivery)
+      const vendorCall = transferCalls[0];
+      expect(vendorCall[1].recipient_id).toBe('rp_vendor_123');
+      expect(vendorCall[1].amount).toBe(5250); // R$55.00 - R$2.50 = R$52.50 = 5250 cents
+    });
+
+    it('should handle pickup orders (no deliverer transfer)', async () => {
+      const order = makeOrder({
+        paymentMethod: 'PIX',
+        isPickup: true,
+      });
+
+      httpService.axiosRef.post.mockResolvedValue({
+        data: { id: 'tr_789', status: 'pending' },
+      });
+
+      await service.settlePayment(order);
+
+      const transferCalls = httpService.axiosRef.post.mock.calls.filter(
+        (c: any) => c[0].includes('/transfers'),
+      );
+      // Only vendor transfer
+      expect(transferCalls.length).toBe(1);
+      expect(transferCalls[0][1].recipient_id).toBe('rp_vendor_123');
+      expect(transferCalls[0][1].amount).toBe(5250); // total - commission
     });
   });
 
@@ -406,7 +415,12 @@ describe('PaymentsService', () => {
   // ─── registerRecipient ────────────────────────────────────────
   describe('registerVendorRecipient', () => {
     it('should create recipient and update vendor', async () => {
-      mockVendorUsersService.findById.mockResolvedValue(makeVendorUser());
+      // Vendor without existing recipient
+      mockVendorUsersService.findById.mockResolvedValue(
+        makeVendorUser({ pagarmeRecipientId: null }),
+      );
+      mockAppUsersService.findById.mockResolvedValue(null);
+
       httpService.axiosRef.post.mockResolvedValue({
         data: { id: 'rp_new_vendor' },
       });
