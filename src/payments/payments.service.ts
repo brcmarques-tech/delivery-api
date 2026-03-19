@@ -505,21 +505,20 @@ export class PaymentsService {
 
   // ─── Direct Charge (saved card) ────────────────────────────────────
 
-  async createOrderDirectCharge(order: Order, customer: AppUser, cardId?: string, cardToken?: string): Promise<{ pagarmeOrderId: string; status: string }> {
+  async createOrderDirectCharge(order: Order, customer: AppUser, cardId?: string, cardToken?: string): Promise<{ pagarmeOrderId: string; status: string; chargeId?: string }> {
     const store = order.store;
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
     const customerId = await this.ensureCustomer(customer);
     const totalCents = Math.round(Number(order.total) * 100);
-    const splitRules = (vendorRecipientId && platformRecipientId)
-      ? await this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId)
-      : [];
 
     const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
     const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
     const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
 
+    // Pré-autorização: capture: false — segura o limite mas não cobra
+    // O split será definido na captura (quando sabemos quem é o entregador)
     const orderBody: any = {
       code: `order-${order.id}`,
       items: [
@@ -551,10 +550,9 @@ export class PaymentsService {
           credit_card: {
             installments: 1,
             statement_descriptor: 'BCMTECH',
-            capture: true,
+            capture: false,
             ...(cardToken ? { card_token: cardToken } : { card_id: cardId }),
           },
-          ...(splitRules.length > 0 ? { split: splitRules } : {}),
         },
       ],
       metadata: {
@@ -566,17 +564,18 @@ export class PaymentsService {
 
     try {
       const result = await this.pagarmePost('/orders', orderBody);
-      this.logger.log(
-        `Pagar.me direct charge for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id} | split: ${splitRules.length > 0}`,
-      );
       const charge = result.charges?.[0];
+      const chargeId = charge?.id;
       const status = charge?.status || result.status || 'pending';
-      return { pagarmeOrderId: result.id, status };
+      this.logger.log(
+        `Pagar.me pre-auth for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id} | charge: ${chargeId} | status: ${status}`,
+      );
+      return { pagarmeOrderId: result.id, status, chargeId };
     } catch (err: any) {
       const errorData = err.response?.data;
-      this.logger.error(`Pagar.me direct charge failed: ${JSON.stringify(errorData || err.message)}`);
+      this.logger.error(`Pagar.me pre-auth failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(
-        errorData?.message || 'Erro ao cobrar cartao salvo',
+        errorData?.message || 'Erro ao pre-autorizar cartao',
       );
     }
   }
@@ -674,10 +673,14 @@ export class PaymentsService {
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
+    this.logger.log(`PIX split check: vendorRecipientId=${vendorRecipientId || 'NULL'} platformRecipientId=${platformRecipientId || 'NULL'} storeOwner=${store?.owner?.email || 'NULL'}`);
+
     const totalCents = Math.round(Number(order.total) * 100);
     const splitRules = (vendorRecipientId && platformRecipientId)
       ? await this.buildSplitRules(order, store, vendorRecipientId, platformRecipientId)
       : [];
+
+    this.logger.log(`PIX split rules: ${JSON.stringify(splitRules)}`);
 
     const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
     const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
@@ -754,6 +757,101 @@ export class PaymentsService {
     }
   }
 
+  // ─── Pre-Auth Capture & Cancel ─────────────────────────────────────────
+
+  // Captura a pré-autorização com split incluindo o entregador
+  async capturePreAuth(order: Order, delivererRecipientId?: string): Promise<{ status: string }> {
+    if (!order.preAuthChargeId) {
+      throw new BadRequestException('Pedido nao possui pre-autorizacao');
+    }
+
+    const store = order.store;
+    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
+    const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
+    const totalCents = Math.round(Number(order.total) * 100);
+
+    let splitRules: any[] = [];
+    if (vendorRecipientId && platformRecipientId) {
+      if (delivererRecipientId && !store?.hasOwnDelivery) {
+        splitRules = await this.buildSplitRulesWithDeliverer(order, store, vendorRecipientId, platformRecipientId, delivererRecipientId);
+      } else {
+        splitRules = await this.buildSplitRulesWithoutDeliverer(order, store, vendorRecipientId, platformRecipientId);
+      }
+    }
+
+    try {
+      const body: any = { amount: totalCents, code: `order-${order.id}` };
+      if (splitRules.length > 0) {
+        body.split = splitRules;
+      }
+
+      const result = await this.pagarmePost(`/charges/${order.preAuthChargeId}/capture`, body);
+      this.logger.log(`Pre-auth captured for order #${order.orderNumber} | charge: ${order.preAuthChargeId} | split: ${splitRules.length > 0}`);
+
+      return { status: result.status || 'paid' };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Pre-auth capture failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(errorData?.message || 'Erro ao capturar pagamento');
+    }
+  }
+
+  // Cancela a pré-autorização (libera o limite do cartão)
+  async cancelPreAuth(order: Order): Promise<void> {
+    if (!order.preAuthChargeId) return;
+
+    try {
+      await this.pagarmeDelete(`/charges/${order.preAuthChargeId}`);
+      this.logger.log(`Pre-auth cancelled for order #${order.orderNumber} | charge: ${order.preAuthChargeId}`);
+    } catch (err: any) {
+      // Se falhar, pode já ter expirado ou sido cancelada
+      this.logger.warn(`Pre-auth cancel failed (may already be expired): ${err.response?.data?.message || err.message}`);
+    }
+  }
+
+  // Transfere a taxa de entrega da plataforma pro entregador (usado no PIX após COMPLETED)
+  async transferDeliveryFeeToDeliverer(order: Order): Promise<{ transferId?: string }> {
+    const store = order.store;
+    if (store?.hasOwnDelivery || order.isPickup) {
+      return {}; // Sem entregador da plataforma
+    }
+
+    const delivery = (order as any).delivery;
+    const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
+    if (!delivererRecipientId) {
+      this.logger.warn(`No deliverer recipient for order #${order.orderNumber}, skipping transfer`);
+      return {};
+    }
+
+    const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
+    if (deliveryFeeCents <= 0) return {};
+
+    const deliveryCommissionPercent = await this.platformConfigService.getDeliveryCommissionPercent();
+    const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+    const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
+
+    if (delivererAmount <= 0) return {};
+
+    try {
+      const result = await this.pagarmePost('/transfers', {
+        amount: delivererAmount,
+        recipient_id: delivererRecipientId,
+        metadata: {
+          order_id: order.id,
+          order_number: order.orderNumber,
+          type: 'delivery_fee',
+        },
+      });
+      this.logger.log(`Transfer to deliverer for order #${order.orderNumber} | amount: ${delivererAmount} cents | transfer: ${result.id}`);
+      return { transferId: result.id };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Transfer to deliverer failed: ${JSON.stringify(errorData || err.message)}`);
+      // Não lançar erro — o pedido já foi entregue, a transferência pode ser retentada
+      return {};
+    }
+  }
+
   // ─── Payment Link (hosted checkout) ────────────────────────────────────
 
   private async createPaymentLink(order: Order, totalCents: number, splitRules: any[]): Promise<string> {
@@ -790,21 +888,59 @@ export class PaymentsService {
 
   // ─── Split Rules Builder ───────────────────────────────────────────────
 
-  private async buildSplitRules(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string): Promise<any[]> {
+  // Split SEM entregador: taxa de entrega fica na plataforma (para PIX e pré-auth)
+  private async buildSplitRulesWithoutDeliverer(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string): Promise<any[]> {
     const totalCents = Math.round(Number(order.total) * 100);
     const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
     const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
 
     const splitRules: any[] = [];
 
-    // Deliverer split: gets delivery fee minus platform commission on delivery
+    // Platform: comissão + taxa de entrega (retida até o entregador confirmar)
+    const platformCents = commissionCents + (!store?.hasOwnDelivery ? deliveryFeeCents : 0);
+    if (platformCents > 0) {
+      splitRules.push({
+        amount: platformCents,
+        recipient_id: platformRecipientId,
+        type: 'flat',
+        options: {
+          charge_processing_fee: false,
+          charge_remainder_fee: true,
+          liable: false,
+        },
+      });
+    }
+
+    // Vendor: total - plataforma
+    const vendorCents = totalCents - platformCents;
+    if (vendorCents > 0) {
+      splitRules.push({
+        amount: vendorCents,
+        recipient_id: vendorRecipientId,
+        type: 'flat',
+        options: {
+          charge_processing_fee: true,
+          charge_remainder_fee: false,
+          liable: true,
+        },
+      });
+    }
+
+    return splitRules;
+  }
+
+  // Split COM entregador: usado na captura do cartão (quando já sabemos quem é o entregador)
+  private async buildSplitRulesWithDeliverer(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string, delivererRecipientId: string): Promise<any[]> {
+    const totalCents = Math.round(Number(order.total) * 100);
+    const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
+    const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
+
+    const splitRules: any[] = [];
     let delivererCents = 0;
     let deliveryCommissionCents = 0;
-    const delivery = (order as any).delivery;
-    const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
     const deliveryCommissionPercent = await this.platformConfigService.getDeliveryCommissionPercent();
 
-    if (!store?.hasOwnDelivery && deliveryFeeCents > 0 && delivererRecipientId) {
+    if (!store?.hasOwnDelivery && deliveryFeeCents > 0) {
       deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
       delivererCents = deliveryFeeCents - deliveryCommissionCents;
       splitRules.push({
@@ -819,8 +955,8 @@ export class PaymentsService {
       });
     }
 
-    // Platform split: gets sales commission + delivery commission
-    const platformCents = commissionCents + deliveryCommissionCents + ((!store?.hasOwnDelivery && !delivererRecipientId) ? deliveryFeeCents : 0);
+    // Platform: comissão + comissão sobre entrega
+    const platformCents = commissionCents + deliveryCommissionCents;
     if (platformCents > 0) {
       splitRules.push({
         amount: platformCents,
@@ -834,8 +970,7 @@ export class PaymentsService {
       });
     }
 
-    // Vendor split: gets the rest (total - commission - deliverer fee), pays processing fees
-    // Vendor is liable for chargebacks (e.g. customer disputes due to food quality)
+    // Vendor: total - plataforma - entregador
     const vendorCents = totalCents - platformCents - delivererCents;
     if (vendorCents > 0) {
       splitRules.push({
@@ -851,6 +986,11 @@ export class PaymentsService {
     }
 
     return splitRules;
+  }
+
+  // Backward compat: usa split sem entregador por padrão
+  private async buildSplitRules(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string): Promise<any[]> {
+    return this.buildSplitRulesWithoutDeliverer(order, store, vendorRecipientId, platformRecipientId);
   }
 
   // ─── Plan Upgrade ──────────────────────────────────────────────────────
@@ -1331,8 +1471,10 @@ export class PaymentsService {
     });
 
     if (!order) throw new NotFoundException('Pedido não encontrado');
-    if (!order.mpPreferenceId) throw new BadRequestException('Este pedido não possui pagamento online para estornar');
-    if (order.status === OrderStatus.CANCELLED) throw new BadRequestException('Este pedido já está cancelado');
+    if (!order.mpPreferenceId && !order.preAuthChargeId) throw new BadRequestException('Este pedido não possui pagamento online para estornar');
+    if ([OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED].includes(order.status as OrderStatus)) {
+      throw new BadRequestException('Este pedido já foi cancelado/rejeitado');
+    }
 
     try {
       // Get the order from Pagar.me to find the charge ID

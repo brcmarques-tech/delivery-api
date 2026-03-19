@@ -1,5 +1,6 @@
 import { Resolver, Query, Mutation, Args, Subscription, Int, ObjectType, Field, ID, Float } from '@nestjs/graphql';
-import { UseGuards, Inject } from '@nestjs/common';
+import { UseGuards, Inject, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrdersService } from './orders.service';
@@ -82,6 +83,7 @@ export class OrdersResolver {
   constructor(
     private ordersService: OrdersService,
     @Inject(PUB_SUB) private pubSub: PubSub,
+    private configService: ConfigService,
   ) {}
 
   @Mutation(() => Order)
@@ -164,8 +166,17 @@ export class OrdersResolver {
     @Args('orderId') orderId: string,
     @CurrentUser() user: AppUser,
   ): Promise<Order> {
-    // With Pagar.me split, payments are already distributed at transaction time
     return this.ordersService.confirmReceipt(orderId, user.id);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard)
+  customerDenyDelivery(
+    @Args('orderId') orderId: string,
+    @Args('reason') reason: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.customerDenyDelivery(orderId, user.id, reason);
   }
 
   @Mutation(() => Order)
@@ -175,6 +186,27 @@ export class OrdersResolver {
     @CurrentUser() user: AppUser,
   ): Promise<Order> {
     return this.ordersService.cancelByCustomer(orderId, user.id);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  rejectOrder(
+    @Args('orderId') orderId: string,
+    @Args('reason') reason: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.rejectOrder(orderId, user.id, reason);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  vendorConfirmPickup(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.vendorConfirmPickup(orderId, user.id);
   }
 
   @Mutation(() => Order)
@@ -200,12 +232,43 @@ export class OrdersResolver {
 
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  resolveDispute(
+    @Args('orderId') orderId: string,
+    @Args('resolution') resolution: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.resolveDispute(orderId, resolution, user.id);
+  }
+
+  @Query(() => [Order])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  disputedOrders(): Promise<Order[]> {
+    return this.ordersService.findDisputed();
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   adjustOrderItemWeight(
     @Args('orderItemId') orderItemId: string,
     @Args('actualWeightGrams', { type: () => Int }) actualWeightGrams: number,
   ): Promise<Order> {
     return this.ordersService.adjustItemWeight(orderItemId, actualWeightGrams);
+  }
+
+  // DEV ONLY: simula pagamento para testes (AWAITING_PAYMENT → PENDING)
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard)
+  async simulatePayment(
+    @Args('orderId') orderId: string,
+  ): Promise<Order> {
+    const env = this.configService.get('NODE_ENV', 'development');
+    if (env === 'production') {
+      throw new BadRequestException('Mutation disponivel apenas em desenvolvimento');
+    }
+    return this.ordersService.simulatePayment(orderId);
   }
 
   @Subscription(() => Order, {

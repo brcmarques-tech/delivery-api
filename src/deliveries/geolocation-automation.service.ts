@@ -1,0 +1,198 @@
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Inject, forwardRef } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Delivery } from './entities/delivery.entity';
+import { DelivererTrackerService } from './deliverer-tracker.service';
+import { OrdersService } from '../orders/orders.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { OrderStatus } from '../common/enums';
+
+@Injectable()
+export class GeolocationAutomationService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(GeolocationAutomationService.name);
+  private intervalId: ReturnType<typeof setInterval>;
+
+  // Track previous distances for anomaly detection
+  private previousDistances = new Map<string, { distance: number; timestamp: number }[]>();
+
+  constructor(
+    @InjectRepository(Delivery)
+    private deliveriesRepository: Repository<Delivery>,
+    private delivererTracker: DelivererTrackerService,
+    @Inject(forwardRef(() => OrdersService))
+    private ordersService: OrdersService,
+    private notificationsService: NotificationsService,
+  ) {}
+
+  onModuleInit() {
+    // Check every 30 seconds
+    this.intervalId = setInterval(() => {
+      this.checkActiveDeliveries();
+    }, 30_000);
+  }
+
+  onModuleDestroy() {
+    if (this.intervalId) clearInterval(this.intervalId);
+  }
+
+  private haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
+    const R = 6371000; // meters
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) *
+        Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // distance in meters
+  }
+
+  private async checkActiveDeliveries() {
+    try {
+      // Find active deliveries
+      const activeDeliveries = await this.deliveriesRepository
+        .createQueryBuilder('delivery')
+        .leftJoinAndSelect('delivery.order', 'order')
+        .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+        .leftJoinAndSelect('order.store', 'store')
+        .leftJoinAndSelect('order.customer', 'customer')
+        .where('order.status IN (:...statuses)', {
+          statuses: [
+            OrderStatus.VENDOR_CONFIRMED_PICKUP,
+            OrderStatus.PICKED_UP,
+            OrderStatus.DELIVERING,
+            OrderStatus.DELIVERER_CONFIRMED_DELIVERY,
+          ],
+        })
+        .getMany();
+
+      for (const delivery of activeDeliveries) {
+        await this.processDelivery(delivery);
+      }
+    } catch (err) {
+      this.logger.error('Geolocation check failed:', err);
+    }
+  }
+
+  private async processDelivery(delivery: Delivery) {
+    const order = delivery.order;
+    const deliverer = delivery.deliverer;
+    if (!deliverer) return;
+
+    // Get current deliverer position from tracker
+    const location = this.delivererTracker.isOnline(deliverer.id)
+      ? (() => {
+          const nearest = this.delivererTracker.getNearestDeliverers(0, 0);
+          return nearest.find(d => d.userId === deliverer.id);
+        })()
+      : null;
+
+    if (!location) return;
+
+    const now = Date.now();
+
+    // ─── Auto-confirm pickup by proximity ───────────────────────────
+    if (order.status === OrderStatus.VENDOR_CONFIRMED_PICKUP && order.vendorConfirmedPickupAt) {
+      const store = order.store;
+      if (store?.latitude && store?.longitude) {
+        const distToStore = this.haversineDistance(
+          location.latitude, location.longitude,
+          Number(store.latitude), Number(store.longitude),
+        );
+
+        // Within 100m of store for 5+ minutes
+        const timeSinceVendorConfirmed = now - new Date(order.vendorConfirmedPickupAt).getTime();
+        if (distToStore < 100 && timeSinceVendorConfirmed > 5 * 60 * 1000) {
+          this.logger.log(`Auto-confirming pickup for order #${order.orderNumber} (proximity: ${Math.round(distToStore)}m)`);
+          try {
+            const del = await this.deliveriesRepository.findOne({
+              where: { id: delivery.id },
+              relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
+            });
+            if (del) {
+              del.pickedUpAt = new Date();
+              await this.deliveriesRepository.save(del);
+              await this.ordersService.updateStatus(order.id, OrderStatus.PICKED_UP);
+            }
+          } catch (err) {
+            this.logger.error(`Auto-confirm pickup failed for order ${order.id}:`, err);
+          }
+        }
+      }
+    }
+
+    // ─── Auto-confirm delivery by proximity ─────────────────────────
+    if (order.status === OrderStatus.DELIVERER_CONFIRMED_DELIVERY && order.delivererConfirmedDeliveryAt) {
+      if (order.deliveryLatitude && order.deliveryLongitude) {
+        const distToCustomer = this.haversineDistance(
+          location.latitude, location.longitude,
+          Number(order.deliveryLatitude), Number(order.deliveryLongitude),
+        );
+
+        const timeSinceDelivererConfirmed = now - new Date(order.delivererConfirmedDeliveryAt).getTime();
+        // Within 100m of customer for 10+ minutes
+        if (distToCustomer < 100 && timeSinceDelivererConfirmed > 10 * 60 * 1000) {
+          this.logger.log(`Auto-confirming delivery for order #${order.orderNumber} (proximity: ${Math.round(distToCustomer)}m)`);
+          try {
+            const fullOrder = await this.ordersService.findById(order.id);
+            fullOrder.customerConfirmedAt = new Date();
+            await this.ordersService.completeOrderWithPayment(fullOrder);
+          } catch (err) {
+            this.logger.error(`Auto-confirm delivery failed for order ${order.id}:`, err);
+          }
+        }
+      }
+    }
+
+    // ─── Anomaly detection during DELIVERING ────────────────────────
+    if (order.status === OrderStatus.DELIVERING) {
+      const destLat = Number(order.deliveryLatitude);
+      const destLng = Number(order.deliveryLongitude);
+      if (!destLat || !destLng) return;
+
+      const distToDest = this.haversineDistance(
+        location.latitude, location.longitude, destLat, destLng,
+      );
+
+      const key = delivery.id;
+      if (!this.previousDistances.has(key)) {
+        this.previousDistances.set(key, []);
+      }
+      const history = this.previousDistances.get(key)!;
+      history.push({ distance: distToDest, timestamp: now });
+
+      // Keep only last 20 entries (10 minutes at 30s intervals)
+      while (history.length > 20) history.shift();
+
+      // Check if deliverer has been stationary for 10+ minutes
+      if (history.length >= 20) {
+        const oldestDist = history[0].distance;
+        const newestDist = history[history.length - 1].distance;
+        const timeDiff = now - history[0].timestamp;
+
+        // Not moved more than 50m in 10 minutes
+        if (timeDiff >= 10 * 60 * 1000 && Math.abs(newestDist - oldestDist) < 50) {
+          this.logger.warn(`Deliverer ${deliverer.id} stationary for 10+ min on order #${order.orderNumber}`);
+          // Notify deliverer
+          this.notificationsService.sendToAppUser(
+            deliverer.id,
+            `Pedido #${order.orderNumber}`,
+            'Voce esta parado ha mais de 10 minutos. Precisa de ajuda?',
+            { type: 'DELIVERER_STALLED', orderId: order.id },
+          ).catch(() => {});
+        }
+
+        // Distance to destination increasing (wrong direction)
+        if (timeDiff >= 5 * 60 * 1000 && newestDist > oldestDist + 500) {
+          this.logger.warn(`Deliverer ${deliverer.id} going wrong direction on order #${order.orderNumber} (${Math.round(oldestDist)}m → ${Math.round(newestDist)}m)`);
+        }
+      }
+    }
+
+    // Clean up tracking data for completed deliveries
+    if ([OrderStatus.COMPLETED, OrderStatus.CANCELLED].includes(order.status as OrderStatus)) {
+      this.previousDistances.delete(delivery.id);
+    }
+  }
+}

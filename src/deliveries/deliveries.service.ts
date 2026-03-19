@@ -53,7 +53,7 @@ export class DeliveriesService implements OnModuleInit {
     });
 
     const saved = await this.deliveriesRepository.save(delivery);
-    await this.ordersService.updateStatus(orderId, OrderStatus.PICKED_UP);
+    // Não muda mais pra PICKED_UP direto — vendedor precisa confirmar primeiro
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
     return saved;
   }
@@ -76,20 +76,37 @@ export class DeliveriesService implements OnModuleInit {
     return saved;
   }
 
+  // Entregador confirma que pegou o pedido (após vendedor confirmar coleta)
   async confirmPickup(deliveryId: string): Promise<Delivery> {
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
-      relations: ['order', 'order.store', 'order.store.owner'],
+      relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
     });
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
 
+    const order = delivery.order;
+    if (order.status !== OrderStatus.VENDOR_CONFIRMED_PICKUP) {
+      throw new BadRequestException('O vendedor ainda nao confirmou a coleta');
+    }
+
     delivery.pickedUpAt = new Date();
-    await this.ordersService.updateStatus(delivery.order.id, OrderStatus.DELIVERING);
+
+    // Capturar pré-autorização do cartão com split incluindo entregador
+    if (order.preAuthChargeId && delivery.deliverer?.pagarmeRecipientId) {
+      try {
+        await this.ordersService.captureCardOnPickup(order.id, delivery.deliverer.pagarmeRecipientId);
+      } catch (err: any) {
+        console.error('Capture on pickup failed:', err?.message);
+      }
+    }
+
+    await this.ordersService.updateStatus(order.id, OrderStatus.PICKED_UP);
     const savedDelivery = await this.deliveriesRepository.save(delivery);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
     return savedDelivery;
   }
 
+  // Entregador confirma que entregou pro cliente
   async confirmDelivery(deliveryId: string): Promise<Delivery> {
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
@@ -98,30 +115,31 @@ export class DeliveriesService implements OnModuleInit {
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
 
     delivery.deliveredAt = new Date();
-    await this.ordersService.updateStatus(delivery.order.id, OrderStatus.DELIVERED);
 
     const order = delivery.order;
 
-    // With Pagar.me split, all payments are distributed automatically at transaction time.
-    // No manual transfers needed. Just record the amounts for tracking.
+    // Registrar valores para tracking
     if (order.paymentMethod !== 'ON_DELIVERY') {
       const deliveryFee = Number(order.deliveryFee);
       const vendorAmount = Number(order.subtotal) - Number(order.commissionAmount);
 
       if (vendorAmount > 0) {
         delivery.vendorPayoutAmount = vendorAmount;
-        delivery.vendorPayoutStatus = 'split_auto';
+        delivery.vendorPayoutStatus = 'paid_on_pickup';
       }
 
       if (!order.store?.hasOwnDelivery && deliveryFee > 0) {
         delivery.payoutAmount = deliveryFee;
-        delivery.payoutStatus = 'split_auto'; // Pagar.me split handles this automatically
+        delivery.payoutStatus = 'pending_confirmation';
       }
     }
 
-    const savedDelivery2 = await this.deliveriesRepository.save(delivery);
-    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery2 });
-    return savedDelivery2;
+    // Muda pra DELIVERER_CONFIRMED_DELIVERY (aguarda confirmação do cliente)
+    await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERER_CONFIRMED_DELIVERY);
+
+    const savedDelivery = await this.deliveriesRepository.save(delivery);
+    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
+    return savedDelivery;
   }
 
   async findExpiredPendingConfirmations(): Promise<Delivery[]> {
