@@ -4,6 +4,7 @@ import { Repository, LessThanOrEqual } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
+import { OrderStatusLog } from './entities/order-status-log.entity';
 import { Delivery } from '../deliveries/entities/delivery.entity';
 import { CreateOrderInput } from './dto/create-order.input';
 import { AppUser } from '../users/entities/app-user.entity';
@@ -22,16 +23,21 @@ import { PUB_SUB } from '../pubsub/pubsub.module';
 type OnOrderReadyCallback = (order: Order) => void;
 
 const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
-  [OrderStatus.AWAITING_PAYMENT]: [OrderStatus.PENDING, OrderStatus.CANCELLED],
-  [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED],
+  [OrderStatus.AWAITING_PAYMENT]: [OrderStatus.PENDING, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
+  [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
-  [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
-  [OrderStatus.READY]: [OrderStatus.PICKED_UP, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
+  [OrderStatus.PREPARING]: [OrderStatus.READY],
+  [OrderStatus.READY]: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
+  [OrderStatus.VENDOR_CONFIRMED_PICKUP]: [OrderStatus.PICKED_UP],
   [OrderStatus.PICKED_UP]: [OrderStatus.DELIVERING],
-  [OrderStatus.DELIVERING]: [OrderStatus.DELIVERED],
-  [OrderStatus.DELIVERED]: [],
+  [OrderStatus.DELIVERING]: [OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
+  [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: [OrderStatus.COMPLETED, OrderStatus.DISPUTED],
+  [OrderStatus.DELIVERED]: [OrderStatus.COMPLETED],
+  [OrderStatus.COMPLETED]: [],
   [OrderStatus.CANCELLED]: [],
+  [OrderStatus.REJECTED]: [],
   [OrderStatus.EXPIRED]: [],
+  [OrderStatus.DISPUTED]: [OrderStatus.COMPLETED, OrderStatus.CANCELLED],
 };
 
 @Injectable()
@@ -43,6 +49,8 @@ export class OrdersService {
     private orderItemsRepository: Repository<OrderItem>,
     @InjectRepository(Delivery)
     private deliveriesRepository: Repository<Delivery>,
+    @InjectRepository(OrderStatusLog)
+    private orderStatusLogRepository: Repository<OrderStatusLog>,
     private productsService: ProductsService,
     private storesService: StoresService,
     private paymentsService: PaymentsService,
@@ -267,12 +275,12 @@ export class OrdersService {
     }
 
     if ((paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') && (input.cardId || input.cardToken)) {
-      // Direct charge with saved card or tokenized card — no redirect needed
-      const { pagarmeOrderId, status } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
+      // Pré-autorização: segura o limite mas não cobra ainda
+      const { pagarmeOrderId, status, chargeId } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
       savedOrder.mpPreferenceId = pagarmeOrderId;
-      if (status === 'paid') {
-        savedOrder.status = OrderStatus.PENDING;
-      }
+      if (chargeId) savedOrder.preAuthChargeId = chargeId;
+      // Com pré-auth, status fica PENDING (aguardando vendedor aceitar)
+      savedOrder.status = OrderStatus.PENDING;
       await this.ordersRepository.save(savedOrder);
     } else if (paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') {
       const { checkoutUrl, preferenceId } = await this.paymentsService.createOrderCheckout(savedOrder, customer);
@@ -538,16 +546,18 @@ export class OrdersService {
       })));
   }
 
+  // ─── Confirmação do cliente (recebimento) ─────────────────────────────
+
   async confirmReceipt(orderId: string, customerId: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id: orderId },
-      relations: ['customer', 'delivery', 'delivery.deliverer'],
+      relations: ['customer', 'delivery', 'delivery.deliverer', 'store', 'store.owner'],
     });
     if (!order) throw new NotFoundException('Pedido nao encontrado');
     if (order.customer.id !== customerId) {
       throw new BadRequestException('Voce nao pode confirmar este pedido');
     }
-    if (order.status !== OrderStatus.DELIVERED) {
+    if (order.status !== OrderStatus.DELIVERER_CONFIRMED_DELIVERY && order.status !== OrderStatus.DELIVERED) {
       throw new BadRequestException('Pedido ainda nao foi entregue');
     }
     if (order.customerConfirmedAt) {
@@ -555,10 +565,93 @@ export class OrdersService {
     }
 
     order.customerConfirmedAt = new Date();
-    const saved = await this.ordersRepository.save(order);
-    this.pubSub.publish('orderUpdated', { orderUpdated: saved });
-    return saved;
+    return this.updateStatus(order.id, OrderStatus.COMPLETED);
   }
+
+  // ─── Cliente nega recebimento → DISPUTED ─────────────────────────────
+
+  async customerDenyDelivery(orderId: string, customerId: string, reason: string): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (order.customer.id !== customerId) {
+      throw new BadRequestException('Voce nao pode disputar este pedido');
+    }
+    if (order.status !== OrderStatus.DELIVERER_CONFIRMED_DELIVERY) {
+      throw new BadRequestException('Este pedido nao esta aguardando confirmacao de entrega');
+    }
+
+    order.disputeReason = reason;
+    await this.ordersRepository.save(order);
+    return this.updateStatus(order.id, OrderStatus.DISPUTED);
+  }
+
+  // ─── Vendedor rejeita pedido ──────────────────────────────────────────
+
+  async rejectOrder(orderId: string, vendorUserId: string, reason: string): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (order.store?.owner?.id !== vendorUserId) {
+      throw new BadRequestException('Voce nao pode rejeitar este pedido');
+    }
+    if (order.status !== OrderStatus.PENDING) {
+      throw new BadRequestException('So pode rejeitar pedidos pendentes');
+    }
+
+    order.rejectionReason = reason;
+    await this.ordersRepository.save(order);
+
+    // Cancelar pré-autorização ou estornar PIX
+    await this.handlePaymentCancellation(order);
+
+    return this.updateStatus(order.id, OrderStatus.REJECTED);
+  }
+
+  // ─── Vendedor confirma coleta pelo entregador ─────────────────────────
+
+  async vendorConfirmPickup(orderId: string, vendorUserId: string): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (order.store?.owner?.id !== vendorUserId) {
+      throw new BadRequestException('Voce nao pode confirmar este pedido');
+    }
+    if (order.status !== OrderStatus.READY) {
+      throw new BadRequestException('Pedido precisa estar pronto para confirmar coleta');
+    }
+
+    return this.updateStatus(order.id, OrderStatus.VENDOR_CONFIRMED_PICKUP);
+  }
+
+  // ─── Superadmin resolve disputa ───────────────────────────────────────
+
+  async resolveDispute(orderId: string, resolution: string, superadminId: string): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (order.status !== OrderStatus.DISPUTED) {
+      throw new BadRequestException('Este pedido nao esta em disputa');
+    }
+
+    order.disputeResolution = resolution;
+    order.disputeResolvedAt = new Date();
+    await this.ordersRepository.save(order);
+
+    if (resolution === 'CUSTOMER_FAVOR') {
+      // Estorno ao cliente
+      try {
+        await this.paymentsService.refundOrder(orderId);
+      } catch (err: any) {
+        console.error('Refund on dispute resolution failed:', err?.message);
+      }
+      return this.updateStatus(order.id, OrderStatus.CANCELLED);
+    } else {
+      // DELIVERER_FAVOR — libera dinheiro do entregador (PIX: transfere)
+      if (order.paymentMethod === 'PIX') {
+        try {
+          await this.paymentsService.transferDeliveryFeeToDeliverer(order);
+        } catch (err: any) {
+          console.error('Transfer on dispute resolution failed:', err?.message);
+        }
+      }
+      return this.updateStatus(order.id, OrderStatus.COMPLETED);
+    }
+  }
+
+  // ─── Cancelamento pelo cliente ────────────────────────────────────────
 
   async cancelByCustomer(orderId: string, customerId: string): Promise<Order> {
     const order = await this.findById(orderId);
@@ -578,15 +671,8 @@ export class OrdersService {
       }
     }
 
-    // Refund if already paid online
-    if (order.mpPreferenceId && order.status === OrderStatus.PENDING) {
-      try {
-        await this.paymentsService.refundOrder(orderId);
-      } catch (err: any) {
-        // Log but don't block cancellation
-        console.error('Refund on cancel failed:', err?.message);
-      }
-    }
+    // Cancelar pré-autorização ou estornar pagamento
+    await this.handlePaymentCancellation(order);
 
     order.status = OrderStatus.CANCELLED;
     const saved = await this.ordersRepository.save(order);
@@ -603,6 +689,157 @@ export class OrdersService {
     }
 
     return saved;
+  }
+
+  // ─── Helper: cancelar pagamento (pré-auth ou estorno) ─────────────────
+
+  private async handlePaymentCancellation(order: Order): Promise<void> {
+    // Cartão com pré-autorização: cancela pré-auth
+    if (order.preAuthChargeId) {
+      try {
+        await this.paymentsService.cancelPreAuth(order);
+      } catch (err: any) {
+        console.error('Cancel pre-auth failed:', err?.message);
+      }
+      return;
+    }
+
+    // PIX já pago: estorno
+    if (order.mpPreferenceId && order.paymentMethod === 'PIX') {
+      try {
+        await this.paymentsService.refundOrder(order.id);
+      } catch (err: any) {
+        console.error('Refund on cancel failed:', err?.message);
+      }
+    }
+  }
+
+  // ─── Expirar pedidos PENDING sem resposta do vendedor (10 min) ────────
+
+  async expirePendingOrders(): Promise<number> {
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const expiredOrders = await this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .leftJoinAndSelect('order.items', 'items')
+      .leftJoinAndSelect('items.product', 'product')
+      .where('order.status = :status', { status: OrderStatus.PENDING })
+      .andWhere('order.createdAt <= :tenMinAgo', { tenMinAgo })
+      .getMany();
+
+    for (const order of expiredOrders) {
+      try {
+        await this.handlePaymentCancellation(order);
+        for (const item of order.items) {
+          if (item.product) {
+            await this.productsService.restoreStock(item.product.id, item.quantity);
+          }
+        }
+        await this.updateStatus(order.id, OrderStatus.EXPIRED);
+      } catch (err) {
+        console.error(`Failed to expire order ${order.id}:`, err);
+      }
+    }
+
+    return expiredOrders.length;
+  }
+
+  // ─── Auto-confirmar entregas sem resposta do cliente (10 min) ──────────
+
+  async autoConfirmExpiredDeliveries(): Promise<number> {
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const expiredOrders = await this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.delivery', 'delivery')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .where('order.status = :status', { status: OrderStatus.DELIVERER_CONFIRMED_DELIVERY })
+      .andWhere('order.delivererConfirmedDeliveryAt <= :tenMinAgo', { tenMinAgo })
+      .andWhere('order.customerConfirmedAt IS NULL')
+      .getMany();
+
+    for (const order of expiredOrders) {
+      try {
+        order.customerConfirmedAt = new Date();
+        await this.ordersRepository.save(order);
+        await this.completeOrderWithPayment(order);
+      } catch (err) {
+        console.error(`Auto-confirm failed for order ${order.id}:`, err);
+      }
+    }
+
+    return expiredOrders.length;
+  }
+
+  // ─── Alertar vendedor se nenhum entregador em 15 min ──────────────────
+
+  async alertNoDeliverer(): Promise<number> {
+    const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const stuckOrders = await this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .leftJoin('order.delivery', 'delivery')
+      .where('order.status = :status', { status: OrderStatus.READY })
+      .andWhere('order.updatedAt <= :fifteenMinAgo', { fifteenMinAgo })
+      .andWhere('delivery.id IS NULL')
+      .andWhere('order.isPickup = false')
+      .getMany();
+
+    for (const order of stuckOrders) {
+      if (order.store?.owner?.id) {
+        this.notificationsService.sendToVendorUser(
+          order.store.owner.id,
+          `Pedido #${order.orderNumber}`,
+          'Nenhum entregador aceitou este pedido ainda. Considere cancelar ou aguardar.',
+          { type: 'NO_DELIVERER', orderId: order.id },
+        ).catch(() => {});
+      }
+    }
+
+    return stuckOrders.length;
+  }
+
+  // ─── Completar pedido com pagamento (captura cartão / transferência PIX) ──
+
+  // Capturar cartão quando entregador confirma coleta (PICKED_UP)
+  async captureCardOnPickup(orderId: string, delivererRecipientId: string): Promise<void> {
+    const order = await this.findById(orderId);
+    if (!order.preAuthChargeId) return;
+
+    try {
+      await this.paymentsService.capturePreAuth(order, delivererRecipientId);
+      order.capturedAt = new Date();
+      await this.ordersRepository.save(order);
+    } catch (err: any) {
+      console.error(`Capture pre-auth failed for order ${orderId}:`, err?.message);
+      throw err;
+    }
+  }
+
+  async findDisputed(): Promise<Order[]> {
+    return this.ordersRepository.find({
+      where: { status: OrderStatus.DISPUTED },
+      relations: ['customer', 'store', 'store.owner', 'delivery', 'delivery.deliverer', 'items', 'items.product'],
+      order: { disputedAt: 'DESC' },
+    });
+  }
+
+  async completeOrderWithPayment(order: Order): Promise<Order> {
+    // PIX: transferir taxa de entrega pro entregador
+    if (order.paymentMethod === 'PIX' && !order.isPickup && !order.store?.hasOwnDelivery) {
+      try {
+        await this.paymentsService.transferDeliveryFeeToDeliverer(order);
+      } catch (err: any) {
+        console.error('Transfer delivery fee failed:', err?.message);
+      }
+    }
+
+    return this.updateStatus(order.id, OrderStatus.COMPLETED);
   }
 
   async refundOrder(orderId: string, vendorUserId: string): Promise<Order> {
@@ -658,7 +895,7 @@ export class OrdersService {
       }
     }
 
-    if (status === OrderStatus.CANCELLED) {
+    if (status === OrderStatus.CANCELLED || status === OrderStatus.REJECTED || status === OrderStatus.EXPIRED) {
       for (const item of order.items) {
         if (item.product) {
           await this.productsService.restoreStock(item.product.id, item.quantity);
@@ -666,17 +903,48 @@ export class OrdersService {
       }
     }
 
+    // Timestamps dos novos status
+    if (status === OrderStatus.VENDOR_CONFIRMED_PICKUP) {
+      order.vendorConfirmedPickupAt = new Date();
+    }
+    if (status === OrderStatus.DELIVERER_CONFIRMED_DELIVERY) {
+      order.delivererConfirmedDeliveryAt = new Date();
+    }
+    if (status === OrderStatus.COMPLETED) {
+      order.completedAt = new Date();
+    }
+    if (status === OrderStatus.DISPUTED) {
+      order.disputedAt = new Date();
+    }
+    if (status === OrderStatus.REJECTED) {
+      order.rejectedAt = new Date();
+    }
+
+    const fromStatus = order.status;
     order.status = status;
     const saved = await this.ordersRepository.save(order);
+
+    // Auditoria: registra mudança de status
+    const log = this.orderStatusLogRepository.create({
+      order: saved,
+      fromStatus,
+      toStatus: status,
+      changedBy: user?.id || 'SYSTEM',
+    });
+    this.orderStatusLogRepository.save(log).catch(() => {});
 
     const statusMessages: Record<string, string> = {
       [OrderStatus.ACCEPTED]: 'Seu pedido foi aceito!',
       [OrderStatus.PREPARING]: 'Seu pedido está sendo preparado',
       [OrderStatus.READY]: 'Seu pedido está pronto!',
-      [OrderStatus.PICKED_UP]: 'Entregador saiu com seu pedido',
+      [OrderStatus.VENDOR_CONFIRMED_PICKUP]: 'Seu pedido saiu da loja!',
+      [OrderStatus.PICKED_UP]: 'Entregador confirmou a retirada',
       [OrderStatus.DELIVERING]: 'Seu pedido está a caminho!',
+      [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: 'Seu pedido foi entregue! Confirme o recebimento.',
       [OrderStatus.DELIVERED]: 'Seu pedido foi entregue!',
+      [OrderStatus.COMPLETED]: 'Pedido finalizado! Obrigado pela compra.',
       [OrderStatus.CANCELLED]: 'Seu pedido foi cancelado',
+      [OrderStatus.REJECTED]: 'A loja não pôde aceitar seu pedido',
     };
 
     if (statusMessages[status] && order.customer?.id) {

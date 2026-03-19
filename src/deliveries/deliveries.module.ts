@@ -8,6 +8,7 @@ import { DeliveriesGateway } from './deliveries.gateway';
 import { DelivererTrackerService } from './deliverer-tracker.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { DeliveryConfirmationScheduler } from './delivery-confirmation.scheduler';
+import { GeolocationAutomationService } from './geolocation-automation.service';
 import { OrdersModule } from '../orders/orders.module';
 import { UsersModule } from '../users/users.module';
 // PaymentsModule no longer needed — Pagar.me split handles all payments at transaction time
@@ -27,6 +28,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     DelivererTrackerService,
     DeliveryOfferService,
     DeliveryConfirmationScheduler,
+    GeolocationAutomationService,
   ],
   exports: [DeliveriesService, DeliveryOfferService, DelivererTrackerService],
 })

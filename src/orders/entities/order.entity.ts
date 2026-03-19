@@ -124,6 +124,58 @@ export class Order {
   @Column({ nullable: true })
   customerConfirmedAt: Date;
 
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  vendorConfirmedPickupAt: Date;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  delivererConfirmedDeliveryAt: Date;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  completedAt: Date;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  disputedAt: Date;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  disputeReason: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  disputeResolution: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  disputeResolvedAt: Date;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  rejectedAt: Date;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  rejectionReason: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  estimatedPickupEta: Date;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  estimatedDeliveryEta: Date;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  preAuthChargeId: string;
+
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  capturedAt: Date;
+
   @Field()
   @CreateDateColumn()
   createdAt: Date;

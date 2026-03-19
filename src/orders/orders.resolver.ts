@@ -164,8 +164,17 @@ export class OrdersResolver {
     @Args('orderId') orderId: string,
     @CurrentUser() user: AppUser,
   ): Promise<Order> {
-    // With Pagar.me split, payments are already distributed at transaction time
     return this.ordersService.confirmReceipt(orderId, user.id);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard)
+  customerDenyDelivery(
+    @Args('orderId') orderId: string,
+    @Args('reason') reason: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.customerDenyDelivery(orderId, user.id, reason);
   }
 
   @Mutation(() => Order)
@@ -175,6 +184,27 @@ export class OrdersResolver {
     @CurrentUser() user: AppUser,
   ): Promise<Order> {
     return this.ordersService.cancelByCustomer(orderId, user.id);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  rejectOrder(
+    @Args('orderId') orderId: string,
+    @Args('reason') reason: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.rejectOrder(orderId, user.id, reason);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  vendorConfirmPickup(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.vendorConfirmPickup(orderId, user.id);
   }
 
   @Mutation(() => Order)
@@ -196,6 +226,24 @@ export class OrdersResolver {
     @CurrentUser() user: AppUser,
   ): Promise<Order> {
     return this.ordersService.updateStatus(id, status, user);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  resolveDispute(
+    @Args('orderId') orderId: string,
+    @Args('resolution') resolution: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.resolveDispute(orderId, resolution, user.id);
+  }
+
+  @Query(() => [Order])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  disputedOrders(): Promise<Order[]> {
+    return this.ordersService.findDisputed();
   }
 
   @Mutation(() => Order)
