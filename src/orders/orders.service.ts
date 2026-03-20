@@ -261,7 +261,7 @@ export class OrdersService {
       for (const item of items) {
         if (item.product.stock !== null && item.product.stock !== undefined && item.product.stock > 0) {
           const result = await manager.query(
-            `UPDATE product SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING stock`,
+            `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING stock`,
             [item.quantity, item.product.id],
           );
           if (!result || result.length === 0) {
