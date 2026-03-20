@@ -102,9 +102,10 @@ export class DeliveriesService implements OnModuleInit {
     });
 
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
-    await this.ordersService.updateStatus(orderId, OrderStatus.VENDOR_CONFIRMED_PICKUP);
+    // Status stays at READY — only changes when deliverer confirms pickup (DELIVERING)
+    // The order disappears from "Disponíveis" because it now has a delivery record
     this.notifyVendorDeliveryAccepted(order, deliverer);
-    console.log(`[ACCEPTDELIVERY] SUCCESS (${result.isNew ? 'new' : 'existing'}): delivery=${result.deliveryId}`);
+    console.log(`[ACCEPTDELIVERY] SUCCESS (${result.isNew ? 'new' : 'existing'}): delivery=${result.deliveryId}, status stays ${order.status}`);
     return saved;
   }
 
