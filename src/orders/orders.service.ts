@@ -28,7 +28,7 @@ const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY],
-  [OrderStatus.READY]: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
+  [OrderStatus.READY]: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERING, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
   [OrderStatus.VENDOR_CONFIRMED_PICKUP]: [OrderStatus.PICKED_UP, OrderStatus.DELIVERING],
   [OrderStatus.PICKED_UP]: [OrderStatus.DELIVERING],
   [OrderStatus.DELIVERING]: [OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
@@ -676,8 +676,16 @@ export class OrdersService {
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode confirmar este pedido');
     }
-    if (order.status !== OrderStatus.READY) {
-      throw new BadRequestException('Pedido precisa estar pronto para confirmar coleta');
+    // Vendor confirms pickup after deliverer already picked up (DELIVERING)
+    // or while still READY (legacy flow)
+    if (order.status !== OrderStatus.READY && order.status !== OrderStatus.DELIVERING) {
+      throw new BadRequestException('Pedido precisa estar pronto ou em entrega para confirmar coleta');
+    }
+
+    // If already DELIVERING (deliverer confirmed pickup first), just record vendor confirmation
+    if (order.status === OrderStatus.DELIVERING) {
+      order.vendorConfirmedPickupAt = new Date();
+      return this.ordersRepository.save(order);
     }
 
     return this.updateStatus(order.id, OrderStatus.VENDOR_CONFIRMED_PICKUP);
