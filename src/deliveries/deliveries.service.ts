@@ -52,42 +52,59 @@ export class DeliveriesService implements OnModuleInit {
     const order = await this.ordersService.findById(orderId);
     console.log(`[ACCEPTDELIVERY] Order ${order.orderNumber}, status=${order.status}`);
 
-    // Check if delivery already exists for this order (e.g. from offer system)
-    const existing = await this.deliveriesRepository.findOne({
-      where: { order: { id: orderId } },
+    // Atomic acceptance using DB transaction with row-level lock
+    // Prevents race condition when 2 deliverers click at the same time
+    const result = await this.deliveriesRepository.manager.transaction(async (manager) => {
+      // Lock the order row to prevent concurrent acceptance
+      const lockedOrder = await manager.query(
+        `SELECT id, status FROM orders WHERE id = $1 FOR UPDATE`,
+        [orderId],
+      );
+
+      if (!lockedOrder || lockedOrder.length === 0) {
+        throw new BadRequestException('Pedido não encontrado.');
+      }
+
+      // Check if delivery already exists for this order
+      const existing = await manager.query(
+        `SELECT d.id, d."delivererId" FROM deliveries d WHERE d."orderId" = $1`,
+        [orderId],
+      );
+
+      if (existing && existing.length > 0) {
+        const row = existing[0];
+        if (row.delivererId && row.delivererId !== deliverer.id) {
+          console.log(`[ACCEPTDELIVERY] BLOCKED: already assigned to ${row.delivererId}`);
+          throw new BadRequestException('Esta entrega já foi aceita por outro entregador.');
+        }
+        // Assign to existing delivery
+        console.log(`[ACCEPTDELIVERY] Assigning to existing delivery record ${row.id}`);
+        await manager.query(
+          `UPDATE deliveries SET "delivererId" = $1, "updatedAt" = NOW() WHERE id = $2`,
+          [deliverer.id, row.id],
+        );
+        return { deliveryId: row.id, isNew: false };
+      }
+
+      // Create new delivery
+      console.log(`[ACCEPTDELIVERY] Creating new delivery record`);
+      const inserted = await manager.query(
+        `INSERT INTO deliveries ("orderId", "delivererId", "createdAt", "updatedAt") VALUES ($1, $2, NOW(), NOW()) RETURNING id`,
+        [orderId, deliverer.id],
+      );
+      return { deliveryId: inserted[0].id, isNew: true };
+    });
+
+    // Fetch full delivery with relations
+    const saved = await this.deliveriesRepository.findOne({
+      where: { id: result.deliveryId },
       relations: ['order', 'deliverer'],
     });
 
-    if (existing) {
-      // If already assigned to another deliverer, reject
-      if (existing.deliverer && existing.deliverer.id !== deliverer.id) {
-        console.log(`[ACCEPTDELIVERY] BLOCKED: already assigned to ${existing.deliverer.id}`);
-        throw new BadRequestException('Esta entrega já foi aceita por outro entregador.');
-      }
-      console.log(`[ACCEPTDELIVERY] Assigning to existing delivery record`);
-      // Assign this deliverer to existing delivery
-      existing.deliverer = deliverer;
-      const saved = await this.deliveriesRepository.save(existing);
-      this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
-      // Muda status para tirar de "Disponíveis" imediatamente
-      await this.ordersService.updateStatus(orderId, OrderStatus.VENDOR_CONFIRMED_PICKUP);
-      this.notifyVendorDeliveryAccepted(order, deliverer);
-      console.log(`[ACCEPTDELIVERY] SUCCESS (existing): delivery=${saved.id}`);
-      return saved;
-    }
-
-    console.log(`[ACCEPTDELIVERY] Creating new delivery record`);
-    const delivery = this.deliveriesRepository.create({
-      order,
-      deliverer,
-    });
-
-    const saved = await this.deliveriesRepository.save(delivery);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
-    // Muda status para tirar de "Disponíveis" imediatamente
     await this.ordersService.updateStatus(orderId, OrderStatus.VENDOR_CONFIRMED_PICKUP);
     this.notifyVendorDeliveryAccepted(order, deliverer);
-    console.log(`[ACCEPTDELIVERY] SUCCESS (new): delivery=${saved.id}`);
+    console.log(`[ACCEPTDELIVERY] SUCCESS (${result.isNew ? 'new' : 'existing'}): delivery=${result.deliveryId}`);
     return saved;
   }
 
