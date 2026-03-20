@@ -1017,11 +1017,12 @@ export class PaymentsService implements OnModuleDestroy {
   // ─── Payment Link (hosted checkout) ────────────────────────────────────
 
   private async createPaymentLink(order: Order, totalCents: number, splitRules: any[]): Promise<string> {
-    const body = {
+    const body: any = {
       name: `Pedido ${order.orderNumber}`,
+      type: 'order',
       amount: totalCents,
+      accepted_payment_methods: ['credit_card', 'pix'],
       payment_settings: {
-        accepted_payment_methods: ['credit_card', 'pix'],
         credit_card: {
           installments: [{ number: 1, total: totalCents }],
           statement_descriptor: STATEMENT_DESCRIPTOR,
@@ -1030,6 +1031,13 @@ export class PaymentsService implements OnModuleDestroy {
           expires_in: 1800,
         },
       },
+      items: [
+        {
+          description: `Pedido ${order.orderNumber}`.substring(0, 256),
+          quantity: 1,
+          amount: totalCents,
+        },
+      ],
       ...(splitRules.length > 0 ? { split: splitRules } : {}),
       metadata: {
         order_id: order.id,
@@ -1039,10 +1047,9 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       const result = await this.pagarmePost('/paymentlinks', body);
-      // Payment link URL format: https://pagar.me/pay/{id}
       return result.url || `https://pagar.me/pay/${result.id}`;
     } catch (err: any) {
-      this.logger.error(`Payment link creation failed: ${err.response?.data?.message || err.message}`);
+      this.logger.error(`Payment link creation failed: ${JSON.stringify(err.response?.data || err.message)}`);
       throw new BadRequestException('Erro ao gerar link de pagamento. Tente novamente.');
     }
   }
@@ -1102,11 +1109,12 @@ export class PaymentsService implements OnModuleDestroy {
     const totalCents = Math.round(billing.price * 100);
 
     // Create payment link for plan upgrade
-    const body = {
+    const body: any = {
       name: `Plano ${plan} ${billing.label} - bcmTech Delivery`,
+      type: 'order',
       amount: totalCents,
+      accepted_payment_methods: ['credit_card', 'pix'],
       payment_settings: {
-        accepted_payment_methods: ['credit_card', 'pix'],
         credit_card: {
           installments: Array.from({ length: Math.min(billing.months, 12) }, (_, i) => ({
             number: i + 1,
@@ -1118,6 +1126,13 @@ export class PaymentsService implements OnModuleDestroy {
           expires_in: 86400, // 24 hours
         },
       },
+      items: [
+        {
+          description: `Plano ${plan} ${billing.label}`.substring(0, 256),
+          quantity: 1,
+          amount: totalCents,
+        },
+      ],
       metadata: {
         type: 'plan_upgrade',
         user_id: user.id,
@@ -1161,11 +1176,12 @@ export class PaymentsService implements OnModuleDestroy {
   async createPromotionCheckout(promotion: Promotion, user: VendorUser): Promise<Payment> {
     const totalCents = Math.round(Number(promotion.adCost) * 100);
 
-    const body = {
+    const body: any = {
       name: `Promoção: ${promotion.title}`,
+      type: 'order',
       amount: totalCents,
+      accepted_payment_methods: ['credit_card', 'pix'],
       payment_settings: {
-        accepted_payment_methods: ['credit_card', 'pix'],
         credit_card: {
           installments: [{ number: 1, total: totalCents }],
           statement_descriptor: STATEMENT_DESCRIPTOR,
@@ -1174,6 +1190,13 @@ export class PaymentsService implements OnModuleDestroy {
           expires_in: 86400,
         },
       },
+      items: [
+        {
+          description: `Promoção: ${promotion.title}`.substring(0, 256),
+          quantity: 1,
+          amount: totalCents,
+        },
+      ],
       metadata: {
         type: 'promotion',
         promotion_id: promotion.id,
@@ -1961,7 +1984,6 @@ export class PaymentsService implements OnModuleDestroy {
         enabled,
         type: 'full',
         volume_percentage: 100,
-        delay: null,
       });
       return true;
     } catch (err: any) {
