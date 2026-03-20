@@ -181,6 +181,9 @@ export class Order {
   @Column({ default: false })
   isSettled: boolean;
 
+  @Column({ default: false })
+  couponCredited: boolean;
+
   @Field()
   @CreateDateColumn()
   createdAt: Date;
