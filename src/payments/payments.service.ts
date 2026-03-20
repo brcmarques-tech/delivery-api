@@ -40,8 +40,8 @@ export class PaymentsService implements OnModuleDestroy {
     return { country_code: '55', area_code: areaCode, number };
   }
 
-  // M7: Build billing address — prioritizes customer delivery address zip, not the store's
-  private buildBillingAddress(order: Order, store: Store): { line_1: string; zip_code: string; city: string; state: string; country: string } {
+  // M7: Build billing address — Pagar.me V5 requires separate fields (street, number, neighborhood)
+  private buildBillingAddress(order: Order, store: Store): { street: string; number: string; neighborhood: string; zip_code: string; city: string; state: string; country: string } {
     // Parse delivery address if available (format: "Rua X, 123 - Bairro, Cidade")
     const addr = order.deliveryAddress;
     // Try to extract zip from customer data if available
@@ -54,7 +54,9 @@ export class PaymentsService implements OnModuleDestroy {
       const num = numberAndNeighborhood[0] || 'SN';
       const neighborhood = numberAndNeighborhood[1] || parts[2] || 'Centro';
       return {
-        line_1: `${num}, ${street}, ${neighborhood}`,
+        street,
+        number: num,
+        neighborhood,
         zip_code: customerZip || store?.zipCode?.replace(/\D/g, '') || '00000000',
         city: parts[parts.length - 1] || store?.city || 'Nao Informada',
         state: store?.state || 'RS',
@@ -63,7 +65,9 @@ export class PaymentsService implements OnModuleDestroy {
     }
     // Fallback to store address if no delivery address (e.g. pickup)
     return {
-      line_1: store?.street ? `${store.number || 'SN'}, ${store.street}, ${store.neighborhood || 'Centro'}` : 'SN, Rua Nao Informada, Centro',
+      street: store?.street || 'Rua Nao Informada',
+      number: store?.number || 'SN',
+      neighborhood: store?.neighborhood || 'Centro',
       zip_code: store?.zipCode?.replace(/\D/g, '') || '00000000',
       city: store?.city || 'Nao Informada',
       state: store?.state || 'RS',
@@ -586,8 +590,8 @@ export class PaymentsService implements OnModuleDestroy {
     // Use customer's delivery address for billing, not the store's address
     const billingAddress = this.buildBillingAddress(order, store);
 
-    // Unique code per attempt to avoid Pagar.me duplicate rejection
-    const uniqueCode = `order-${order.id}-${Date.now()}`;
+    // Unique code per attempt to avoid Pagar.me duplicate rejection (max 52 chars)
+    const uniqueCode = `${order.id}-${Date.now()}`;
 
     // Pré-autorização: capture: false — segura o limite mas não cobra
     // billing_address: quando card_id é usado, o Pagar.me já tem o billing do cartão salvo
@@ -702,8 +706,8 @@ export class PaymentsService implements OnModuleDestroy {
 
     const phone = this.formatPhoneForPagarme(customer.phone);
 
-    // Unique code per attempt to avoid Pagar.me duplicate rejection
-    const uniqueCode = `order-${order.id}-${Date.now()}`;
+    // Unique code per attempt to avoid Pagar.me duplicate rejection (max 52 chars)
+    const uniqueCode = `${order.id}-${Date.now()}`;
 
     const orderBody: any = {
       code: uniqueCode,
@@ -782,7 +786,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       // L11: Add timestamp to code to ensure uniqueness across retries
-      const body: any = { amount: totalCents, code: `order-${order.id}-cap-${Date.now()}` };
+      const body: any = { amount: totalCents, code: `${order.id.replace(/-/g, '')}-c${Date.now()}` };
 
       const result = await this.pagarmePost(`/charges/${order.preAuthChargeId}/capture`, body);
       this.logger.log(`Pre-auth captured for order #${order.orderNumber} | charge: ${order.preAuthChargeId} | no split (platform holds funds)`);
@@ -1464,7 +1468,7 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     // Handle order payment
-    const orderId = metadata.order_id || (code?.startsWith('order-') ? code.replace(/^order-([a-f0-9-]+).*$/, '$1') : null);
+    const orderId = metadata.order_id || (code ? code.replace(/^([a-f0-9-]{36}).*$/, '$1') : null);
     if (orderId) {
       const orderRepo = this.paymentsRepository.manager.getRepository(Order);
       const order = await orderRepo.findOne({
@@ -1605,7 +1609,7 @@ export class PaymentsService implements OnModuleDestroy {
     // Fallback: if order.paid webhook doesn't fire, charge.paid confirms the payment
     const metadata = data.metadata || data.order?.metadata || {};
     const code = data.code || data.order?.code || '';
-    const orderId = metadata.order_id || (code.startsWith('order-') ? code.replace(/^order-([a-f0-9-]+).*$/, '$1') : null);
+    const orderId = metadata.order_id || (code ? code.replace(/^([a-f0-9-]{36}).*$/, '$1') : null);
 
     this.logger.log(`Charge paid: ${data.id} | orderId: ${orderId}`);
 
@@ -1662,7 +1666,7 @@ export class PaymentsService implements OnModuleDestroy {
 
   private async handleChargeRefunded(data: any): Promise<void> {
     const metadata = data.metadata || data.order?.metadata || {};
-    const orderId = metadata.order_id || (data.code?.startsWith('order-') ? data.code.replace(/^order-([a-f0-9-]+).*$/, '$1') : null);
+    const orderId = metadata.order_id || (data.code ? data.code.replace(/^([a-f0-9-]{36}).*$/, '$1') : null);
 
     this.logger.log(`Charge refunded: ${data.id} | orderId: ${orderId}`);
 
@@ -1708,7 +1712,7 @@ export class PaymentsService implements OnModuleDestroy {
 
   private async handleChargeChargedback(data: any): Promise<void> {
     const metadata = data.metadata || data.order?.metadata || {};
-    const orderId = metadata.order_id || (data.code?.startsWith('order-') ? data.code.replace(/^order-([a-f0-9-]+).*$/, '$1') : null);
+    const orderId = metadata.order_id || (data.code ? data.code.replace(/^([a-f0-9-]{36}).*$/, '$1') : null);
 
     this.logger.warn(`Chargeback received: ${data.id} | orderId: ${orderId}`);
 
@@ -1953,13 +1957,11 @@ export class PaymentsService implements OnModuleDestroy {
 
   async updateRecipientAnticipationSettings(recipientId: string, enabled: boolean): Promise<boolean> {
     try {
-      await this.pagarmePut(`/recipients/${recipientId}`, {
-        automatic_anticipation_settings: {
-          enabled,
-          type: 'full',
-          volume_percentage: 100,
-          delay: null,
-        },
+      await this.pagarmePatch(`/recipients/${recipientId}/automatic-anticipation-settings`, {
+        enabled,
+        type: 'full',
+        volume_percentage: 100,
+        delay: null,
       });
       return true;
     } catch (err: any) {
