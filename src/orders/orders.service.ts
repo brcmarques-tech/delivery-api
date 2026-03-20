@@ -290,13 +290,17 @@ export class OrdersService {
 
     if ((paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') && (input.cardId || input.cardToken)) {
       // Pré-autorização: segura o limite mas não cobra ainda
+      console.log(`[CREATEORDER] Direct charge branch: cardId=${input.cardId}, cardToken=${!!input.cardToken}`);
       try {
         const { pagarmeOrderId, status, chargeId } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
+        console.log(`[CREATEORDER] Direct charge SUCCESS: pagarmeOrderId=${pagarmeOrderId}, status=${status}, chargeId=${chargeId}`);
         savedOrder.mpPreferenceId = pagarmeOrderId;
         if (chargeId) savedOrder.preAuthChargeId = chargeId;
         savedOrder.status = OrderStatus.PENDING;
         await this.ordersRepository.save(savedOrder);
+        console.log(`[CREATEORDER] Order saved with status PENDING, preAuthChargeId=${savedOrder.preAuthChargeId}`);
       } catch (err: any) {
+        console.log(`[CREATEORDER] Direct charge FAILED: ${err?.message}`);
         savedOrder.status = OrderStatus.CANCELLED;
         await this.ordersRepository.save(savedOrder);
         // Restaurar estoque
@@ -350,6 +354,7 @@ export class OrdersService {
     this.pubSub.publish('orderCreated', { orderCreated: savedOrder });
     this.pubSub.publish('orderUpdated', { orderUpdated: savedOrder });
 
+    console.log(`[CREATEORDER] Returning order: id=${savedOrder.id}, orderNumber=${savedOrder.orderNumber}, status=${savedOrder.status}, checkoutUrl=${savedOrder.checkoutUrl || 'null'}, preAuthChargeId=${savedOrder.preAuthChargeId || 'null'}`);
     return savedOrder;
   }
 

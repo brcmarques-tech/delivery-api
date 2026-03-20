@@ -4,7 +4,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { AppUsersService } from '../users/app-users.service';
 
-const OFFER_TIMEOUT_MS = 30_000; // 30 seconds per deliverer
+const OFFER_TIMEOUT_MS = 60_000; // 60 seconds per deliverer
 
 interface PendingOffer {
   orderId: string;
