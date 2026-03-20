@@ -1459,7 +1459,13 @@ export class PaymentsService implements OnModuleDestroy {
       });
 
       if (order && order.status === OrderStatus.AWAITING_PAYMENT) {
+        // Update mpPreferenceId with real Pagar.me order ID (replaces placeholder from payment link flow)
+        if (order.mpPreferenceId?.startsWith('link-') && pagarmeOrderId) {
+          order.mpPreferenceId = pagarmeOrderId;
+        }
+
         order.status = OrderStatus.PENDING;
+        order.couponCredited = true; // Mark so handleChargePaid won't double-increment
         await orderRepo.save(order);
         this.logger.log(`Pagamento aprovado para pedido #${order.orderNumber}`);
 
@@ -1597,9 +1603,19 @@ export class PaymentsService implements OnModuleDestroy {
       relations: ['customer', 'store'],
     });
 
+    // Update mpPreferenceId with real Pagar.me order ID if still placeholder
+    if (order && order.mpPreferenceId?.startsWith('link-')) {
+      const realOrderId = data.order?.id || data.id;
+      if (realOrderId) {
+        order.mpPreferenceId = realOrderId;
+        await orderRepo.save(order);
+      }
+    }
+
     // Only act if order is still AWAITING_PAYMENT (order.paid didn't fire yet)
     if (order && order.status === OrderStatus.AWAITING_PAYMENT) {
       order.status = OrderStatus.PENDING;
+      order.couponCredited = true;
       await orderRepo.save(order);
       this.logger.log(`Charge.paid fallback: pedido #${order.orderNumber} confirmado via charge webhook`);
 
@@ -1618,8 +1634,8 @@ export class PaymentsService implements OnModuleDestroy {
         ).catch(() => {});
       }
 
-      // M8: Increment coupon usage on charge.paid (same as handleOrderPaid)
-      if (order.couponCode) {
+      // Only increment coupon if handleOrderPaid didn't already do it
+      if (order.couponCode && !order.couponCredited) {
         try {
           const couponRepo = this.paymentsRepository.manager.getRepository('Coupon');
           await couponRepo.increment({ code: order.couponCode }, 'usesCount', 1);
@@ -1757,22 +1773,41 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     try {
-      // Get the order from Pagar.me to find the charge ID
-      const pagarmeOrder = await this.pagarmeGet(`/orders/${order.mpPreferenceId}`);
-      const charge = pagarmeOrder.charges?.[0];
+      let chargeId: string | null = null;
+      let chargeAmount: number = Math.round(Number(order.total) * 100);
 
-      if (!charge) throw new BadRequestException('Cobrança não encontrada no Pagar.me');
-      if (charge.status !== 'paid') throw new BadRequestException(`Cobrança com status "${charge.status}" não pode ser estornada`);
+      // 1. Try preAuthChargeId (direct card charge / pre-auth flow)
+      if (order.preAuthChargeId) {
+        chargeId = order.preAuthChargeId;
+      }
+      // 2. Try mpPreferenceId as Pagar.me order ID (PIX or payment link with real ID)
+      else if (order.mpPreferenceId && !order.mpPreferenceId.startsWith('link-')) {
+        const pagarmeOrder = await this.pagarmeGet(`/orders/${order.mpPreferenceId}`);
+        const charge = pagarmeOrder.charges?.[0];
+        if (!charge) throw new BadRequestException('Cobrança não encontrada no Pagar.me');
+        chargeId = charge.id;
+        chargeAmount = charge.amount;
+      }
+      // 3. Payment link placeholder — cannot refund without real charge ID
+      else {
+        throw new BadRequestException('Não foi possível localizar a cobrança no Pagar.me para estorno. O webhook pode não ter atualizado o ID do pedido.');
+      }
+
+      // Verify charge status before refunding
+      const chargeData = await this.pagarmeGet(`/charges/${chargeId}`);
+      if (chargeData.status !== 'paid' && chargeData.status !== 'captured') {
+        throw new BadRequestException(`Cobrança com status "${chargeData.status}" não pode ser estornada`);
+      }
 
       // Request refund
-      await this.pagarmePost(`/charges/${charge.id}/refund`, {
-        amount: charge.amount,
+      await this.pagarmePost(`/charges/${chargeId}/refund`, {
+        amount: chargeAmount,
       });
 
       order.status = OrderStatus.CANCELLED;
       await orderRepo.save(order);
 
-      this.logger.log(`Refund requested for order #${order.orderNumber} | charge: ${charge.id}`);
+      this.logger.log(`Refund requested for order #${order.orderNumber} | charge: ${chargeId}`);
 
       // Notify customer
       if (order.customer?.id) {
