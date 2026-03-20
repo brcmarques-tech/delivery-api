@@ -96,7 +96,7 @@ export class DeliveriesService implements OnModuleInit {
     });
 
     // Fetch full delivery with relations
-    const saved = await this.deliveriesRepository.findOne({
+    const saved = await this.deliveriesRepository.findOneOrFail({
       where: { id: result.deliveryId },
       relations: ['order', 'deliverer'],
     });
