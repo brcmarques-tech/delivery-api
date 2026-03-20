@@ -82,10 +82,7 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
 
     // Get current deliverer position from tracker
     const location = this.delivererTracker.isOnline(deliverer.id)
-      ? (() => {
-          const nearest = this.delivererTracker.getNearestDeliverers(0, 0);
-          return nearest.find(d => d.userId === deliverer.id);
-        })()
+      ? this.delivererTracker.getDelivererLocation(deliverer.id)
       : null;
 
     if (!location) return;

@@ -339,6 +339,10 @@ export class OrdersService {
     return savedOrder;
   }
 
+  async findStoreById(storeId: string) {
+    return this.storesService.findById(storeId);
+  }
+
   async findById(id: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id },
@@ -578,7 +582,8 @@ export class OrdersService {
     }
 
     order.customerConfirmedAt = new Date();
-    return this.updateStatus(order.id, OrderStatus.COMPLETED);
+    await this.ordersRepository.save(order);
+    return this.completeOrderWithPayment(order);
   }
 
   // ─── Cliente nega recebimento → DISPUTED ─────────────────────────────
@@ -868,6 +873,11 @@ export class OrdersService {
   }
 
   async completeOrderWithPayment(order: Order): Promise<Order> {
+    // Idempotency guard: skip if already completed (race between geolocation + scheduler)
+    if (order.status === OrderStatus.COMPLETED) {
+      return order;
+    }
+
     // Settle payment: transfer vendor and deliverer shares from platform
     if (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD') {
       try {
@@ -1019,7 +1029,7 @@ export class OrdersService {
     return saved;
   }
 
-  async adjustItemWeight(orderItemId: string, actualWeightGrams: number): Promise<Order> {
+  async adjustItemWeight(orderItemId: string, actualWeightGrams: number, vendorUserId?: string): Promise<Order> {
     const item = await this.orderItemsRepository.findOne({
       where: { id: orderItemId },
       relations: ['order', 'order.items', 'product'],
@@ -1027,6 +1037,10 @@ export class OrdersService {
     if (!item) throw new NotFoundException('Item nao encontrado');
 
     const order = await this.findById(item.order.id);
+
+    if (vendorUserId && order.store?.owner?.id !== vendorUserId) {
+      throw new BadRequestException('Você não tem permissão para ajustar itens deste pedido.');
+    }
 
     if (order.status !== OrderStatus.PENDING && order.status !== OrderStatus.ACCEPTED) {
       throw new BadRequestException(

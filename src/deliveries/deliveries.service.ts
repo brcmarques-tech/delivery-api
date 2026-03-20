@@ -113,12 +113,15 @@ export class DeliveriesService implements OnModuleInit {
   }
 
   // Entregador confirma que pegou o pedido
-  async confirmPickup(deliveryId: string): Promise<Delivery> {
+  async confirmPickup(deliveryId: string, delivererId: string): Promise<Delivery> {
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
       relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
     });
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
+    if (delivery.deliverer?.id !== delivererId) {
+      throw new BadRequestException('Esta entrega não pertence a você.');
+    }
 
     const order = delivery.order;
 
@@ -131,6 +134,14 @@ export class DeliveriesService implements OnModuleInit {
         await this.ordersService.captureCardOnPickup(order.id);
       } catch (err: any) {
         console.error('Capture on pickup failed:', err?.message);
+        if (order.store?.owner?.id) {
+          this.notificationsService.sendToVendorUser(
+            order.store.owner.id,
+            'Alerta: falha na captura do pagamento',
+            `O pagamento do pedido #${order.orderNumber} falhou na captura. Verifique no painel do Pagar.me.`,
+            { type: 'CAPTURE_FAILED', orderId: order.id },
+          ).catch(() => {});
+        }
       }
     }
 
@@ -141,12 +152,15 @@ export class DeliveriesService implements OnModuleInit {
   }
 
   // Entregador confirma que entregou pro cliente
-  async confirmDelivery(deliveryId: string): Promise<Delivery> {
+  async confirmDelivery(deliveryId: string, delivererId: string): Promise<Delivery> {
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
       relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
     });
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
+    if (delivery.deliverer?.id !== delivererId) {
+      throw new BadRequestException('Esta entrega não pertence a você.');
+    }
 
     delivery.deliveredAt = new Date();
 

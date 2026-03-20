@@ -157,7 +157,13 @@ export class AuthController {
     }
   }
 
+  private escapeHtml(str: string): string {
+    return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   private renderHtml(title: string, message: string, isResult: boolean, token?: string, type?: string): string {
+    const safeToken = this.escapeHtml(token || '');
+    const safeType = this.escapeHtml(type || 'app');
     return `<!DOCTYPE html>
 <html lang="pt-BR"><head>
   <meta charset="utf-8">
@@ -191,8 +197,8 @@ export class AuthController {
       ${isResult ? `<div class="success" style="margin-top: 16px;">${message}</div>` : `
         ${message ? `<div class="error">${message}</div>` : ''}
         <form method="POST" action="/auth/reset-password" style="margin-top: 16px;">
-          <input type="hidden" name="token" value="${token || ''}">
-          <input type="hidden" name="type" value="${type || 'app'}">
+          <input type="hidden" name="token" value="${safeToken}">
+          <input type="hidden" name="type" value="${safeType}">
           <div class="field">
             <label>Nova senha</label>
             <input type="password" name="newPassword" placeholder="Minimo 6 caracteres" required minlength="6">

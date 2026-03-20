@@ -55,7 +55,7 @@ export class VisionService {
       return { valid: true, message: 'Rosto detectado com sucesso' };
     } catch (error) {
       this.logger.error('Erro na validacao facial', error);
-      return { valid: true, message: 'Erro na validacao, foto aceita' };
+      return { valid: false, message: 'Erro na validacao facial. Tente novamente.' };
     }
   }
 
@@ -95,7 +95,7 @@ export class VisionService {
       return { valid: true, message: 'Documento reconhecido com sucesso' };
     } catch (error) {
       this.logger.error('Erro na validacao do documento', error);
-      return { valid: true, message: 'Erro na validacao, foto aceita' };
+      return { valid: false, message: 'Erro na validacao do documento. Tente novamente.' };
     }
   }
 }

@@ -1,5 +1,5 @@
 import { Resolver, Query, Mutation, Args, ObjectType, Field, ID, Int } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { UseGuards, BadRequestException } from '@nestjs/common';
 import { CartItem } from './entities/cart-item.entity';
 import { CartService } from './cart.service';
 import { AddToCartInput } from './dto/add-to-cart.input';
@@ -10,6 +10,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole } from '../common/enums';
+import { StoresService } from '../stores/stores.service';
 
 @ObjectType()
 class CartProductSummary {
@@ -31,7 +32,10 @@ class CartProductSummary {
 
 @Resolver(() => CartItem)
 export class CartResolver {
-  constructor(private cartService: CartService) {}
+  constructor(
+    private cartService: CartService,
+    private storesService: StoresService,
+  ) {}
 
   @Mutation(() => CartItem)
   @UseGuards(GqlAuthGuard, RolesGuard)
@@ -90,9 +94,14 @@ export class CartResolver {
   @Query(() => [CartProductSummary])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  storeCartSummary(
+  async storeCartSummary(
     @Args('storeId') storeId: string,
+    @CurrentUser() user: any,
   ): Promise<CartProductSummary[]> {
+    const store = await this.storesService.findById(storeId);
+    if (store.owner?.id !== user.id) {
+      throw new BadRequestException('Você não tem permissão para ver o carrinho desta loja.');
+    }
     return this.cartService.getStoreCartSummary(storeId);
   }
 

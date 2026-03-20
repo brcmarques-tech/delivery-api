@@ -35,15 +35,21 @@ export class DeliveriesResolver {
   @Mutation(() => Delivery)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.DELIVERER)
-  confirmPickup(@Args('deliveryId') deliveryId: string): Promise<Delivery> {
-    return this.deliveriesService.confirmPickup(deliveryId);
+  confirmPickup(
+    @Args('deliveryId') deliveryId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Delivery> {
+    return this.deliveriesService.confirmPickup(deliveryId, user.id);
   }
 
   @Mutation(() => Delivery)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.DELIVERER)
-  async confirmDelivery(@Args('deliveryId') deliveryId: string): Promise<Delivery> {
-    const delivery = await this.deliveriesService.confirmDelivery(deliveryId);
+  async confirmDelivery(
+    @Args('deliveryId') deliveryId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Delivery> {
+    const delivery = await this.deliveriesService.confirmDelivery(deliveryId, user.id);
 
     if (delivery.order?.id && delivery.deliveredAt) {
       this.gateway.emitDeliveryConfirmationRequired(

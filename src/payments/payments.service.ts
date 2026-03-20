@@ -23,6 +23,43 @@ export class PaymentsService {
   private readonly pagarmeBaseUrl = 'https://api.pagar.me/core/v5';
   private readonly pagarmeAuthHeader: string;
 
+  // Format phone for Pagar.me API — returns { area_code, number } or null if no valid phone
+  private formatPhoneForPagarme(phone?: string): { country_code: string; area_code: string; number: string } | null {
+    const digits = phone?.replace(/\D/g, '') || '';
+    if (digits.length < 10) return null; // need at least DDD + 8 digits
+    const areaCode = digits.substring(0, 2);
+    const number = digits.substring(2);
+    return { country_code: '55', area_code: areaCode, number };
+  }
+
+  // Build billing address from order's delivery address (customer's address, not the store's)
+  private buildBillingAddress(order: Order, store: Store): { line_1: string; zip_code: string; city: string; state: string; country: string } {
+    // Parse delivery address if available (format: "Rua X, 123 - Bairro, Cidade")
+    const addr = order.deliveryAddress;
+    if (addr) {
+      const parts = addr.split(',').map(p => p.trim());
+      const street = parts[0] || 'Rua Nao Informada';
+      const numberAndNeighborhood = parts[1]?.split('-').map(p => p.trim()) || [];
+      const num = numberAndNeighborhood[0] || 'SN';
+      const neighborhood = numberAndNeighborhood[1] || parts[2] || 'Centro';
+      return {
+        line_1: `${num}, ${street}, ${neighborhood}`,
+        zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
+        city: parts[parts.length - 1] || store?.city || 'Arroio Grande',
+        state: store?.state || 'RS',
+        country: 'BR',
+      };
+    }
+    // Fallback to store address if no delivery address (e.g. pickup)
+    return {
+      line_1: store?.street ? `${store.number || 'SN'}, ${store.street}, ${store.neighborhood || 'Centro'}` : 'SN, Rua Nao Informada, Centro',
+      zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
+      city: store?.city || 'Arroio Grande',
+      state: store?.state || 'RS',
+      country: 'BR',
+    };
+  }
+
   constructor(
     @InjectRepository(Payment)
     private paymentsRepository: Repository<Payment>,
@@ -403,9 +440,7 @@ export class PaymentsService {
 
   private async getOrCreatePagarmeCustomer(user: { name: string; email: string; cpf?: string; phone?: string }): Promise<string | undefined> {
     try {
-      const phoneDigits = user.phone?.replace(/\D/g, '') || '';
-      const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
-      const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
+      const phone = this.formatPhoneForPagarme(user.phone);
 
       const customerBody: any = {
         name: user.name,
@@ -413,13 +448,7 @@ export class PaymentsService {
         type: 'individual',
         document: user.cpf?.replace(/\D/g, '') || '',
         document_type: 'CPF',
-        phones: {
-          mobile_phone: {
-            country_code: '55',
-            area_code: ddd,
-            number: phoneNumber || '999999999',
-          },
-        },
+        ...(phone ? { phones: { mobile_phone: phone } } : {}),
       };
 
       const result = await this.pagarmePost('/customers', customerBody);
@@ -513,22 +542,25 @@ export class PaymentsService {
     const customerId = await this.ensureCustomer(customer);
     const totalCents = Math.round(Number(order.total) * 100);
 
-    const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
-    const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
-    const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
+    const phone = this.formatPhoneForPagarme(customer.phone);
+
+    // Use customer's delivery address for billing, not the store's address
+    const billingAddress = this.buildBillingAddress(order, store);
+
+    // Unique code per attempt to avoid Pagar.me duplicate rejection
+    const uniqueCode = `order-${order.id}-${Date.now()}`;
 
     // Pré-autorização: capture: false — segura o limite mas não cobra
-    // O split será definido na captura (quando sabemos quem é o entregador)
     // billing_address: quando card_id é usado, o Pagar.me já tem o billing do cartão salvo
     // quando card_token é usado, o billing veio na tokenização feita pelo app
     const orderBody: any = {
-      code: `order-${order.id}`,
+      code: uniqueCode,
       items: [
         {
           amount: totalCents,
           description: `Pedido ${order.orderNumber}`.substring(0, 256),
           quantity: 1,
-          code: `order-${order.id}`,
+          code: uniqueCode,
         },
       ],
       customer: {
@@ -538,20 +570,8 @@ export class PaymentsService {
         type: 'individual',
         document: customer.cpf?.replace(/\D/g, '') || '',
         document_type: 'CPF',
-        phones: {
-          mobile_phone: {
-            country_code: '55',
-            area_code: ddd,
-            number: phoneNumber || '999999999',
-          },
-        },
-        address: {
-          line_1: store?.street ? `${store.number || 'SN'}, ${store.street}, ${store.neighborhood || 'Centro'}` : 'SN, Rua Nao Informada, Centro',
-          zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
-          city: store?.city || 'Arroio Grande',
-          state: store?.state || 'RS',
-          country: 'BR',
-        },
+        ...(phone ? { phones: { mobile_phone: phone } } : {}),
+        address: billingAddress,
       },
       payments: [
         {
@@ -562,13 +582,7 @@ export class PaymentsService {
             capture: false,
             ...(cardToken ? { card_token: cardToken } : { card_id: cardId }),
             card: {
-              billing_address: {
-                line_1: `${store?.number || 'SN'}, ${store?.street || 'Rua Nao Informada'}, ${store?.neighborhood || 'Centro'}`,
-                zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
-                city: store?.city || 'Arroio Grande',
-                state: store?.state || 'RS',
-                country: 'BR',
-              },
+              billing_address: billingAddress,
             },
           },
         },
@@ -588,8 +602,13 @@ export class PaymentsService {
       this.logger.log(
         `Pagar.me pre-auth for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id} | charge: ${chargeId} | status: ${status}`,
       );
+      if (status === 'failed' || status === 'refused' || status === 'canceled') {
+        const reason = charge?.last_transaction?.acquirer_message || charge?.last_transaction?.gateway_response?.errors?.[0]?.message || 'Pagamento recusado';
+        throw new BadRequestException(`Pagamento recusado: ${reason}`);
+      }
       return { pagarmeOrderId: result.id, status, chargeId };
     } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me pre-auth failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(
@@ -622,10 +641,7 @@ export class PaymentsService {
       })
       .join(', ');
 
-    // Customer data for PSP (mandatory)
-    const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
-    const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
-    const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
+    const phone = this.formatPhoneForPagarme(customer.phone);
 
     const customerObj: any = {
       name: customer.name,
@@ -633,25 +649,22 @@ export class PaymentsService {
       type: 'individual',
       document: customer.cpf?.replace(/\D/g, '') || '',
       document_type: 'CPF',
-      phones: {
-        mobile_phone: {
-          country_code: '55',
-          area_code: ddd,
-          number: phoneNumber || '999999999',
-        },
-      },
+      ...(phone ? { phones: { mobile_phone: phone } } : {}),
     };
+
+    // Unique code per attempt to avoid Pagar.me duplicate rejection
+    const uniqueCode = `order-${order.id}-${Date.now()}`;
 
     // Create Pagar.me order without payment (open order) — payment will be
     // collected via the hosted checkout page (payment link)
     const orderBody: any = {
-      code: `order-${order.id}`,
+      code: uniqueCode,
       items: [
         {
           amount: totalCents,
           description: `Pedido ${order.orderNumber} - ${itemsSummary}`.substring(0, 256),
           quantity: 1,
-          code: `order-${order.id}`,
+          code: uniqueCode,
         },
       ],
       customer: customerObj,
@@ -696,18 +709,19 @@ export class PaymentsService {
     // No split at payment time — all money goes to platform.
     // Transfers to vendor/deliverer happen after delivery is confirmed.
 
-    const phoneDigits = customer.phone?.replace(/\D/g, '') || '';
-    const ddd = phoneDigits.length >= 11 ? phoneDigits.substring(0, 2) : '53';
-    const phoneNumber = phoneDigits.length >= 11 ? phoneDigits.substring(2) : phoneDigits;
+    const phone = this.formatPhoneForPagarme(customer.phone);
+
+    // Unique code per attempt to avoid Pagar.me duplicate rejection
+    const uniqueCode = `order-${order.id}-${Date.now()}`;
 
     const orderBody: any = {
-      code: `order-${order.id}`,
+      code: uniqueCode,
       items: [
         {
           amount: totalCents,
           description: `Pedido ${order.orderNumber} (PIX)`.substring(0, 256),
           quantity: 1,
-          code: `order-${order.id}`,
+          code: uniqueCode,
         },
       ],
       customer: {
@@ -716,13 +730,7 @@ export class PaymentsService {
         type: 'individual',
         document: customer.cpf?.replace(/\D/g, '') || '',
         document_type: 'CPF',
-        phones: {
-          mobile_phone: {
-            country_code: '55',
-            area_code: ddd,
-            number: phoneNumber || '999999999',
-          },
-        },
+        ...(phone ? { phones: { mobile_phone: phone } } : {}),
       },
       payments: [
         {
@@ -841,7 +849,14 @@ export class PaymentsService {
             });
             this.logger.log(`Transfer to deliverer for order #${order.orderNumber} | amount: ${delivererAmount} cents | transfer: ${result.id}`);
           } catch (err: any) {
-            this.logger.error(`Transfer to deliverer failed: ${JSON.stringify(err.response?.data || err.message)}`);
+            this.logger.error(`Transfer to deliverer failed for order #${order.orderNumber}: ${JSON.stringify(err.response?.data || err.message)}`);
+            // Notify platform about failed transfer
+            this.notificationsService.sendToVendorUser(
+              store.owner?.id,
+              'Falha na transferência',
+              `Transferência para entregador do pedido #${order.orderNumber} falhou (R$ ${(delivererAmount / 100).toFixed(2)}). Verifique no painel.`,
+              { type: 'TRANSFER_FAILED', orderId: order.id },
+            ).catch(() => {});
           }
         }
       } else {
@@ -868,7 +883,14 @@ export class PaymentsService {
           });
           this.logger.log(`Transfer to vendor for order #${order.orderNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
         } catch (err: any) {
-          this.logger.error(`Transfer to vendor failed: ${JSON.stringify(err.response?.data || err.message)}`);
+          this.logger.error(`Transfer to vendor failed for order #${order.orderNumber}: ${JSON.stringify(err.response?.data || err.message)}`);
+          // Notify vendor about failed transfer
+          this.notificationsService.sendToVendorUser(
+            store.owner?.id,
+            'Falha na transferência',
+            `A transferência do pedido #${order.orderNumber} (R$ ${(vendorAmount / 100).toFixed(2)}) falhou. Entre em contato com o suporte.`,
+            { type: 'TRANSFER_FAILED', orderId: order.id },
+          ).catch(() => {});
         }
       }
     } else {
@@ -911,117 +933,9 @@ export class PaymentsService {
       // Payment link URL format: https://pagar.me/pay/{id}
       return result.url || `https://pagar.me/pay/${result.id}`;
     } catch (err: any) {
-      this.logger.warn(`Payment link creation failed, falling back to direct order: ${err.response?.data?.message || err.message}`);
-      // If payment link fails, return empty (order was already created)
-      return '';
+      this.logger.error(`Payment link creation failed: ${err.response?.data?.message || err.message}`);
+      throw new BadRequestException('Erro ao gerar link de pagamento. Tente novamente.');
     }
-  }
-
-  // ─── Split Rules Builder ───────────────────────────────────────────────
-
-  // Split SEM entregador: taxa de entrega fica na plataforma (para PIX e pré-auth)
-  private async buildSplitRulesWithoutDeliverer(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string): Promise<any[]> {
-    const totalCents = Math.round(Number(order.total) * 100);
-    const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
-    const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
-
-    const splitRules: any[] = [];
-
-    // Platform: comissão + taxa de entrega (retida até o entregador confirmar)
-    const platformCents = commissionCents + (!store?.hasOwnDelivery ? deliveryFeeCents : 0);
-    if (platformCents > 0) {
-      splitRules.push({
-        amount: platformCents,
-        recipient_id: platformRecipientId,
-        type: 'flat',
-        options: {
-          charge_processing_fee: false,
-          charge_remainder_fee: true,
-          liable: false,
-        },
-      });
-    }
-
-    // Vendor: total - plataforma
-    const vendorCents = totalCents - platformCents;
-    if (vendorCents > 0) {
-      splitRules.push({
-        amount: vendorCents,
-        recipient_id: vendorRecipientId,
-        type: 'flat',
-        options: {
-          charge_processing_fee: true,
-          charge_remainder_fee: false,
-          liable: true,
-        },
-      });
-    }
-
-    return splitRules;
-  }
-
-  // Split COM entregador: usado na captura do cartão (quando já sabemos quem é o entregador)
-  private async buildSplitRulesWithDeliverer(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string, delivererRecipientId: string): Promise<any[]> {
-    const totalCents = Math.round(Number(order.total) * 100);
-    const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
-    const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
-
-    const splitRules: any[] = [];
-    let delivererCents = 0;
-    let deliveryCommissionCents = 0;
-    const deliveryCommissionPercent = await this.platformConfigService.getDeliveryCommissionPercent();
-
-    if (!store?.hasOwnDelivery && deliveryFeeCents > 0) {
-      deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
-      delivererCents = deliveryFeeCents - deliveryCommissionCents;
-      splitRules.push({
-        amount: delivererCents,
-        recipient_id: delivererRecipientId,
-        type: 'flat',
-        options: {
-          charge_processing_fee: false,
-          charge_remainder_fee: false,
-          liable: false,
-        },
-      });
-    }
-
-    // Platform: comissão + comissão sobre entrega
-    const platformCents = commissionCents + deliveryCommissionCents;
-    if (platformCents > 0) {
-      splitRules.push({
-        amount: platformCents,
-        recipient_id: platformRecipientId,
-        type: 'flat',
-        options: {
-          charge_processing_fee: false,
-          charge_remainder_fee: true,
-          liable: false,
-        },
-      });
-    }
-
-    // Vendor: total - plataforma - entregador
-    const vendorCents = totalCents - platformCents - delivererCents;
-    if (vendorCents > 0) {
-      splitRules.push({
-        amount: vendorCents,
-        recipient_id: vendorRecipientId,
-        type: 'flat',
-        options: {
-          charge_processing_fee: true,
-          charge_remainder_fee: false,
-          liable: true,
-        },
-      });
-    }
-
-    return splitRules;
-  }
-
-  // Backward compat: usa split sem entregador por padrão
-  private async buildSplitRules(order: Order, store: Store, vendorRecipientId: string, platformRecipientId: string): Promise<any[]> {
-    return this.buildSplitRulesWithoutDeliverer(order, store, vendorRecipientId, platformRecipientId);
   }
 
   // ─── Plan Upgrade ──────────────────────────────────────────────────────
@@ -1276,10 +1190,37 @@ export class PaymentsService {
   }
 
   async disconnectVendor(userId: string): Promise<void> {
+    const vendor = await this.vendorUsersService.findById(userId);
+    if (vendor?.pagarmeRecipientId) {
+      try {
+        const balance = await this.getRecipientBalance(vendor.pagarmeRecipientId);
+        if (balance.waitingFundsAmount > 0) {
+          throw new BadRequestException(
+            `Você tem R$ ${balance.waitingFundsAmount.toFixed(2)} a receber. Aguarde as transferências antes de desconectar.`,
+          );
+        }
+      } catch (err) {
+        if (err instanceof BadRequestException) throw err;
+        // If balance check fails, allow disconnect (API may be down)
+      }
+    }
     await this.vendorUsersService.disconnectPayment(userId);
   }
 
   async disconnectApp(userId: string): Promise<void> {
+    const user = await this.appUsersService.findById(userId);
+    if (user?.pagarmeRecipientId) {
+      try {
+        const balance = await this.getRecipientBalance(user.pagarmeRecipientId);
+        if (balance.waitingFundsAmount > 0) {
+          throw new BadRequestException(
+            `Você tem R$ ${balance.waitingFundsAmount.toFixed(2)} a receber. Aguarde as transferências antes de desconectar.`,
+          );
+        }
+      } catch (err) {
+        if (err instanceof BadRequestException) throw err;
+      }
+    }
     await this.appUsersService.disconnectPayment(userId);
   }
 
@@ -1371,7 +1312,7 @@ export class PaymentsService {
     }
 
     // Handle order payment
-    const orderId = metadata.order_id || (code?.startsWith('order-') ? code.replace('order-', '') : null);
+    const orderId = metadata.order_id || (code?.startsWith('order-') ? code.replace(/^order-([a-f0-9-]+).*$/, '$1') : null);
     if (orderId) {
       const orderRepo = this.paymentsRepository.manager.getRepository(Order);
       const order = await orderRepo.findOne({
@@ -1404,30 +1345,136 @@ export class PaymentsService {
   }
 
   private async handleOrderPaymentFailed(data: any): Promise<void> {
-    const metadata = data.metadata || {};
+    const metadata = data.metadata || data.order?.metadata || {};
     const orderId = metadata.order_id;
     if (!orderId) return;
 
     this.logger.warn(`Payment failed for order ${orderId}`);
+
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const order = await orderRepo.findOne({
+      where: { id: orderId },
+      relations: ['customer', 'store', 'store.owner', 'items', 'items.product'],
+    });
+
+    if (!order || order.status === OrderStatus.CANCELLED) return;
+
+    order.status = OrderStatus.CANCELLED;
+    await orderRepo.save(order);
+    this.logger.log(`Pedido #${order.orderNumber} cancelado por falha no pagamento`);
+
+    // Restaurar estoque
+    if (order.items) {
+      const productRepo = this.paymentsRepository.manager.getRepository('Product');
+      for (const item of order.items) {
+        if (item.product?.id) {
+          await productRepo.increment({ id: item.product.id }, 'stock', item.quantity);
+        }
+      }
+    }
+
+    // Notificar cliente
+    if (order.customer?.id) {
+      this.notificationsService.sendToAppUser(
+        order.customer.id,
+        'Pagamento recusado',
+        `O pagamento do pedido #${order.orderNumber} foi recusado. Tente novamente com outro método de pagamento.`,
+        { type: 'PAYMENT_FAILED', orderId: order.id },
+      ).catch(() => {});
+    }
+
+    // Notificar vendor
+    if (order.store?.owner?.id) {
+      this.notificationsService.sendToVendorUser(
+        order.store.owner.id,
+        'Pedido cancelado',
+        `Pedido #${order.orderNumber} cancelado - pagamento recusado.`,
+        { type: 'ORDER_CANCELLED', orderId: order.id },
+      ).catch(() => {});
+    }
   }
 
   private async handleOrderCanceled(data: any): Promise<void> {
-    const metadata = data.metadata || {};
+    const metadata = data.metadata || data.order?.metadata || {};
     const orderId = metadata.order_id;
     if (!orderId) return;
 
     this.logger.warn(`Order canceled on Pagar.me: ${orderId}`);
+
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const order = await orderRepo.findOne({
+      where: { id: orderId },
+      relations: ['customer', 'store', 'store.owner', 'items', 'items.product'],
+    });
+
+    if (!order || order.status === OrderStatus.CANCELLED) return;
+
+    order.status = OrderStatus.CANCELLED;
+    await orderRepo.save(order);
+    this.logger.log(`Pedido #${order.orderNumber} cancelado via Pagar.me webhook`);
+
+    // Restaurar estoque
+    if (order.items) {
+      const productRepo = this.paymentsRepository.manager.getRepository('Product');
+      for (const item of order.items) {
+        if (item.product?.id) {
+          await productRepo.increment({ id: item.product.id }, 'stock', item.quantity);
+        }
+      }
+    }
+
+    if (order.customer?.id) {
+      this.notificationsService.sendToAppUser(
+        order.customer.id,
+        'Pedido cancelado',
+        `Seu pedido #${order.orderNumber} foi cancelado.`,
+        { type: 'ORDER_CANCELLED', orderId: order.id },
+      ).catch(() => {});
+    }
   }
 
   private async handleChargePaid(data: any): Promise<void> {
-    // charge.paid can be used for immediate confirmation
-    // The order.paid webhook will also fire, so this is a fallback
-    this.logger.log(`Charge paid: ${data.id}`);
+    // Fallback: if order.paid webhook doesn't fire, charge.paid confirms the payment
+    const metadata = data.metadata || data.order?.metadata || {};
+    const code = data.code || data.order?.code || '';
+    const orderId = metadata.order_id || (code.startsWith('order-') ? code.replace(/^order-([a-f0-9-]+).*$/, '$1') : null);
+
+    this.logger.log(`Charge paid: ${data.id} | orderId: ${orderId}`);
+
+    if (!orderId) return;
+
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const order = await orderRepo.findOne({
+      where: { id: orderId },
+      relations: ['customer', 'store'],
+    });
+
+    // Only act if order is still AWAITING_PAYMENT (order.paid didn't fire yet)
+    if (order && order.status === OrderStatus.AWAITING_PAYMENT) {
+      order.status = OrderStatus.PENDING;
+      await orderRepo.save(order);
+      this.logger.log(`Charge.paid fallback: pedido #${order.orderNumber} confirmado via charge webhook`);
+
+      if (order.customer?.id) {
+        this.notificationsService.sendToAppUser(
+          order.customer.id,
+          'Pagamento confirmado!',
+          `Seu pagamento do pedido #${order.orderNumber} foi aprovado. Aguarde a confirmação da loja.`,
+          { type: 'PAYMENT_CONFIRMED', orderId: order.id },
+        ).catch(() => {});
+      }
+      if (order.customer?.phone) {
+        this.whatsAppService.sendText(
+          order.customer.phone,
+          `✅ *Pagamento confirmado!*\n\nSeu pagamento do pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) foi aprovado.\n\nAguarde a confirmação da loja!`,
+        ).catch(() => {});
+      }
+    }
   }
 
   private async handleChargeRefunded(data: any): Promise<void> {
     const metadata = data.metadata || data.order?.metadata || {};
-    const orderId = metadata.order_id || (data.code?.startsWith('order-') ? data.code.replace('order-', '') : null);
+    const orderId = metadata.order_id || (data.code?.startsWith('order-') ? data.code.replace(/^order-([a-f0-9-]+).*$/, '$1') : null);
 
     this.logger.log(`Charge refunded: ${data.id} | orderId: ${orderId}`);
 
@@ -1436,13 +1483,23 @@ export class PaymentsService {
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
       where: { id: orderId },
-      relations: ['customer', 'store', 'store.owner'],
+      relations: ['customer', 'store', 'store.owner', 'items', 'items.product'],
     });
 
     if (order && order.status !== OrderStatus.CANCELLED) {
       order.status = OrderStatus.CANCELLED;
       await orderRepo.save(order);
       this.logger.log(`Pedido #${order.orderNumber} cancelado por estorno`);
+
+      // Restaurar estoque
+      if (order.items) {
+        const productRepo = this.paymentsRepository.manager.getRepository('Product');
+        for (const item of order.items) {
+          if (item.product?.id) {
+            await productRepo.increment({ id: item.product.id }, 'stock', item.quantity);
+          }
+        }
+      }
 
       if (order.customer?.id) {
         this.notificationsService.sendToAppUser(
@@ -1463,7 +1520,7 @@ export class PaymentsService {
 
   private async handleChargeChargedback(data: any): Promise<void> {
     const metadata = data.metadata || data.order?.metadata || {};
-    const orderId = metadata.order_id || (data.code?.startsWith('order-') ? data.code.replace('order-', '') : null);
+    const orderId = metadata.order_id || (data.code?.startsWith('order-') ? data.code.replace(/^order-([a-f0-9-]+).*$/, '$1') : null);
 
     this.logger.warn(`Chargeback received: ${data.id} | orderId: ${orderId}`);
 
@@ -1472,20 +1529,34 @@ export class PaymentsService {
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
       where: { id: orderId },
-      relations: ['customer', 'store', 'store.owner'],
+      relations: ['customer', 'store', 'store.owner', 'items', 'items.product'],
     });
 
     if (order) {
+      const wasCompleted = order.status === OrderStatus.COMPLETED;
       order.status = OrderStatus.CANCELLED;
       await orderRepo.save(order);
       this.logger.warn(`Pedido #${order.orderNumber} cancelado por chargeback`);
 
+      // Restaurar estoque
+      if (order.items) {
+        const productRepo = this.paymentsRepository.manager.getRepository('Product');
+        for (const item of order.items) {
+          if (item.product?.id) {
+            await productRepo.increment({ id: item.product.id }, 'stock', item.quantity);
+          }
+        }
+      }
+
       // Notify vendor about chargeback
       if (order.store?.owner?.id) {
+        const transferWarning = wasCompleted
+          ? ' As transferências já realizadas serão debitadas.'
+          : '';
         this.notificationsService.sendToVendorUser(
           order.store.owner.id,
           'Chargeback recebido',
-          `O pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) recebeu uma contestação (chargeback). O valor será debitado da sua conta.`,
+          `O pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) recebeu uma contestação (chargeback).${transferWarning}`,
           { type: 'CHARGEBACK', orderId: order.id },
         ).catch(() => {});
       }

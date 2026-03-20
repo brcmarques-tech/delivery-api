@@ -65,6 +65,10 @@ export class DelivererTrackerService {
     return this.onlineDeliverers.has(userId);
   }
 
+  getDelivererLocation(userId: string): DelivererLocation | null {
+    return this.onlineDeliverers.get(userId) || null;
+  }
+
   getOnlineCount(): number {
     return this.onlineDeliverers.size;
   }

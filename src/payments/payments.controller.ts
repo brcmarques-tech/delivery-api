@@ -21,12 +21,15 @@ export class PaymentsController {
     const webhookUser = this.configService.get('PAGARME_WEBHOOK_USER');
     const webhookPass = this.configService.get('PAGARME_WEBHOOK_PASS');
 
-    if (webhookUser && webhookPass) {
-      const expected = 'Basic ' + Buffer.from(`${webhookUser}:${webhookPass}`).toString('base64');
-      if (authHeader !== expected) {
-        this.logger.warn('Webhook auth failed - invalid credentials');
-        throw new UnauthorizedException('Invalid webhook credentials');
-      }
+    if (!webhookUser || !webhookPass) {
+      this.logger.error('Webhook rejected - PAGARME_WEBHOOK_USER/PASS not configured');
+      throw new UnauthorizedException('Webhook credentials not configured');
+    }
+
+    const expected = 'Basic ' + Buffer.from(`${webhookUser}:${webhookPass}`).toString('base64');
+    if (authHeader !== expected) {
+      this.logger.warn('Webhook auth failed - invalid credentials');
+      throw new UnauthorizedException('Invalid webhook credentials');
     }
 
     await this.paymentsService.handleWebhook(body);
@@ -39,6 +42,8 @@ export class PaymentsController {
     @Query('order') orderId: string,
     @Res() res: express.Response,
   ): Promise<void> {
-    res.redirect(`delivery-app://order-result?status=${status || 'unknown'}&order=${orderId || ''}`);
+    const safeStatus = encodeURIComponent((status || 'unknown').replace(/[^a-zA-Z0-9_-]/g, ''));
+    const safeOrderId = encodeURIComponent((orderId || '').replace(/[^a-zA-Z0-9_-]/g, ''));
+    res.redirect(`delivery-app://order-result?status=${safeStatus}&order=${safeOrderId}`);
   }
 }

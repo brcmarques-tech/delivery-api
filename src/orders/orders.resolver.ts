@@ -96,9 +96,20 @@ export class OrdersResolver {
   }
 
   @Query(() => Order)
-  @UseGuards(GqlAuthGuard)
-  order(@Args('id') id: string): Promise<Order> {
-    return this.ordersService.findById(id);
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  async order(
+    @Args('id') id: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    const order = await this.ordersService.findById(id);
+    const isSuperadmin = user.role === UserRole.SUPERADMIN;
+    const isCustomer = order.customer?.id === user.id;
+    const isDeliverer = order.delivery?.deliverer?.id === user.id;
+    const isStoreOwner = order.store?.owner?.id === user.id;
+    if (!isSuperadmin && !isCustomer && !isDeliverer && !isStoreOwner) {
+      throw new BadRequestException('Você não tem permissão para ver este pedido.');
+    }
+    return order;
   }
 
   @Query(() => [Order])
@@ -142,7 +153,14 @@ export class OrdersResolver {
   @Query(() => [Order])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  storeOrders(@Args('storeId') storeId: string): Promise<Order[]> {
+  async storeOrders(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order[]> {
+    const store = await this.ordersService.findStoreById(storeId);
+    if (store?.owner?.id !== user.id) {
+      throw new BadRequestException('Você não tem permissão para ver pedidos desta loja.');
+    }
     return this.ordersService.findByStore(storeId);
   }
 
@@ -264,8 +282,9 @@ export class OrdersResolver {
   adjustOrderItemWeight(
     @Args('orderItemId') orderItemId: string,
     @Args('actualWeightGrams', { type: () => Int }) actualWeightGrams: number,
+    @CurrentUser() user: AppUser,
   ): Promise<Order> {
-    return this.ordersService.adjustItemWeight(orderItemId, actualWeightGrams);
+    return this.ordersService.adjustItemWeight(orderItemId, actualWeightGrams, user.id);
   }
 
   // DEV ONLY: simula pagamento para testes (AWAITING_PAYMENT → PENDING)

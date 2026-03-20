@@ -15,6 +15,12 @@ export class UploadService {
   }
 
   async uploadBase64(base64: string, folder = 'delivery'): Promise<string> {
+    // Limit base64 payload to ~10MB (base64 is ~33% larger than raw)
+    const MAX_BASE64_LENGTH = 14_000_000;
+    if (base64.length > MAX_BASE64_LENGTH) {
+      throw new Error('Imagem muito grande. Tamanho máximo: 10MB.');
+    }
+
     const dataUri = base64.startsWith('data:') ? base64 : `data:image/jpeg;base64,${base64}`;
 
     const result = await cloudinary.uploader.upload(dataUri, {
@@ -26,7 +32,37 @@ export class UploadService {
     return result.secure_url;
   }
 
+  private isAllowedUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+      const hostname = parsed.hostname.toLowerCase();
+      // Block private/internal IPs and metadata endpoints
+      if (
+        hostname === 'localhost' ||
+        hostname === '127.0.0.1' ||
+        hostname === '0.0.0.0' ||
+        hostname === '[::1]' ||
+        hostname === '169.254.169.254' ||
+        hostname.startsWith('10.') ||
+        hostname.startsWith('192.168.') ||
+        hostname.match(/^172\.(1[6-9]|2\d|3[01])\./) ||
+        hostname.endsWith('.internal') ||
+        hostname.endsWith('.local')
+      ) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async uploadFromUrl(url: string, folder = 'delivery'): Promise<string> {
+    if (!this.isAllowedUrl(url)) {
+      throw new Error('URL não permitida. Use apenas URLs públicas (http/https).');
+    }
+
     const result = await cloudinary.uploader.upload(url, {
       folder,
       resource_type: 'image',

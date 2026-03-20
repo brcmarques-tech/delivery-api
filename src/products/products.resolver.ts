@@ -1,5 +1,5 @@
 import { Resolver, Query, Mutation, Args, Subscription, ObjectType, Field, ID, Int } from '@nestjs/graphql';
-import { UseGuards, Inject } from '@nestjs/common';
+import { UseGuards, Inject, BadRequestException } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Product } from './entities/product.entity';
 import { ProductsService } from './products.service';
@@ -10,7 +10,9 @@ import { BarcodeLookupResult } from './dto/barcode-lookup-result';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from '../common/enums';
+import { StoresService } from '../stores/stores.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 @ObjectType()
@@ -26,6 +28,7 @@ class ProductDeletedPayload {
 export class ProductsResolver {
   constructor(
     private productsService: ProductsService,
+    private storesService: StoresService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -44,7 +47,14 @@ export class ProductsResolver {
   @Query(() => [Product])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  productsByStoreAll(@Args('storeId') storeId: string): Promise<Product[]> {
+  async productsByStoreAll(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: any,
+  ): Promise<Product[]> {
+    const store = await this.storesService.findById(storeId);
+    if (store.owner?.id !== user.id) {
+      throw new BadRequestException('Você não tem permissão para ver produtos desta loja.');
+    }
     return this.productsService.findByStoreAll(storeId);
   }
 

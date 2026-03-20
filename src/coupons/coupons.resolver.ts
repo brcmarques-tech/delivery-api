@@ -21,7 +21,8 @@ export class CouponsResolver {
   ) {}
 
   @Mutation(() => Coupon)
-  @UseGuards(GqlAuthGuard)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
   createCoupon(
     @Args('input') input: CreateCouponInput,
     @CurrentUser() user: VendorUser,
@@ -30,7 +31,8 @@ export class CouponsResolver {
   }
 
   @Mutation(() => Coupon)
-  @UseGuards(GqlAuthGuard)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
   updateCoupon(
     @Args('input') input: UpdateCouponInput,
     @CurrentUser() user: VendorUser,
@@ -39,7 +41,8 @@ export class CouponsResolver {
   }
 
   @Mutation(() => Coupon)
-  @UseGuards(GqlAuthGuard)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
   toggleCouponActive(
     @Args('id') id: string,
     @CurrentUser() user: VendorUser,
@@ -48,7 +51,8 @@ export class CouponsResolver {
   }
 
   @Mutation(() => Boolean)
-  @UseGuards(GqlAuthGuard)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
   deleteCoupon(
     @Args('id') id: string,
     @CurrentUser() user: VendorUser,

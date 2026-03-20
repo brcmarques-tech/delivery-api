@@ -7,6 +7,7 @@ import { OrdersService } from '../orders/orders.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { NotificationsService } from '../notifications/notifications.service';
 
 describe('DeliveriesService', () => {
   let service: DeliveriesService;
@@ -37,6 +38,11 @@ describe('DeliveriesService', () => {
     publish: jest.fn(),
   };
 
+  const mockNotificationsService = {
+    sendToVendorUser: jest.fn().mockResolvedValue(undefined),
+    sendToAppUser: jest.fn().mockResolvedValue(undefined),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -47,6 +53,7 @@ describe('DeliveriesService', () => {
         { provide: OrdersService, useValue: mockOrdersService },
         { provide: DeliveryOfferService, useValue: mockOfferService },
         { provide: PUB_SUB, useValue: mockPubSub },
+        { provide: NotificationsService, useValue: mockNotificationsService },
       ],
     }).compile();
 
@@ -120,7 +127,7 @@ describe('DeliveriesService', () => {
       const result = await service.acceptDelivery('order-1', deliverer as any);
 
       expect(deliveriesRepo.create).toHaveBeenCalledWith({ order, deliverer });
-      expect(ordersService.updateStatus).toHaveBeenCalledWith('order-1', OrderStatus.PICKED_UP);
+      expect(ordersService.updateStatus).toHaveBeenCalledWith('order-1', OrderStatus.VENDOR_CONFIRMED_PICKUP);
       expect(pubSub.publish).toHaveBeenCalledWith('deliveryUpdated', expect.any(Object));
     });
   });
@@ -154,7 +161,7 @@ describe('DeliveriesService', () => {
       deliveriesRepo.findOne.mockResolvedValue(delivery);
       deliveriesRepo.save.mockResolvedValue(delivery);
 
-      const result = await service.confirmPickup('delivery-1');
+      const result = await service.confirmPickup('delivery-1', 'deliverer-1');
 
       expect(delivery.pickedUpAt).toBeInstanceOf(Date);
       expect(ordersService.updateStatus).toHaveBeenCalledWith('order-1', OrderStatus.DELIVERING);
@@ -163,7 +170,7 @@ describe('DeliveriesService', () => {
 
     it('should throw if delivery not found', async () => {
       deliveriesRepo.findOne.mockResolvedValue(null);
-      await expect(service.confirmPickup('bad-id')).rejects.toThrow(NotFoundException);
+      await expect(service.confirmPickup('bad-id', 'deliverer-1')).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -174,15 +181,15 @@ describe('DeliveriesService', () => {
       deliveriesRepo.findOne.mockResolvedValue(delivery);
       deliveriesRepo.save.mockResolvedValue(delivery);
 
-      await service.confirmDelivery('delivery-1');
+      await service.confirmDelivery('delivery-1', 'deliverer-1');
 
       expect(delivery.deliveredAt).toBeInstanceOf(Date);
-      expect(ordersService.updateStatus).toHaveBeenCalledWith('order-1', OrderStatus.DELIVERED);
+      expect(ordersService.updateStatus).toHaveBeenCalledWith('order-1', OrderStatus.DELIVERER_CONFIRMED_DELIVERY);
     });
 
     it('should throw if delivery not found', async () => {
       deliveriesRepo.findOne.mockResolvedValue(null);
-      await expect(service.confirmDelivery('bad-id')).rejects.toThrow(NotFoundException);
+      await expect(service.confirmDelivery('bad-id', 'deliverer-1')).rejects.toThrow(NotFoundException);
     });
 
     describe('payment tracking (Pagar.me split_auto)', () => {
@@ -191,11 +198,11 @@ describe('DeliveriesService', () => {
         deliveriesRepo.findOne.mockResolvedValue(delivery);
         deliveriesRepo.save.mockResolvedValue(delivery);
 
-        await service.confirmDelivery('delivery-1');
+        await service.confirmDelivery('delivery-1', 'deliverer-1');
 
         // vendorAmount = subtotal (50) - commission (2.5) = 47.5
         expect(delivery.vendorPayoutAmount).toBe(47.5);
-        expect(delivery.vendorPayoutStatus).toBe('split_auto');
+        expect(delivery.vendorPayoutStatus).toBe('paid_on_pickup');
       });
 
       it('should set deliverer payout as split_auto when platform handles delivery', async () => {
@@ -203,10 +210,10 @@ describe('DeliveriesService', () => {
         deliveriesRepo.findOne.mockResolvedValue(delivery);
         deliveriesRepo.save.mockResolvedValue(delivery);
 
-        await service.confirmDelivery('delivery-1');
+        await service.confirmDelivery('delivery-1', 'deliverer-1');
 
         expect(delivery.payoutAmount).toBe(5.0);
-        expect(delivery.payoutStatus).toBe('split_auto');
+        expect(delivery.payoutStatus).toBe('pending_confirmation');
       });
 
       it('should NOT set deliverer payout when store has own delivery', async () => {
@@ -218,7 +225,7 @@ describe('DeliveriesService', () => {
         deliveriesRepo.findOne.mockResolvedValue(delivery);
         deliveriesRepo.save.mockResolvedValue(delivery);
 
-        await service.confirmDelivery('delivery-1');
+        await service.confirmDelivery('delivery-1', 'deliverer-1');
 
         expect(delivery.payoutAmount).toBeNull();
         expect(delivery.payoutStatus).toBeNull();
@@ -233,9 +240,9 @@ describe('DeliveriesService', () => {
         deliveriesRepo.findOne.mockResolvedValue(delivery);
         deliveriesRepo.save.mockResolvedValue(delivery);
 
-        await service.confirmDelivery('delivery-1');
+        await service.confirmDelivery('delivery-1', 'deliverer-1');
 
-        expect(delivery.vendorPayoutStatus).toBe('split_auto');
+        expect(delivery.vendorPayoutStatus).toBe('paid_on_pickup');
         expect(delivery.vendorPayoutAmount).toBe(47.5);
       });
 
@@ -246,10 +253,10 @@ describe('DeliveriesService', () => {
         deliveriesRepo.findOne.mockResolvedValue(delivery);
         deliveriesRepo.save.mockResolvedValue(delivery);
 
-        await service.confirmDelivery('delivery-1');
+        await service.confirmDelivery('delivery-1', 'deliverer-1');
 
         expect(delivery.payoutAmount).toBe(5.0);
-        expect(delivery.payoutStatus).toBe('split_auto');
+        expect(delivery.payoutStatus).toBe('pending_confirmation');
       });
     });
 
@@ -261,7 +268,7 @@ describe('DeliveriesService', () => {
         deliveriesRepo.findOne.mockResolvedValue(delivery);
         deliveriesRepo.save.mockResolvedValue(delivery);
 
-        await service.confirmDelivery('delivery-1');
+        await service.confirmDelivery('delivery-1', 'deliverer-1');
 
         expect(delivery.vendorPayoutStatus).toBeNull();
         expect(delivery.vendorPayoutAmount).toBeNull();
@@ -275,7 +282,7 @@ describe('DeliveriesService', () => {
       deliveriesRepo.findOne.mockResolvedValue(delivery);
       deliveriesRepo.save.mockResolvedValue(delivery);
 
-      await service.confirmDelivery('delivery-1');
+      await service.confirmDelivery('delivery-1', 'deliverer-1');
 
       expect(pubSub.publish).toHaveBeenCalledWith('deliveryUpdated', expect.any(Object));
     });

@@ -46,7 +46,12 @@ export class PaymentsResolver {
     @CurrentUser() user: any,
     @Args('recipientData') recipientData: string,
   ): Promise<boolean> {
-    const data = JSON.parse(recipientData);
+    let data: any;
+    try {
+      data = JSON.parse(recipientData);
+    } catch {
+      throw new BadRequestException('Dados inválidos. Verifique o formato JSON.');
+    }
     if (user.userType === 'vendor') {
       await this.paymentsService.registerVendorRecipient(user.id, data);
     } else {
