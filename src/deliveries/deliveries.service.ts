@@ -49,6 +49,18 @@ export class DeliveriesService implements OnModuleInit {
       );
     }
 
+    // Check if deliverer already has an active delivery (not delivered yet)
+    const activeDelivery = await this.deliveriesRepository.findOne({
+      where: { deliverer: { id: deliverer.id }, deliveredAt: IsNull() },
+      relations: ['order'],
+    });
+    if (activeDelivery) {
+      console.log(`[ACCEPTDELIVERY] BLOCKED: deliverer ${deliverer.id} already has active delivery ${activeDelivery.id} (order ${activeDelivery.order?.orderNumber})`);
+      throw new BadRequestException(
+        'Voce ja tem uma entrega em andamento. Finalize-a antes de aceitar outra.',
+      );
+    }
+
     const order = await this.ordersService.findById(orderId);
     console.log(`[ACCEPTDELIVERY] Order ${order.orderNumber}, status=${order.status}`);
 
@@ -102,9 +114,10 @@ export class DeliveriesService implements OnModuleInit {
     });
 
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
-    await this.ordersService.updateStatus(orderId, OrderStatus.VENDOR_CONFIRMED_PICKUP);
+    // Status stays at READY — only changes when deliverer confirms pickup (DELIVERING)
+    // The order disappears from "Disponíveis" because it now has a delivery record
     this.notifyVendorDeliveryAccepted(order, deliverer);
-    console.log(`[ACCEPTDELIVERY] SUCCESS (${result.isNew ? 'new' : 'existing'}): delivery=${result.deliveryId}`);
+    console.log(`[ACCEPTDELIVERY] SUCCESS (${result.isNew ? 'new' : 'existing'}): delivery=${result.deliveryId}, status stays ${order.status}`);
     return saved;
   }
 
@@ -232,11 +245,16 @@ export class DeliveriesService implements OnModuleInit {
   }
 
   async findByDeliverer(delivererId: string): Promise<Delivery[]> {
-    return this.deliveriesRepository.find({
+    const deliveries = await this.deliveriesRepository.find({
       where: { deliverer: { id: delivererId } },
       relations: ['order', 'order.store', 'order.customer'],
       order: { createdAt: 'DESC' },
     });
+    console.log(`[MYDELIVERIES] delivererId=${delivererId}, found=${deliveries.length}, active=${deliveries.filter(d => !d.deliveredAt).length}, completed=${deliveries.filter(d => d.deliveredAt).length}`);
+    if (deliveries.length > 0) {
+      deliveries.forEach(d => console.log(`[MYDELIVERIES]   - delivery=${d.id}, order=${d.order?.orderNumber}, status=${d.order?.status}, deliveredAt=${d.deliveredAt || 'null'}`));
+    }
+    return deliveries;
   }
 
   async findAllAdmin(): Promise<Delivery[]> {

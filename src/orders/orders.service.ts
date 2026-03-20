@@ -498,11 +498,20 @@ export class OrdersService {
   }
 
   async findPendingForDelivery(): Promise<Order[]> {
-    return this.ordersRepository.find({
-      where: { status: OrderStatus.READY },
-      relations: ['store', 'customer', 'items', 'items.product'],
-      order: { createdAt: 'ASC' },
-    });
+    // Only show READY orders that don't have a deliverer assigned yet
+    const orders = await this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .leftJoinAndSelect('order.items', 'items')
+      .leftJoinAndSelect('items.product', 'product')
+      .leftJoin('order.delivery', 'delivery')
+      .where('order.status = :status', { status: OrderStatus.READY })
+      .andWhere('(delivery.id IS NULL OR delivery.delivererId IS NULL)')
+      .orderBy('order.createdAt', 'ASC')
+      .getMany();
+    console.log(`[AVAILABLE] Found ${orders.length} available orders: ${orders.map(o => o.orderNumber).join(', ') || 'none'}`);
+    return orders;
   }
 
   async findAllAdmin(): Promise<Order[]> {
