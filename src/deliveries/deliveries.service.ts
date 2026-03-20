@@ -41,13 +41,16 @@ export class DeliveriesService implements OnModuleInit {
   }
 
   async acceptDelivery(orderId: string, deliverer: AppUser): Promise<Delivery> {
+    console.log(`[ACCEPTDELIVERY] orderId=${orderId}, delivererId=${deliverer.id}, name=${deliverer.name}`);
     if (!deliverer.paymentConnected) {
+      console.log(`[ACCEPTDELIVERY] BLOCKED: payment not connected for ${deliverer.id}`);
       throw new BadRequestException(
         'Cadastre sua conta de recebimento para aceitar entregas.',
       );
     }
 
     const order = await this.ordersService.findById(orderId);
+    console.log(`[ACCEPTDELIVERY] Order ${order.orderNumber}, status=${order.status}`);
 
     // Check if delivery already exists for this order (e.g. from offer system)
     const existing = await this.deliveriesRepository.findOne({
@@ -58,8 +61,10 @@ export class DeliveriesService implements OnModuleInit {
     if (existing) {
       // If already assigned to another deliverer, reject
       if (existing.deliverer && existing.deliverer.id !== deliverer.id) {
+        console.log(`[ACCEPTDELIVERY] BLOCKED: already assigned to ${existing.deliverer.id}`);
         throw new BadRequestException('Esta entrega já foi aceita por outro entregador.');
       }
+      console.log(`[ACCEPTDELIVERY] Assigning to existing delivery record`);
       // Assign this deliverer to existing delivery
       existing.deliverer = deliverer;
       const saved = await this.deliveriesRepository.save(existing);
@@ -67,9 +72,11 @@ export class DeliveriesService implements OnModuleInit {
       // Muda status para tirar de "Disponíveis" imediatamente
       await this.ordersService.updateStatus(orderId, OrderStatus.VENDOR_CONFIRMED_PICKUP);
       this.notifyVendorDeliveryAccepted(order, deliverer);
+      console.log(`[ACCEPTDELIVERY] SUCCESS (existing): delivery=${saved.id}`);
       return saved;
     }
 
+    console.log(`[ACCEPTDELIVERY] Creating new delivery record`);
     const delivery = this.deliveriesRepository.create({
       order,
       deliverer,
@@ -80,6 +87,7 @@ export class DeliveriesService implements OnModuleInit {
     // Muda status para tirar de "Disponíveis" imediatamente
     await this.ordersService.updateStatus(orderId, OrderStatus.VENDOR_CONFIRMED_PICKUP);
     this.notifyVendorDeliveryAccepted(order, deliverer);
+    console.log(`[ACCEPTDELIVERY] SUCCESS (new): delivery=${saved.id}`);
     return saved;
   }
 
@@ -114,6 +122,7 @@ export class DeliveriesService implements OnModuleInit {
 
   // Entregador confirma que pegou o pedido
   async confirmPickup(deliveryId: string, delivererId: string): Promise<Delivery> {
+    console.log(`[CONFIRMPICKUP] deliveryId=${deliveryId}, delivererId=${delivererId}`);
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
       relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
@@ -130,10 +139,12 @@ export class DeliveriesService implements OnModuleInit {
     // Capturar pré-autorização do cartão (sem split — tudo pra plataforma)
     // Settlement (transfers) happens after delivery is confirmed
     if (order.preAuthChargeId) {
+      console.log(`[CONFIRMPICKUP] Capturing pre-auth: chargeId=${order.preAuthChargeId}`);
       try {
         await this.ordersService.captureCardOnPickup(order.id);
+        console.log(`[CONFIRMPICKUP] Capture SUCCESS`);
       } catch (err: any) {
-        console.error('Capture on pickup failed:', err?.message);
+        console.error(`[CONFIRMPICKUP] Capture FAILED: ${err?.message}`);
         if (order.store?.owner?.id) {
           this.notificationsService.sendToVendorUser(
             order.store.owner.id,
@@ -153,6 +164,7 @@ export class DeliveriesService implements OnModuleInit {
 
   // Entregador confirma que entregou pro cliente
   async confirmDelivery(deliveryId: string, delivererId: string): Promise<Delivery> {
+    console.log(`[CONFIRMDELIVERY] deliveryId=${deliveryId}, delivererId=${delivererId}`);
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
       relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],

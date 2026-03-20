@@ -95,6 +95,8 @@ export class DeliveryOfferService {
       offer.declinedBy,
     );
 
+    this.logger.log(`[OFFER] Order ${offer.orderNumber}: found ${nearest.length} available deliverers (excluded: ${offer.declinedBy.size})`);
+
     if (nearest.length === 0) {
       // No more online deliverers — broadcast via socket AND push to all offline deliverers
       this.logger.log(`No more deliverers for order ${offer.orderNumber}, broadcasting to all`);
@@ -126,6 +128,7 @@ export class DeliveryOfferService {
 
     // Send offer to specific deliverer via socket
     if (this.emitToSocket) {
+      this.logger.log(`[OFFER] Emitting 'deliveryOffer' to socket ${deliverer.socketId} for order ${offer.orderNumber}`);
       this.emitToSocket(deliverer.socketId, 'deliveryOffer', {
         orderId: offer.orderId,
         orderNumber: offer.orderNumber,
@@ -135,6 +138,8 @@ export class DeliveryOfferService {
         itemCount: offer.itemCount,
         timeoutSeconds: OFFER_TIMEOUT_MS / 1000,
       });
+    } else {
+      this.logger.warn(`[OFFER] No emitToSocket set! Cannot send offer for order ${offer.orderNumber}`);
     }
 
     // Push notification to deliverer
@@ -171,14 +176,21 @@ export class DeliveryOfferService {
    * Returns true if the offer was still valid.
    */
   acceptOffer(orderId: string, delivererId: string): boolean {
+    this.logger.log(`[ACCEPT] acceptOffer called: orderId=${orderId}, delivererId=${delivererId}`);
     const offer = this.pendingOffers.get(orderId);
-    if (!offer || offer.resolved) return false;
-    if (offer.currentDelivererId !== delivererId) return false;
+    if (!offer || offer.resolved) {
+      this.logger.log(`[ACCEPT] REJECTED: offer not found or already resolved`);
+      return false;
+    }
+    if (offer.currentDelivererId !== delivererId) {
+      this.logger.log(`[ACCEPT] REJECTED: offer is for ${offer.currentDelivererId}, not ${delivererId}`);
+      return false;
+    }
 
     offer.resolved = true;
     if (offer.timer) clearTimeout(offer.timer);
     this.pendingOffers.delete(orderId);
-    this.logger.log(`Deliverer ${delivererId} accepted order ${offer.orderNumber}`);
+    this.logger.log(`[ACCEPT] SUCCESS: Deliverer ${delivererId} accepted order ${offer.orderNumber}`);
     return true;
   }
 
