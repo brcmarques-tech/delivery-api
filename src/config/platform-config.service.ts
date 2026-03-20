@@ -58,7 +58,7 @@ export class PlatformConfigService {
   }
 
   async getMinimumOrderPlatform(): Promise<number> {
-    const value = await this.get('minimum_order_platform', '10');
+    const value = await this.get('minimum_order_platform', '1');
     return parseFloat(value);
   }
 
