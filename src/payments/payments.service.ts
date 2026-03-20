@@ -456,7 +456,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       this.logger.log(`Updating recipient: ${recipientId}`);
-      const result = await this.pagarmePatch(`/recipients/${recipientId}`, body);
+      const result = await this.pagarmePut(`/recipients/${recipientId}`, body);
       this.logger.log(`Recipient updated: ${recipientId}`);
       return result;
     } catch (err: any) {
@@ -1953,9 +1953,12 @@ export class PaymentsService implements OnModuleDestroy {
 
   async updateRecipientAnticipationSettings(recipientId: string, enabled: boolean): Promise<boolean> {
     try {
-      await this.pagarmePatch(`/recipients/${recipientId}`, {
+      await this.pagarmePut(`/recipients/${recipientId}`, {
         automatic_anticipation_settings: {
           enabled,
+          type: 'full',
+          volume_percentage: 100,
+          delay: null,
         },
       });
       return true;
