@@ -49,6 +49,7 @@ export class Payment {
   @Column({ nullable: true })
   checkoutUrl: string;
 
+  @Field(() => String, { nullable: true })
   @Column({ type: 'jsonb', nullable: true })
   metadata: any;
 

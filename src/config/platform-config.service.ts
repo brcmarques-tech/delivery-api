@@ -53,7 +53,7 @@ export class PlatformConfigService {
   }
 
   async getDeliveryCommissionPercent(): Promise<number> {
-    const value = await this.get('delivery_commission_percent', '1');
+    const value = await this.get('delivery_commission_percent', '10');
     return parseFloat(value);
   }
 
@@ -62,6 +62,7 @@ export class PlatformConfigService {
     return parseFloat(value);
   }
 
+  // TODO (L8): Add in-memory caching (TTL ~60s) to avoid N+1 queries per plan config lookup
   async getPlanConfig(plan: string): Promise<PlanConfig> {
     const defaults: Record<string, PlanConfig> = {
       FREE: {

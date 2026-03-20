@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger, OnModuleDestroy } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { Payment } from './entities/payment.entity';
+import { WebhookEvent } from './entities/webhook-event.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { Store } from '../stores/entities/store.entity';
@@ -17,25 +18,35 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
 
+// L5: Centralized descriptor constant
+const STATEMENT_DESCRIPTOR = 'BCMTECH';
+
 @Injectable()
-export class PaymentsService {
+export class PaymentsService implements OnModuleDestroy {
   private readonly logger = new Logger(PaymentsService.name);
   private readonly pagarmeBaseUrl = 'https://api.pagar.me/core/v5';
   private readonly pagarmeAuthHeader: string;
 
-  // Format phone for Pagar.me API — returns { area_code, number } or null if no valid phone
+  // L7: Format phone for Pagar.me API — handles country code stripping for 12-13 digit numbers
   private formatPhoneForPagarme(phone?: string): { country_code: string; area_code: string; number: string } | null {
-    const digits = phone?.replace(/\D/g, '') || '';
+    let digits = phone?.replace(/\D/g, '') || '';
     if (digits.length < 10) return null; // need at least DDD + 8 digits
+    // Strip leading country code 55 for 12-13 digit numbers (55 + DDD + number)
+    if ((digits.length === 12 || digits.length === 13) && digits.startsWith('55')) {
+      digits = digits.substring(2);
+    }
     const areaCode = digits.substring(0, 2);
     const number = digits.substring(2);
     return { country_code: '55', area_code: areaCode, number };
   }
 
-  // Build billing address from order's delivery address (customer's address, not the store's)
+  // M7: Build billing address — prioritizes customer delivery address zip, not the store's
   private buildBillingAddress(order: Order, store: Store): { line_1: string; zip_code: string; city: string; state: string; country: string } {
     // Parse delivery address if available (format: "Rua X, 123 - Bairro, Cidade")
     const addr = order.deliveryAddress;
+    // Try to extract zip from customer data if available
+    const customerZip = (order as any).customer?.zipCode?.replace(/\D/g, '')
+      || (order as any).deliveryZipCode?.replace(/\D/g, '');
     if (addr) {
       const parts = addr.split(',').map(p => p.trim());
       const street = parts[0] || 'Rua Nao Informada';
@@ -44,8 +55,8 @@ export class PaymentsService {
       const neighborhood = numberAndNeighborhood[1] || parts[2] || 'Centro';
       return {
         line_1: `${num}, ${street}, ${neighborhood}`,
-        zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
-        city: parts[parts.length - 1] || store?.city || 'Arroio Grande',
+        zip_code: customerZip || store?.zipCode?.replace(/\D/g, '') || '00000000',
+        city: parts[parts.length - 1] || store?.city || 'Nao Informada',
         state: store?.state || 'RS',
         country: 'BR',
       };
@@ -53,8 +64,8 @@ export class PaymentsService {
     // Fallback to store address if no delivery address (e.g. pickup)
     return {
       line_1: store?.street ? `${store.number || 'SN'}, ${store.street}, ${store.neighborhood || 'Centro'}` : 'SN, Rua Nao Informada, Centro',
-      zip_code: store?.zipCode?.replace(/\D/g, '') || '96400000',
-      city: store?.city || 'Arroio Grande',
+      zip_code: store?.zipCode?.replace(/\D/g, '') || '00000000',
+      city: store?.city || 'Nao Informada',
       state: store?.state || 'RS',
       country: 'BR',
     };
@@ -65,6 +76,8 @@ export class PaymentsService {
     private paymentsRepository: Repository<Payment>,
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
+    @InjectRepository(WebhookEvent)
+    private webhookEventsRepository: Repository<WebhookEvent>,
     private configService: ConfigService,
     private httpService: HttpService,
     @Inject(forwardRef(() => AppUsersService))
@@ -77,6 +90,13 @@ export class PaymentsService {
   ) {
     const secretKey = this.configService.get('PAGARME_SECRET_KEY') || '';
     this.pagarmeAuthHeader = 'Basic ' + Buffer.from(`${secretKey}:`).toString('base64');
+  }
+
+  // L4: Properly clean up interval on module destroy
+  onModuleDestroy() {
+    if (this.webhookCleanupInterval) {
+      clearInterval(this.webhookCleanupInterval);
+    }
   }
 
   // ─── Pagar.me HTTP helpers ────────────────────────────────────────────
@@ -522,6 +542,13 @@ export class PaymentsService {
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     if (!user.pagarmeCustomerId) throw new BadRequestException('Nenhum cartao cadastrado');
 
+    // M9: Validate card belongs to user before deleting
+    const userCards = await this.listCards(userId);
+    const cardExists = userCards.some((c: any) => c.id === cardId);
+    if (!cardExists) {
+      throw new BadRequestException('Cartao nao encontrado na sua conta');
+    }
+
     try {
       await this.pagarmeDelete(`/customers/${user.pagarmeCustomerId}/cards/${cardId}`);
       return true;
@@ -536,8 +563,6 @@ export class PaymentsService {
 
   async createOrderDirectCharge(order: Order, customer: AppUser, cardId?: string, cardToken?: string): Promise<{ pagarmeOrderId: string; status: string; chargeId?: string }> {
     const store = order.store;
-    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
-    const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
     const customerId = await this.ensureCustomer(customer);
     const totalCents = Math.round(Number(order.total) * 100);
@@ -578,7 +603,7 @@ export class PaymentsService {
           payment_method: 'credit_card',
           credit_card: {
             installments: 1,
-            statement_descriptor: 'BCMTECH',
+            statement_descriptor: STATEMENT_DESCRIPTOR,
             capture: false,
             ...(cardToken ? { card_token: cardToken } : { card_id: cardId }),
             card: {
@@ -619,76 +644,28 @@ export class PaymentsService {
 
   // ─── Order Checkout (Credit Card via Pagar.me) ─────────────────────────
 
+  // M3: Simplified — uses only payment link (no orphaned Pagar.me order)
   async createOrderCheckout(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string }> {
-    const store = order.store;
-    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
-    const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
-
-    await this.getOrCreatePagarmeCustomer(customer);
+    await this.ensureCustomer(customer);
 
     // No split at payment time — all money goes to platform.
     // Transfers to vendor/deliverer happen after delivery is confirmed.
 
     const totalCents = Math.round(Number(order.total) * 100);
 
-    const itemsSummary = order.items
-      .map((item) => {
-        const name = item.product?.name || 'Produto';
-        if (item.weightGrams && item.weightGrams > 0) {
-          return `${name} (${item.weightGrams}g)`;
-        }
-        return `${item.quantity}x ${name}`;
-      })
-      .join(', ');
-
-    const phone = this.formatPhoneForPagarme(customer.phone);
-
-    const customerObj: any = {
-      name: customer.name,
-      email: customer.email,
-      type: 'individual',
-      document: customer.cpf?.replace(/\D/g, '') || '',
-      document_type: 'CPF',
-      ...(phone ? { phones: { mobile_phone: phone } } : {}),
-    };
-
-    // Unique code per attempt to avoid Pagar.me duplicate rejection
-    const uniqueCode = `order-${order.id}-${Date.now()}`;
-
-    // Create Pagar.me order without payment (open order) — payment will be
-    // collected via the hosted checkout page (payment link)
-    const orderBody: any = {
-      code: uniqueCode,
-      items: [
-        {
-          amount: totalCents,
-          description: `Pedido ${order.orderNumber} - ${itemsSummary}`.substring(0, 256),
-          quantity: 1,
-          code: uniqueCode,
-        },
-      ],
-      customer: customerObj,
-      metadata: {
-        order_id: order.id,
-        order_number: order.orderNumber,
-      },
-      closed: false,
-    };
-
     try {
-      const result = await this.pagarmePost('/orders', orderBody);
-
-      this.logger.log(
-        `Pagar.me order created for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id}`,
-      );
-
-      // Create hosted checkout page where customer can enter card details
+      // Create hosted checkout page directly via payment link (no separate order)
       const checkoutUrl = await this.createPaymentLink(order, totalCents, []);
 
-      return { checkoutUrl, preferenceId: result.id };
+      this.logger.log(
+        `Pagar.me payment link created for ${order.orderNumber} | total: ${order.total}`,
+      );
+
+      // Use a placeholder preferenceId since we no longer create a separate Pagar.me order
+      return { checkoutUrl, preferenceId: `link-${order.id}-${Date.now()}` };
     } catch (err: any) {
       const errorData = err.response?.data;
-      this.logger.error(`Pagar.me order failed: ${JSON.stringify(errorData || err.message)}`);
+      this.logger.error(`Pagar.me checkout failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(
         errorData?.message || 'Erro ao criar pagamento no Pagar.me',
       );
@@ -790,7 +767,8 @@ export class PaymentsService {
     const totalCents = Math.round(Number(order.total) * 100);
 
     try {
-      const body: any = { amount: totalCents, code: `order-${order.id}` };
+      // L11: Add timestamp to code to ensure uniqueness across retries
+      const body: any = { amount: totalCents, code: `order-${order.id}-cap-${Date.now()}` };
 
       const result = await this.pagarmePost(`/charges/${order.preAuthChargeId}/capture`, body);
       this.logger.log(`Pre-auth captured for order #${order.orderNumber} | charge: ${order.preAuthChargeId} | no split (platform holds funds)`);
@@ -816,9 +794,97 @@ export class PaymentsService {
     }
   }
 
+  // C1 + C3: Reverse settlement transfers from vendor/deliverer back to platform
+  // Used on chargeback or refund of already-completed (settled) orders
+  async reverseSettlementTransfers(order: Order): Promise<void> {
+    if (!order.isSettled) {
+      this.logger.log(`No settlement to reverse for order #${order.orderNumber} (not settled)`);
+      return;
+    }
+
+    const store = order.store;
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const reversalErrors: string[] = [];
+
+    const totalCents = Math.round(Number(order.total) * 100);
+    const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
+    const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
+    const deliveryCommissionPercent = await this.platformConfigService.getDeliveryCommissionPercent();
+
+    // Reverse deliverer transfer
+    if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0) {
+      const delivery = (order as any).delivery;
+      const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
+      if (delivererRecipientId) {
+        const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+        const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
+        if (delivererAmount > 0) {
+          try {
+            await this.pagarmePost('/transfers', {
+              amount: delivererAmount,
+              recipient_id: this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID'),
+              source_recipient_id: delivererRecipientId,
+              metadata: {
+                order_id: order.id,
+                order_number: order.orderNumber,
+                type: 'chargeback_reversal_deliverer',
+              },
+            });
+            this.logger.log(`Reversed deliverer transfer for order #${order.orderNumber} | amount: ${delivererAmount} cents`);
+          } catch (err: any) {
+            this.logger.error(`CRITICAL: Failed to reverse deliverer transfer for order #${order.orderNumber}: ${JSON.stringify(err.response?.data || err.message)}`);
+            reversalErrors.push(`deliverer_reversal:${delivererAmount}:FAILED`);
+          }
+        }
+      }
+    }
+
+    // Reverse vendor transfer
+    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
+    if (vendorRecipientId) {
+      const platformDeliveryFee = (!store?.hasOwnDelivery && !order.isPickup) ? deliveryFeeCents : 0;
+      const vendorAmount = Math.max(0, totalCents - commissionCents - platformDeliveryFee);
+      if (vendorAmount > 0) {
+        try {
+          await this.pagarmePost('/transfers', {
+            amount: vendorAmount,
+            recipient_id: this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID'),
+            source_recipient_id: vendorRecipientId,
+            metadata: {
+              order_id: order.id,
+              order_number: order.orderNumber,
+              type: 'chargeback_reversal_vendor',
+            },
+          });
+          this.logger.log(`Reversed vendor transfer for order #${order.orderNumber} | amount: ${vendorAmount} cents`);
+        } catch (err: any) {
+          this.logger.error(`CRITICAL: Failed to reverse vendor transfer for order #${order.orderNumber}: ${JSON.stringify(err.response?.data || err.message)}`);
+          reversalErrors.push(`vendor_reversal:${vendorAmount}:FAILED`);
+        }
+      }
+    }
+
+    if (reversalErrors.length > 0) {
+      await orderRepo.update(order.id, {
+        notes: `${order.notes || ''}\n[REVERSAL_ERRORS] ${reversalErrors.join(' | ')}`.trim(),
+      });
+    }
+  }
+
   // Settle payment after delivery is confirmed.
   // Transfers vendor and deliverer shares from platform account.
   async settlePayment(order: Order): Promise<void> {
+    // C2: Atomic idempotency guard — prevents double settlement
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const settleResult = await orderRepo.manager.query(
+      `UPDATE orders SET "isSettled" = true WHERE id = $1 AND "isSettled" = false RETURNING id`,
+      [order.id],
+    );
+    if (!settleResult || settleResult.length === 0) {
+      this.logger.warn(`Settlement skipped for order #${order.orderNumber} — already settled`);
+      return;
+    }
+
     const store = order.store;
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const totalCents = Math.round(Number(order.total) * 100);
@@ -826,6 +892,9 @@ export class PaymentsService {
     const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
 
     const deliveryCommissionPercent = await this.platformConfigService.getDeliveryCommissionPercent();
+
+    // Track settlement status on the order
+    const settlementErrors: string[] = [];
 
     // 1. Transfer to deliverer (if applicable)
     if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0) {
@@ -849,8 +918,9 @@ export class PaymentsService {
             });
             this.logger.log(`Transfer to deliverer for order #${order.orderNumber} | amount: ${delivererAmount} cents | transfer: ${result.id}`);
           } catch (err: any) {
-            this.logger.error(`Transfer to deliverer failed for order #${order.orderNumber}: ${JSON.stringify(err.response?.data || err.message)}`);
-            // Notify platform about failed transfer
+            const errorDetail = JSON.stringify(err.response?.data || err.message);
+            this.logger.error(`Transfer to deliverer failed for order #${order.orderNumber}: ${errorDetail}`);
+            settlementErrors.push(`deliverer:${delivererAmount}:${errorDetail}`);
             this.notificationsService.sendToVendorUser(
               store.owner?.id,
               'Falha na transferência',
@@ -866,7 +936,6 @@ export class PaymentsService {
 
     // 2. Transfer to vendor
     if (vendorRecipientId) {
-      // Vendor gets: total - commission - delivery fee (if platform delivery)
       const platformDeliveryFee = (!store?.hasOwnDelivery && !order.isPickup) ? deliveryFeeCents : 0;
       const vendorAmount = totalCents - commissionCents - platformDeliveryFee;
 
@@ -883,8 +952,9 @@ export class PaymentsService {
           });
           this.logger.log(`Transfer to vendor for order #${order.orderNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
         } catch (err: any) {
-          this.logger.error(`Transfer to vendor failed for order #${order.orderNumber}: ${JSON.stringify(err.response?.data || err.message)}`);
-          // Notify vendor about failed transfer
+          const errorDetail = JSON.stringify(err.response?.data || err.message);
+          this.logger.error(`Transfer to vendor failed for order #${order.orderNumber}: ${errorDetail}`);
+          settlementErrors.push(`vendor:${vendorAmount}:${errorDetail}`);
           this.notificationsService.sendToVendorUser(
             store.owner?.id,
             'Falha na transferência',
@@ -892,12 +962,33 @@ export class PaymentsService {
             { type: 'TRANSFER_FAILED', orderId: order.id },
           ).catch(() => {});
         }
+      } else {
+        // H4: Cap vendor amount at 0 (never negative) and notify vendor
+        this.logger.warn(`Vendor amount for order #${order.orderNumber} is ${vendorAmount} cents (zero or negative), skipping transfer`);
+        const explanation = `Valor do vendedor zerado: comissao (${commissionCents / 100}) + taxa entrega (${platformDeliveryFee / 100}) >= total (${totalCents / 100})`;
+        await orderRepo.update(order.id, {
+          notes: `${order.notes || ''}\n[VENDOR_ZERO] ${explanation}`.trim(),
+        });
+        if (store.owner?.id) {
+          this.notificationsService.sendToVendorUser(
+            store.owner.id,
+            'Transferência zerada',
+            `Pedido #${order.orderNumber}: ${explanation}`,
+            { type: 'VENDOR_ZERO_AMOUNT', orderId: order.id },
+          ).catch(() => {});
+        }
       }
     } else {
       this.logger.warn(`No vendor recipient for order #${order.orderNumber}, skipping vendor transfer`);
     }
 
-    // Platform keeps: commission + delivery commission (stays in platform account automatically)
+    // Track failed settlements in order notes for superadmin visibility
+    if (settlementErrors.length > 0) {
+      await orderRepo.update(order.id, {
+        notes: `${order.notes || ''}\n[SETTLEMENT_ERRORS] ${settlementErrors.join(' | ')}`.trim(),
+      });
+    }
+
     const deliveryCommissionCents = (!store?.hasOwnDelivery && !order.isPickup)
       ? Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100))
       : 0;
@@ -915,7 +1006,7 @@ export class PaymentsService {
         accepted_payment_methods: ['credit_card', 'pix'],
         credit_card: {
           installments: [{ number: 1, total: totalCents }],
-          statement_descriptor: 'BCMTECH',
+          statement_descriptor: STATEMENT_DESCRIPTOR,
         },
         pix: {
           expires_in: 1800,
@@ -941,9 +1032,23 @@ export class PaymentsService {
   // ─── Plan Upgrade ──────────────────────────────────────────────────────
 
   async createPlanUpgrade(user: VendorUser, plan: VendorPlan, billingPeriod: string = 'monthly'): Promise<Payment> {
-    const planConfig = PLAN_CONFIGS[plan];
+    // M5: Use dynamic config from platformConfigService instead of hardcoded PLAN_CONFIGS
+    const planConfig = await this.platformConfigService.getPlanConfig(plan);
     if (!planConfig || planConfig.monthlyPrice === 0) {
       throw new BadRequestException('Plano invalido para upgrade');
+    }
+
+    // L6: CUSTOM plan requires contact with sales, cannot self-upgrade
+    if (planConfig.isContactSales) {
+      throw new BadRequestException('Plano personalizado requer contato com a equipe de vendas.');
+    }
+
+    // Validate plan hierarchy: cannot downgrade
+    const planHierarchy: Record<string, number> = { FREE: 0, PRO: 1, PREMIUM: 2, ENTERPRISE: 3 };
+    const currentLevel = planHierarchy[user.vendorPlan || 'FREE'] ?? 0;
+    const targetLevel = planHierarchy[plan] ?? 0;
+    if (targetLevel <= currentLevel) {
+      throw new BadRequestException('Você já possui um plano igual ou superior.');
     }
 
     if (!user.acceptedSubscriptionTermsAt) {
@@ -989,7 +1094,7 @@ export class PaymentsService {
             number: i + 1,
             total: totalCents,
           })),
-          statement_descriptor: 'BCMTECH',
+          statement_descriptor: STATEMENT_DESCRIPTOR,
         },
         pix: {
           expires_in: 86400, // 24 hours
@@ -1045,7 +1150,7 @@ export class PaymentsService {
         accepted_payment_methods: ['credit_card', 'pix'],
         credit_card: {
           installments: [{ number: 1, total: totalCents }],
-          statement_descriptor: 'BCMTECH',
+          statement_descriptor: STATEMENT_DESCRIPTOR,
         },
         pix: {
           expires_in: 86400,
@@ -1194,14 +1299,16 @@ export class PaymentsService {
     if (vendor?.pagarmeRecipientId) {
       try {
         const balance = await this.getRecipientBalance(vendor.pagarmeRecipientId);
-        if (balance.waitingFundsAmount > 0) {
+        const pendingTotal = balance.waitingFundsAmount + balance.availableAmount;
+        if (pendingTotal > 0) {
           throw new BadRequestException(
-            `Você tem R$ ${balance.waitingFundsAmount.toFixed(2)} a receber. Aguarde as transferências antes de desconectar.`,
+            `Você tem R$ ${pendingTotal.toFixed(2)} em saldo (R$ ${balance.availableAmount.toFixed(2)} disponível + R$ ${balance.waitingFundsAmount.toFixed(2)} a receber). Saque ou aguarde antes de desconectar.`,
           );
         }
       } catch (err) {
         if (err instanceof BadRequestException) throw err;
-        // If balance check fails, allow disconnect (API may be down)
+        this.logger.error(`Balance check failed during disconnect for vendor ${userId}: ${err}`);
+        throw new BadRequestException('Não foi possível verificar seu saldo. Tente novamente mais tarde.');
       }
     }
     await this.vendorUsersService.disconnectPayment(userId);
@@ -1212,13 +1319,16 @@ export class PaymentsService {
     if (user?.pagarmeRecipientId) {
       try {
         const balance = await this.getRecipientBalance(user.pagarmeRecipientId);
-        if (balance.waitingFundsAmount > 0) {
+        const pendingTotal = balance.waitingFundsAmount + balance.availableAmount;
+        if (pendingTotal > 0) {
           throw new BadRequestException(
-            `Você tem R$ ${balance.waitingFundsAmount.toFixed(2)} a receber. Aguarde as transferências antes de desconectar.`,
+            `Você tem R$ ${pendingTotal.toFixed(2)} em saldo. Saque ou aguarde antes de desconectar.`,
           );
         }
       } catch (err) {
         if (err instanceof BadRequestException) throw err;
+        this.logger.error(`Balance check failed during disconnect for user ${userId}: ${err}`);
+        throw new BadRequestException('Não foi possível verificar seu saldo. Tente novamente mais tarde.');
       }
     }
     await this.appUsersService.disconnectPayment(userId);
@@ -1226,11 +1336,39 @@ export class PaymentsService {
 
   // ─── Webhook ───────────────────────────────────────────────────────────
 
+  // H1: In-memory set kept as fast-path cache; DB is source of truth
+  private processedWebhooks = new Set<string>();
+  private webhookCleanupInterval = setInterval(() => {
+    if (this.processedWebhooks.size > 1000) this.processedWebhooks.clear();
+  }, 10 * 60 * 1000);
+
   async handleWebhook(body: any): Promise<void> {
     const eventType = body.type;
     const data = body.data;
 
     if (!data) return;
+
+    // H1: Database-backed deduplication for webhook events
+    const eventKey = `${eventType}:${data.id}`;
+    // Fast-path: check in-memory cache first
+    if (this.processedWebhooks.has(eventKey)) {
+      this.logger.log(`Webhook duplicate skipped (cache): ${eventKey}`);
+      return;
+    }
+    // DB-level dedup: try to insert; unique constraint prevents duplicates
+    try {
+      await this.webhookEventsRepository.insert({ eventKey });
+    } catch (err: any) {
+      // Unique constraint violation means already processed
+      if (err?.code === '23505' || err?.message?.includes('duplicate')) {
+        this.logger.log(`Webhook duplicate skipped (DB): ${eventKey}`);
+        this.processedWebhooks.add(eventKey);
+        return;
+      }
+      // Other DB errors: log but continue processing (fail-open)
+      this.logger.warn(`Webhook dedup DB error: ${err.message}`);
+    }
+    this.processedWebhooks.add(eventKey);
 
     this.logger.log(`Webhook received: ${eventType} | id: ${data.id}`);
 
@@ -1324,6 +1462,16 @@ export class PaymentsService {
         order.status = OrderStatus.PENDING;
         await orderRepo.save(order);
         this.logger.log(`Pagamento aprovado para pedido #${order.orderNumber}`);
+
+        // Increment coupon usage now that payment is confirmed
+        if (order.couponCode) {
+          try {
+            const couponRepo = this.paymentsRepository.manager.getRepository('Coupon');
+            await couponRepo.increment({ code: order.couponCode }, 'usesCount', 1);
+          } catch (err: any) {
+            this.logger.warn(`Failed to increment coupon usage for ${order.couponCode}: ${err.message}`);
+          }
+        }
 
         // Notify customer
         if (order.customer?.id) {
@@ -1469,6 +1617,16 @@ export class PaymentsService {
           `✅ *Pagamento confirmado!*\n\nSeu pagamento do pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) foi aprovado.\n\nAguarde a confirmação da loja!`,
         ).catch(() => {});
       }
+
+      // M8: Increment coupon usage on charge.paid (same as handleOrderPaid)
+      if (order.couponCode) {
+        try {
+          const couponRepo = this.paymentsRepository.manager.getRepository('Coupon');
+          await couponRepo.increment({ code: order.couponCode }, 'usesCount', 1);
+        } catch (err: any) {
+          this.logger.warn(`Failed to increment coupon usage (charge.paid) for ${order.couponCode}: ${err.message}`);
+        }
+      }
     }
   }
 
@@ -1529,17 +1687,27 @@ export class PaymentsService {
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
       where: { id: orderId },
-      relations: ['customer', 'store', 'store.owner', 'items', 'items.product'],
+      relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
     });
 
     if (order) {
       const wasCompleted = order.status === OrderStatus.COMPLETED;
       order.status = OrderStatus.CANCELLED;
       await orderRepo.save(order);
-      this.logger.warn(`Pedido #${order.orderNumber} cancelado por chargeback`);
+      this.logger.warn(`Pedido #${order.orderNumber} cancelado por chargeback | wasCompleted: ${wasCompleted}`);
 
-      // Restaurar estoque
-      if (order.items) {
+      // C1: If order was COMPLETED, reverse settlement transfers
+      if (wasCompleted && order.isSettled) {
+        this.logger.error(`CRITICAL: Chargeback on COMPLETED order #${order.orderNumber} — reversing transfers`);
+        try {
+          await this.reverseSettlementTransfers(order);
+        } catch (err: any) {
+          this.logger.error(`CRITICAL: Transfer reversal failed for chargeback on order #${order.orderNumber}: ${err.message}`);
+        }
+      }
+
+      // Only restore stock if order was NOT already completed/delivered (products not physically delivered)
+      if (!wasCompleted && order.items) {
         const productRepo = this.paymentsRepository.manager.getRepository('Product');
         for (const item of order.items) {
           if (item.product?.id) {
@@ -1551,7 +1719,7 @@ export class PaymentsService {
       // Notify vendor about chargeback
       if (order.store?.owner?.id) {
         const transferWarning = wasCompleted
-          ? ' As transferências já realizadas serão debitadas.'
+          ? ' Os produtos ja foram entregues e as transferencias estao sendo revertidas.'
           : '';
         this.notificationsService.sendToVendorUser(
           order.store.owner.id,
@@ -1569,13 +1737,23 @@ export class PaymentsService {
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
       where: { id: orderId },
-      relations: ['customer', 'store', 'store.owner'],
+      relations: ['customer', 'store', 'store.owner', 'delivery', 'delivery.deliverer'],
     });
 
     if (!order) throw new NotFoundException('Pedido não encontrado');
     if (!order.mpPreferenceId && !order.preAuthChargeId) throw new BadRequestException('Este pedido não possui pagamento online para estornar');
     if ([OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED].includes(order.status as OrderStatus)) {
       throw new BadRequestException('Este pedido já foi cancelado/rejeitado');
+    }
+
+    // C3: If order was COMPLETED and settled, reverse transfers before refunding
+    if (order.status === OrderStatus.COMPLETED && order.isSettled) {
+      this.logger.warn(`Refund requested for completed+settled order #${order.orderNumber} — reversing transfers first`);
+      try {
+        await this.reverseSettlementTransfers(order);
+      } catch (err: any) {
+        this.logger.error(`Transfer reversal failed before refund for order #${order.orderNumber}: ${err.message}`);
+      }
     }
 
     try {
@@ -1637,7 +1815,7 @@ export class PaymentsService {
       };
     } catch (err: any) {
       this.logger.warn(`Failed to get recipient balance: ${err.response?.data?.message || err.message}`);
-      return { availableAmount: 0, waitingFundsAmount: 0, transferredAmount: 0, autoAnticipationEnabled: false };
+      throw new BadRequestException('Não foi possível consultar o saldo. Tente novamente mais tarde.');
     }
   }
 
@@ -1695,8 +1873,15 @@ export class PaymentsService {
     }
 
     try {
+      // Use next business day if today is weekend
+      const today = new Date();
+      const day = today.getDay();
+      if (day === 0) today.setDate(today.getDate() + 1); // Sunday → Monday
+      if (day === 6) today.setDate(today.getDate() + 2); // Saturday → Monday
+      const paymentDate = today.toISOString().split('T')[0];
+
       const result = await this.pagarmePost(`/recipients/${recipientId}/anticipations`, {
-        payment_date: new Date().toISOString().split('T')[0],
+        payment_date: paymentDate,
         timeframe: 'start',
         requested_amount: waitingCents,
         type: 'full',
@@ -1750,20 +1935,34 @@ export class PaymentsService {
     });
   }
 
-  async findAll(): Promise<Payment[]> {
+  async findAll(limit: number = 100, offset: number = 0): Promise<Payment[]> {
     return this.paymentsRepository.find({
       relations: ['appUser', 'vendorUser'],
       order: { createdAt: 'DESC' },
+      take: limit,
+      skip: offset,
     });
   }
 
   async platformRevenue(): Promise<number> {
-    const result = await this.paymentsRepository
+    // Revenue from plan upgrades and promotions
+    const paymentResult = await this.paymentsRepository
       .createQueryBuilder('payment')
       .select('COALESCE(SUM(payment.amount), 0)', 'total')
       .where('payment.status = :status', { status: 'approved' })
       .andWhere('payment.type IN (:...types)', { types: ['PLAN_UPGRADE', 'PROMOTION'] })
       .getRawOne();
-    return parseFloat(result.total);
+    const paymentRevenue = parseFloat(paymentResult.total);
+
+    // Revenue from order commissions (completed orders)
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const commissionResult = await orderRepo
+      .createQueryBuilder('order')
+      .select('COALESCE(SUM(order.commissionAmount), 0)', 'total')
+      .where('order.status = :status', { status: OrderStatus.COMPLETED })
+      .getRawOne();
+    const commissionRevenue = parseFloat(commissionResult.total);
+
+    return paymentRevenue + commissionRevenue;
   }
 }
