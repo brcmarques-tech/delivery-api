@@ -247,7 +247,7 @@ export class DeliveriesService implements OnModuleInit {
   async findByDeliverer(delivererId: string): Promise<Delivery[]> {
     const deliveries = await this.deliveriesRepository.find({
       where: { deliverer: { id: delivererId } },
-      relations: ['order', 'order.store', 'order.customer'],
+      relations: ['order', 'order.store', 'order.customer', 'order.items', 'order.items.product'],
       order: { createdAt: 'DESC' },
     });
     console.log(`[MYDELIVERIES] delivererId=${delivererId}, found=${deliveries.length}, active=${deliveries.filter(d => !d.deliveredAt).length}, completed=${deliveries.filter(d => d.deliveredAt).length}`);
