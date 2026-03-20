@@ -5,6 +5,7 @@ import { Coupon } from './entities/coupon.entity';
 import { CreateCouponInput } from './dto/create-coupon.input';
 import { UpdateCouponInput } from './dto/update-coupon.input';
 import { Store } from '../stores/entities/store.entity';
+import { Order } from '../orders/entities/order.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
 
 @Injectable()
@@ -151,6 +152,7 @@ export class CouponsService {
     code: string,
     storeId: string,
     subtotal: number,
+    customerId?: string,
   ): Promise<{ coupon: Coupon; discount: number }> {
     const coupon = await this.couponsRepository.findOne({
       where: { code: code.trim().toUpperCase(), store: { id: storeId } },
@@ -171,6 +173,20 @@ export class CouponsService {
 
     if (coupon.maxUses > 0 && coupon.usesCount >= coupon.maxUses) {
       throw new BadRequestException('Este cupom ja atingiu o limite de usos');
+    }
+
+    // M1: Per-user coupon usage limit (1 use per customer per coupon)
+    if (customerId) {
+      const orderRepo = this.couponsRepository.manager.getRepository(Order);
+      const userUsageCount = await orderRepo.count({
+        where: {
+          customer: { id: customerId },
+          coupon: { id: coupon.id },
+        },
+      });
+      if (userUsageCount > 0) {
+        throw new BadRequestException('Voce ja utilizou este cupom');
+      }
     }
 
     if (coupon.minimumOrder && subtotal < Number(coupon.minimumOrder)) {
@@ -200,5 +216,14 @@ export class CouponsService {
   /** Increment usage count after order is created */
   async incrementUsage(couponId: string): Promise<void> {
     await this.couponsRepository.increment({ id: couponId }, 'usesCount', 1);
+  }
+
+  /** H2: Decrement usage count when order is cancelled/rejected/expired */
+  async decrementUsage(couponId: string): Promise<void> {
+    // Only decrement if usesCount > 0 to avoid negative values
+    await this.couponsRepository.manager.query(
+      `UPDATE coupon SET "usesCount" = GREATEST("usesCount" - 1, 0) WHERE id = $1`,
+      [couponId],
+    );
   }
 }

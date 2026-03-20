@@ -250,11 +250,16 @@ export class OrdersResolver {
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  updateOrderStatus(
+  async updateOrderStatus(
     @Args('id') id: string,
     @Args('status', { type: () => OrderStatus }) status: OrderStatus,
-    @CurrentUser() user: AppUser,
+    @CurrentUser() user: any,
   ): Promise<Order> {
+    // Verify vendor owns the store associated with this order
+    const order = await this.ordersService.findById(id);
+    if (order.store?.owner?.id !== user.id) {
+      throw new BadRequestException('Você não tem permissão para alterar este pedido');
+    }
     return this.ordersService.updateStatus(id, status, user);
   }
 
@@ -289,7 +294,8 @@ export class OrdersResolver {
 
   // DEV ONLY: simula pagamento para testes (AWAITING_PAYMENT → PENDING)
   @Mutation(() => Order)
-  @UseGuards(GqlAuthGuard)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
   async simulatePayment(
     @Args('orderId') orderId: string,
   ): Promise<Order> {
@@ -300,18 +306,30 @@ export class OrdersResolver {
     return this.ordersService.simulatePayment(orderId);
   }
 
+  // H3: LIMITATION — These subscriptions filter by storeId but don't verify the subscriber
+  // actually owns the store (IDOR risk). GraphQL subscriptions in NestJS don't easily support
+  // guards in the filter function. The storeId filter prevents cross-store data leakage, but
+  // any authenticated user who knows a storeId could subscribe to its events.
+  // TODO: Implement WebSocket auth middleware to verify store ownership on subscription init.
+  // This requires custom ConnectionParams handling in the GraphQL gateway configuration.
   @Subscription(() => Order, {
-    filter: (payload, variables) =>
-      !variables.storeId || payload.orderCreated.store?.id === variables.storeId,
+    filter: (payload, variables) => {
+      // Require storeId to prevent unauthorized data access
+      if (!variables.storeId) return false;
+      return payload.orderCreated.store?.id === variables.storeId;
+    },
   })
   orderCreated(@Args('storeId', { nullable: true }) storeId?: string) {
+    if (!storeId) throw new BadRequestException('storeId é obrigatório para subscriptions');
     return this.pubSub.asyncIterableIterator('orderCreated');
   }
 
   @Subscription(() => Order, {
     filter: (payload, variables) => {
+      // Require storeId to prevent unauthorized data access
+      if (!variables.storeId) return false;
       const order = payload.orderUpdated;
-      if (variables.storeId && order.store?.id !== variables.storeId) return false;
+      if (order.store?.id !== variables.storeId) return false;
       if (variables.orderId && order.id !== variables.orderId) return false;
       return true;
     },
@@ -320,6 +338,7 @@ export class OrdersResolver {
     @Args('storeId', { nullable: true }) storeId?: string,
     @Args('orderId', { nullable: true }) orderId?: string,
   ) {
+    if (!storeId) throw new BadRequestException('storeId é obrigatório para subscriptions');
     return this.pubSub.asyncIterableIterator('orderUpdated');
   }
 }

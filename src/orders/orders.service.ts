@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThanOrEqual } from 'typeorm';
+import * as crypto from 'crypto';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
@@ -97,15 +98,6 @@ export class OrdersService {
 
     for (const itemInput of input.items) {
       const product = await this.productsService.findById(itemInput.productId);
-      if (product.stock !== null && product.stock !== undefined && product.stock < itemInput.quantity) {
-        throw new BadRequestException(
-          `Estoque insuficiente para "${product.name}". Disponivel: ${product.stock}`,
-        );
-      }
-    }
-
-    for (const itemInput of input.items) {
-      const product = await this.productsService.findById(itemInput.productId);
       const unitPrice = Number(product.promotionalPrice || product.price);
 
       let totalPrice: number;
@@ -180,6 +172,7 @@ export class OrdersService {
         input.couponCode,
         input.storeId,
         subtotal,
+        customer.id,
       );
       discount = result.discount;
       couponCode = result.coupon.code;
@@ -203,7 +196,12 @@ export class OrdersService {
 
     const commissionAmount = Math.round(((subtotal - discount) * commissionPercent) / 100 * 100) / 100;
 
-    const paymentMethod = (input.paymentMethod || 'ON_DELIVERY').toUpperCase();
+    let paymentMethod = (input.paymentMethod || 'ON_DELIVERY').toUpperCase();
+
+    // H6: MERCADO_PAGO is deprecated — translate to CREDIT_CARD (Pagar.me migration)
+    if (paymentMethod === 'MERCADO_PAGO') {
+      paymentMethod = 'CREDIT_CARD';
+    }
 
     const vendorPaymentConnected = storeOwner?.paymentConnected ?? false;
 
@@ -231,42 +229,58 @@ export class OrdersService {
       throw new BadRequestException('CPF obrigatorio para pagamento online. Atualize seu perfil.');
     }
 
-    const order = this.ordersRepository.create({
-      orderNumber: `ORD-${Date.now()}`,
-      customer,
-      store,
-      items,
-      subtotal,
-      deliveryFee,
-      total,
-      commissionPercent,
-      commissionAmount,
-      isPickup,
-      deliveryAddress: isPickup
-        ? `${store.street}, ${store.number} - ${store.neighborhood}, ${store.city}`
-        : input.deliveryAddress,
-      deliveryLatitude: isPickup ? Number(store.latitude) : input.deliveryLatitude,
-      deliveryLongitude: isPickup ? Number(store.longitude) : input.deliveryLongitude,
-      notes: input.notes,
-      paymentMethod,
-      couponCode,
-      discount,
-      coupon: couponEntity,
-      status: needsPayment ? OrderStatus.AWAITING_PAYMENT : OrderStatus.PENDING,
-    });
+    // H5: Wrap order creation + stock decrement in a transaction to prevent race conditions
+    const savedOrder = await this.ordersRepository.manager.transaction(async (manager) => {
+      const order = manager.getRepository(Order).create({
+        orderNumber: `ORD-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+        customer,
+        store,
+        items,
+        subtotal,
+        deliveryFee,
+        total,
+        commissionPercent,
+        commissionAmount,
+        isPickup,
+        deliveryAddress: isPickup
+          ? `${store.street}, ${store.number} - ${store.neighborhood}, ${store.city}`
+          : input.deliveryAddress,
+        deliveryLatitude: isPickup ? Number(store.latitude) : input.deliveryLatitude,
+        deliveryLongitude: isPickup ? Number(store.longitude) : input.deliveryLongitude,
+        notes: input.notes,
+        paymentMethod,
+        couponCode,
+        discount,
+        coupon: couponEntity,
+        status: needsPayment ? OrderStatus.AWAITING_PAYMENT : OrderStatus.PENDING,
+      });
 
-    const savedOrder = await this.ordersRepository.save(order);
-    savedOrder.store = store;
+      const saved = await manager.getRepository(Order).save(order);
 
-    if (couponEntity) {
-      await this.couponsService.incrementUsage(couponEntity.id);
-    }
-
-    for (const item of items) {
-      if (item.product.stock > 0) {
-        await this.productsService.decrementStock(item.product.id, item.quantity);
+      // Atomic stock decrement with DB-level check to prevent overselling
+      for (const item of items) {
+        if (item.product.stock !== null && item.product.stock !== undefined && item.product.stock > 0) {
+          const result = await manager.query(
+            `UPDATE product SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING stock`,
+            [item.quantity, item.product.id],
+          );
+          if (!result || result.length === 0) {
+            throw new BadRequestException(
+              `Estoque insuficiente para "${item.product.name}". Tente novamente.`,
+            );
+          }
+        }
       }
-    }
+
+      // Coupon usage: only increment for non-payment orders (ON_DELIVERY).
+      // For online payments, increment after payment is confirmed (handleOrderPaid webhook).
+      if (couponEntity && !needsPayment) {
+        await this.couponsService.incrementUsage(couponEntity.id);
+      }
+
+      return saved;
+    });
+    savedOrder.store = store;
 
     if (!isPickup && input.deliveryAddress && input.deliveryLatitude && input.deliveryLongitude) {
       this.addressesService
@@ -346,7 +360,7 @@ export class OrdersService {
   async findById(id: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id },
-      relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
+      relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer', 'coupon'],
     });
     if (!order) throw new NotFoundException('Pedido nao encontrado');
     return order;
@@ -464,20 +478,16 @@ export class OrdersService {
   }
 
   async expireAwaitingPaymentOrders(): Promise<number> {
-    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    // 30 min matches PIX QR code expiry (expires_in: 1800 in Pagar.me)
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000);
     const expired = await this.ordersRepository.find({
-      where: { status: OrderStatus.AWAITING_PAYMENT, createdAt: LessThanOrEqual(tenMinAgo) },
+      where: { status: OrderStatus.AWAITING_PAYMENT, createdAt: LessThanOrEqual(thirtyMinAgo) },
       relations: ['items', 'items.product'],
     });
 
     for (const order of expired) {
-      order.status = OrderStatus.EXPIRED;
-      await this.ordersRepository.save(order);
-      for (const item of order.items) {
-        if (item.product) {
-          await this.productsService.restoreStock(item.product.id, item.quantity);
-        }
-      }
+      // updateStatus handles stock restoration for EXPIRED status
+      await this.updateStatus(order.id, OrderStatus.EXPIRED);
     }
     return expired.length;
   }
@@ -661,6 +671,11 @@ export class OrdersService {
   // ─── Superadmin resolve disputa ───────────────────────────────────────
 
   async resolveDispute(orderId: string, resolution: string, superadminId: string): Promise<Order> {
+    // M6: Validate resolution value
+    if (!['CUSTOMER_FAVOR', 'VENDOR_FAVOR', 'DELIVERER_FAVOR'].includes(resolution)) {
+      throw new BadRequestException('Resolucao invalida. Use: CUSTOMER_FAVOR, VENDOR_FAVOR ou DELIVERER_FAVOR');
+    }
+
     const order = await this.findById(orderId);
     if (order.status !== OrderStatus.DISPUTED) {
       throw new BadRequestException('Este pedido nao esta em disputa');
@@ -671,13 +686,23 @@ export class OrdersService {
     await this.ordersRepository.save(order);
 
     if (resolution === 'CUSTOMER_FAVOR') {
-      // Estorno ao cliente
+      // Estorno ao cliente — refundOrder already sets status to CANCELLED
       try {
         await this.paymentsService.refundOrder(orderId);
       } catch (err: any) {
         console.error('Refund on dispute resolution failed:', err?.message);
+        // If refund failed, still cancel the order
+        order.status = OrderStatus.CANCELLED;
+        await this.ordersRepository.save(order);
       }
-      return this.updateStatus(order.id, OrderStatus.CANCELLED);
+      // Restore stock (refundOrder doesn't handle this)
+      for (const item of order.items) {
+        if (item.product) {
+          await this.productsService.restoreStock(item.product.id, item.quantity);
+        }
+      }
+      // Reload and return fresh order
+      return this.findById(order.id);
     } else {
       // DELIVERER_FAVOR — settle payment (transfer to vendor + deliverer)
       if (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD') {
@@ -737,8 +762,8 @@ export class OrdersService {
       return;
     }
 
-    // PIX já pago: estorno
-    if (order.mpPreferenceId && order.paymentMethod === 'PIX') {
+    // PIX ou Checkout já pago: estorno
+    if (order.mpPreferenceId && (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD')) {
       try {
         await this.paymentsService.refundOrder(order.id);
       } catch (err: any) {
@@ -765,11 +790,7 @@ export class OrdersService {
     for (const order of expiredOrders) {
       try {
         await this.handlePaymentCancellation(order);
-        for (const item of order.items) {
-          if (item.product) {
-            await this.productsService.restoreStock(item.product.id, item.quantity);
-          }
-        }
+        // updateStatus handles stock restoration for EXPIRED status
         await this.updateStatus(order.id, OrderStatus.EXPIRED);
       } catch (err) {
         console.error(`Failed to expire order ${order.id}:`, err);
@@ -872,10 +893,22 @@ export class OrdersService {
     });
   }
 
+  // L9: TODO — ON_DELIVERY orders have no payment guarantee; platform commission is not collected.
+  // Consider implementing a post-delivery invoice/billing system for ON_DELIVERY commission collection.
   async completeOrderWithPayment(order: Order): Promise<Order> {
     // Idempotency guard: skip if already completed (race between geolocation + scheduler)
     if (order.status === OrderStatus.COMPLETED) {
       return order;
+    }
+
+    // DB-level atomic guard: prevents double settlement via concurrent calls
+    const result = await this.ordersRepository.manager.query(
+      `UPDATE orders SET status = $1, "completedAt" = NOW() WHERE id = $2 AND status != $1 RETURNING id`,
+      [OrderStatus.COMPLETED, order.id],
+    );
+    if (!result || result.length === 0) {
+      // Another call already completed this order
+      return this.findById(order.id);
     }
 
     // Settle payment: transfer vendor and deliverer shares from platform
@@ -887,7 +920,20 @@ export class OrdersService {
       }
     }
 
-    return this.updateStatus(order.id, OrderStatus.COMPLETED);
+    // Publish and notify (updateStatus normally does this, so replicate key parts)
+    const updated = await this.findById(order.id);
+    this.pubSub.publish('orderUpdated', { orderUpdated: updated });
+
+    if (updated.customer?.id) {
+      this.notificationsService.sendToAppUser(
+        updated.customer.id,
+        `Pedido #${updated.orderNumber}`,
+        'Pedido finalizado! Obrigado pela compra.',
+        { type: 'ORDER_STATUS', orderId: updated.id, status: OrderStatus.COMPLETED },
+      ).catch(() => {});
+    }
+
+    return updated;
   }
 
   async refundOrder(orderId: string, vendorUserId: string): Promise<Order> {
@@ -947,6 +993,14 @@ export class OrdersService {
       for (const item of order.items) {
         if (item.product) {
           await this.productsService.restoreStock(item.product.id, item.quantity);
+        }
+      }
+      // H2: Decrement coupon usage when order is cancelled/rejected/expired
+      if (order.coupon?.id) {
+        try {
+          await this.couponsService.decrementUsage(order.coupon.id);
+        } catch (err: any) {
+          console.error(`Failed to decrement coupon usage for order ${order.id}:`, err?.message);
         }
       }
     }

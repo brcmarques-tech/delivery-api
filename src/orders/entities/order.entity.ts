@@ -52,6 +52,7 @@ export class Order {
   @Column({ nullable: true })
   checkoutUrl: string;
 
+  // TODO: Rename mpPreferenceId to pagarmeOrderId in a future migration (legacy MP naming)
   @Field({ nullable: true })
   @Column({ nullable: true })
   mpPreferenceId: string;
@@ -175,6 +176,10 @@ export class Order {
   @Field({ nullable: true })
   @Column({ nullable: true })
   capturedAt: Date;
+
+  @Field()
+  @Column({ default: false })
+  isSettled: boolean;
 
   @Field()
   @CreateDateColumn()

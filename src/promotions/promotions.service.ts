@@ -248,6 +248,9 @@ export class PromotionsService implements OnModuleInit {
       where: { id: productId, store: { id: promotion.store.id } },
     });
     if (!product) throw new NotFoundException('Produto nao encontrado nessa loja.');
+    if (promotionalPrice >= Number(product.price)) {
+      throw new BadRequestException('O preco promocional deve ser menor que o preco original do produto.');
+    }
     promotion.product = product;
     promotion.promotionalPrice = promotionalPrice;
     promotion.title = title;
