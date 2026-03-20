@@ -142,6 +142,20 @@ export class PaymentsService implements OnModuleDestroy {
     return response.data;
   }
 
+  private async pagarmePatch<T = any>(path: string, body: any): Promise<T> {
+    const response = await this.httpService.axiosRef.patch(
+      `${this.pagarmeBaseUrl}${path}`,
+      body,
+      {
+        headers: {
+          'Authorization': this.pagarmeAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    return response.data;
+  }
+
   private async pagarmeDelete<T = any>(path: string): Promise<T> {
     const response = await this.httpService.axiosRef.delete(
       `${this.pagarmeBaseUrl}${path}`,
@@ -442,7 +456,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       this.logger.log(`Updating recipient: ${recipientId}`);
-      const result = await this.pagarmePut(`/recipients/${recipientId}`, body);
+      const result = await this.pagarmePatch(`/recipients/${recipientId}`, body);
       this.logger.log(`Recipient updated: ${recipientId}`);
       return result;
     } catch (err: any) {
@@ -1939,14 +1953,14 @@ export class PaymentsService implements OnModuleDestroy {
 
   async updateRecipientAnticipationSettings(recipientId: string, enabled: boolean): Promise<boolean> {
     try {
-      await this.pagarmePut(`/recipients/${recipientId}`, {
+      await this.pagarmePatch(`/recipients/${recipientId}`, {
         automatic_anticipation_settings: {
           enabled,
         },
       });
       return true;
     } catch (err: any) {
-      this.logger.error(`Failed to update anticipation settings: ${err.response?.data?.message || err.message}`);
+      this.logger.error(`Failed to update anticipation settings: ${JSON.stringify(err.response?.data || err.message)}`);
       throw new BadRequestException('Erro ao atualizar configurações de antecipação');
     }
   }
