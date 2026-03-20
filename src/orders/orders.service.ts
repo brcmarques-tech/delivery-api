@@ -642,6 +642,7 @@ export class OrdersService {
   // ─── Vendedor rejeita pedido ──────────────────────────────────────────
 
   async rejectOrder(orderId: string, vendorUserId: string, reason: string): Promise<Order> {
+    console.log(`[REJECTORDER] orderId=${orderId}, reason=${reason}`);
     const order = await this.findById(orderId);
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode rejeitar este pedido');
@@ -965,9 +966,11 @@ export class OrdersService {
 
   async updateStatus(id: string, status: OrderStatus, user?: AppUser): Promise<Order> {
     const order = await this.findById(id);
+    console.log(`[UPDATESTATUS] Order ${order.orderNumber}: ${order.status} -> ${status} (by ${user?.id || 'SYSTEM'})`);
 
     const allowed = STATUS_TRANSITIONS[order.status];
     if (!allowed.includes(status)) {
+      console.log(`[UPDATESTATUS] BLOCKED: ${order.status} -> ${status} not allowed`);
       throw new BadRequestException(
         `Nao pode mudar de ${order.status} para ${status}`,
       );
@@ -1030,6 +1033,7 @@ export class OrdersService {
     const fromStatus = order.status;
     order.status = status;
     const saved = await this.ordersRepository.save(order);
+    console.log(`[UPDATESTATUS] Order ${order.orderNumber}: ${fromStatus} -> ${status} SAVED`);
 
     // Auditoria: registra mudança de status
     const log = this.orderStatusLogRepository.create({
@@ -1081,6 +1085,7 @@ export class OrdersService {
     this.pubSub.publish('orderUpdated', { orderUpdated: saved });
 
     if (status === OrderStatus.READY && this.onOrderReadyCallback && !order.isPickup) {
+      console.log(`[UPDATESTATUS] Order ${order.orderNumber} is READY -> triggering delivery offer cascade`);
       const full = await this.findById(saved.id);
       this.onOrderReadyCallback(full);
     }
