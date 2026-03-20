@@ -10,6 +10,9 @@ export class RecipientBalance {
 
   @Field(() => Float)
   transferredAmount: number;
+
+  @Field()
+  autoAnticipationEnabled: boolean;
 }
 
 @ObjectType()

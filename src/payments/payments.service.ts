@@ -1623,17 +1623,21 @@ export class PaymentsService {
 
   // ─── Recipient Balance & Anticipation ─────────────────────────────────
 
-  async getRecipientBalance(recipientId: string): Promise<{ availableAmount: number; waitingFundsAmount: number; transferredAmount: number }> {
+  async getRecipientBalance(recipientId: string): Promise<{ availableAmount: number; waitingFundsAmount: number; transferredAmount: number; autoAnticipationEnabled: boolean }> {
     try {
-      const result = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
+      const [balance, recipient] = await Promise.all([
+        this.pagarmeGet(`/recipients/${recipientId}/balance`),
+        this.pagarmeGet(`/recipients/${recipientId}`).catch(() => null),
+      ]);
       return {
-        availableAmount: (result.available_amount || 0) / 100,
-        waitingFundsAmount: (result.waiting_funds?.amount || 0) / 100,
-        transferredAmount: (result.transferred_amount || 0) / 100,
+        availableAmount: (balance.available_amount || 0) / 100,
+        waitingFundsAmount: (balance.waiting_funds?.amount || 0) / 100,
+        transferredAmount: (balance.transferred_amount || 0) / 100,
+        autoAnticipationEnabled: recipient?.automatic_anticipation_settings?.enabled ?? false,
       };
     } catch (err: any) {
       this.logger.warn(`Failed to get recipient balance: ${err.response?.data?.message || err.message}`);
-      return { availableAmount: 0, waitingFundsAmount: 0, transferredAmount: 0 };
+      return { availableAmount: 0, waitingFundsAmount: 0, transferredAmount: 0, autoAnticipationEnabled: false };
     }
   }
 
