@@ -1942,9 +1942,6 @@ export class PaymentsService implements OnModuleDestroy {
       await this.pagarmePut(`/recipients/${recipientId}`, {
         automatic_anticipation_settings: {
           enabled,
-          type: enabled ? 'full' : undefined,
-          volume_percentage: enabled ? 100 : undefined,
-          delay: enabled ? 0 : undefined,
         },
       });
       return true;
