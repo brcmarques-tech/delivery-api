@@ -304,6 +304,55 @@ export class MailService {
     }
   }
 
+  async sendAntifraudReviewEmail(orderNumber: string, customerName: string, total: number, chargeId: string): Promise<void> {
+    const supportEmail = 'suporte@bcmtech.com.br';
+    const subject = `bcmTech - Pedido #${orderNumber} bloqueado por antifraude`;
+    const now = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #E67E22; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+          <p style="color: #fff; margin: 5px 0 0 0; font-size: 14px;">Revisao de Antifraude</p>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+          <h2 style="color: #E67E22; margin-top: 0;">Pedido requer reprocessamento</h2>
+          <p style="color: #555; font-size: 16px; line-height: 1.6;">
+            O pedido abaixo foi <strong>aprovado pelo adquirente</strong> mas <strong>bloqueado pelo antifraude</strong> do Pagar.me.
+            E necessario reprocessar manualmente no dashboard.
+          </p>
+          <div style="background: white; border: 1px solid #eee; border-radius: 8px; padding: 20px; margin: 15px 0;">
+            <p style="color: #555; font-size: 14px; margin: 0;"><strong>Pedido:</strong> #${orderNumber}</p>
+            <p style="color: #555; font-size: 14px; margin: 8px 0;"><strong>Cliente:</strong> ${customerName}</p>
+            <p style="color: #555; font-size: 14px; margin: 8px 0;"><strong>Valor:</strong> R$ ${total.toFixed(2)}</p>
+            <p style="color: #555; font-size: 14px; margin: 8px 0;"><strong>Charge ID:</strong> ${chargeId}</p>
+            <p style="color: #999; font-size: 12px; margin: 8px 0 0 0;"><strong>Data:</strong> ${now}</p>
+          </div>
+          <div style="text-align: center; margin-top: 20px;">
+            <a href="https://dash.pagar.me" style="display: inline-block; background: #E67E22; color: white; padding: 12px 30px; border-radius: 8px; font-size: 16px; font-weight: bold; text-decoration: none;">
+              Abrir Dashboard Pagar.me
+            </a>
+          </div>
+          <p style="color: #777; font-size: 13px; margin-top: 20px; text-align: center;">
+            Apos reprocessar, o webhook atualizara o pedido automaticamente.
+          </p>
+          <div style="border-top: 1px solid #eee; margin-top: 20px; padding-top: 15px; text-align: center;">
+            <p style="color: #999; font-size: 11px; margin: 0;">
+              Este email foi enviado automaticamente pelo sistema bcmTech Delivery.
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+    try {
+      await this.sendEmail(supportEmail, subject, html);
+      this.logger.log(`Email de antifraude enviado para ${supportEmail} - pedido #${orderNumber}`);
+      await this.saveLog({ type: 'EMAIL', to: supportEmail, userName: 'Suporte', subject, message: `Pedido #${orderNumber} bloqueado por antifraude. Charge: ${chargeId}`, success: true, error: null });
+    } catch (error) {
+      this.logger.error(`Erro ao enviar email de antifraude para ${supportEmail}`, error);
+      await this.saveLog({ type: 'EMAIL', to: supportEmail, userName: 'Suporte', subject, message: `Pedido #${orderNumber} bloqueado por antifraude. Charge: ${chargeId}`, success: false, error: String(error) });
+    }
+  }
+
   async retryFailedEmails(): Promise<void> {
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     const failedLogs = await this.logRepository.find({

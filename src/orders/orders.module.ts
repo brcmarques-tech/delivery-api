@@ -14,6 +14,7 @@ import { PlatformConfigModule } from '../config/platform-config.module';
 import { AddressesModule } from '../addresses/addresses.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CouponsModule } from '../coupons/coupons.module';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { CouponsModule } from '../coupons/coupons.module';
     AddressesModule,
     NotificationsModule,
     CouponsModule,
+    MailModule,
   ],
   providers: [OrdersService, OrdersResolver],
   exports: [OrdersService],

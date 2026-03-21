@@ -18,13 +18,15 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { CouponsService } from '../coupons/coupons.service';
 import { VerificationService } from '../stores/verification.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { MailService } from '../mail/mail.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 type OnOrderReadyCallback = (order: Order) => void;
 
 const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
-  [OrderStatus.AWAITING_PAYMENT]: [OrderStatus.PENDING, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
+  [OrderStatus.AWAITING_PAYMENT]: [OrderStatus.PENDING, OrderStatus.PAYMENT_REVIEW, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
+  [OrderStatus.PAYMENT_REVIEW]: [OrderStatus.PENDING, OrderStatus.CANCELLED],
   [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
@@ -62,6 +64,7 @@ export class OrdersService {
     @Inject(forwardRef(() => VerificationService))
     private verificationService: VerificationService,
     private whatsAppService: WhatsAppService,
+    private mailService: MailService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -293,12 +296,36 @@ export class OrdersService {
       console.log(`[CREATEORDER] Direct charge branch: cardId=${input.cardId}, cardToken=${!!input.cardToken}`);
       try {
         const { pagarmeOrderId, status, chargeId } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
-        console.log(`[CREATEORDER] Direct charge SUCCESS: pagarmeOrderId=${pagarmeOrderId}, status=${status}, chargeId=${chargeId}`);
+        console.log(`[CREATEORDER] Direct charge result: pagarmeOrderId=${pagarmeOrderId}, status=${status}, chargeId=${chargeId}`);
         savedOrder.mpPreferenceId = pagarmeOrderId;
         if (chargeId) savedOrder.preAuthChargeId = chargeId;
-        savedOrder.status = OrderStatus.PENDING;
-        await this.ordersRepository.save(savedOrder);
-        console.log(`[CREATEORDER] Order saved with status PENDING, preAuthChargeId=${savedOrder.preAuthChargeId}`);
+
+        if (status === 'antifraud_review') {
+          // Antifraud blocked but acquirer approved — save for manual reprocessing
+          savedOrder.status = OrderStatus.PAYMENT_REVIEW;
+          await this.ordersRepository.save(savedOrder);
+          console.log(`[CREATEORDER] Order saved with status PAYMENT_REVIEW (antifraud), chargeId=${chargeId}`);
+
+          // Notify support via email
+          this.mailService.sendAntifraudReviewEmail(
+            savedOrder.orderNumber,
+            customer.name,
+            Number(savedOrder.total),
+            chargeId || pagarmeOrderId,
+          ).catch(() => {});
+
+          // Notify customer
+          this.notificationsService.sendToAppUser(
+            customer.id,
+            'Pagamento em analise',
+            `Seu pedido #${savedOrder.orderNumber} esta em analise de seguranca. Voce sera notificado quando for aprovado.`,
+            { type: 'PAYMENT_REVIEW', orderId: savedOrder.id },
+          ).catch(() => {});
+        } else {
+          savedOrder.status = OrderStatus.PENDING;
+          await this.ordersRepository.save(savedOrder);
+          console.log(`[CREATEORDER] Order saved with status PENDING, preAuthChargeId=${savedOrder.preAuthChargeId}`);
+        }
       } catch (err: any) {
         console.log(`[CREATEORDER] Direct charge FAILED: ${err?.message}`);
         savedOrder.status = OrderStatus.CANCELLED;
