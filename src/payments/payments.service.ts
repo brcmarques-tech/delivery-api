@@ -630,7 +630,6 @@ export class PaymentsService implements OnModuleDestroy {
           },
         },
       ],
-      antifraud_enabled: false,
       metadata: {
         order_id: order.id,
         order_number: order.orderNumber,
@@ -646,8 +645,21 @@ export class PaymentsService implements OnModuleDestroy {
       this.logger.log(
         `Pagar.me pre-auth for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id} | charge: ${chargeId} | status: ${status}`,
       );
+      // Detect antifraud reproval: acquirer approved but antifraud blocked
+      const antifraudResponse = charge?.last_transaction?.antifraud_response;
+      const acquirerMessage = charge?.last_transaction?.acquirer_message || '';
+      if (
+        (status === 'failed' || status === 'refused' || status === 'canceled') &&
+        antifraudResponse?.status === 'reproved' &&
+        acquirerMessage.toLowerCase().includes('aprovad')
+      ) {
+        this.logger.warn(
+          `Pagar.me antifraud reproved for ${order.orderNumber} | charge: ${chargeId} | acquirer: "${acquirerMessage}" | antifraud score: ${antifraudResponse.score}`,
+        );
+        return { pagarmeOrderId: result.id, status: 'antifraud_review', chargeId };
+      }
       if (status === 'failed' || status === 'refused' || status === 'canceled') {
-        const reason = charge?.last_transaction?.acquirer_message || charge?.last_transaction?.gateway_response?.errors?.[0]?.message || 'Pagamento recusado';
+        const reason = acquirerMessage || charge?.last_transaction?.gateway_response?.errors?.[0]?.message || 'Pagamento recusado';
         throw new BadRequestException(`Pagamento recusado: ${reason}`);
       }
       return { pagarmeOrderId: result.id, status, chargeId };
@@ -1500,7 +1512,7 @@ export class PaymentsService implements OnModuleDestroy {
         relations: ['customer', 'store'],
       });
 
-      if (order && order.status === OrderStatus.AWAITING_PAYMENT) {
+      if (order && (order.status === OrderStatus.AWAITING_PAYMENT || order.status === OrderStatus.PAYMENT_REVIEW)) {
         // Update mpPreferenceId with real Pagar.me order ID (replaces placeholder from payment link flow)
         if (order.mpPreferenceId?.startsWith('link-') && pagarmeOrderId) {
           order.mpPreferenceId = pagarmeOrderId;
@@ -1654,12 +1666,13 @@ export class PaymentsService implements OnModuleDestroy {
       }
     }
 
-    // Only act if order is still AWAITING_PAYMENT (order.paid didn't fire yet)
-    if (order && order.status === OrderStatus.AWAITING_PAYMENT) {
+    // Act if order is AWAITING_PAYMENT or PAYMENT_REVIEW (antifraud reprocessed)
+    const wasPaymentReview = order?.status === OrderStatus.PAYMENT_REVIEW;
+    if (order && (order.status === OrderStatus.AWAITING_PAYMENT || order.status === OrderStatus.PAYMENT_REVIEW)) {
       order.status = OrderStatus.PENDING;
       order.couponCredited = true;
       await orderRepo.save(order);
-      this.logger.log(`Charge.paid fallback: pedido #${order.orderNumber} confirmado via charge webhook`);
+      this.logger.log(`Charge.paid ${wasPaymentReview ? '(antifraud reprocessed)' : 'fallback'}: pedido #${order.orderNumber} confirmado via charge webhook`);
 
       if (order.customer?.id) {
         this.notificationsService.sendToAppUser(
