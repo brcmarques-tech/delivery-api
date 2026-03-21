@@ -114,6 +114,9 @@ export class DeliveriesService implements OnModuleInit {
     });
 
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+    // Publish orderUpdated so vendor panel sees the deliverer info
+    const updatedOrder = await this.ordersService.findById(orderId);
+    this.pubSub.publish('orderUpdated', { orderUpdated: updatedOrder });
     // Status stays at READY — only changes when deliverer confirms pickup (DELIVERING)
     // The order disappears from "Disponíveis" because it now has a delivery record
     this.notifyVendorDeliveryAccepted(order, deliverer);
