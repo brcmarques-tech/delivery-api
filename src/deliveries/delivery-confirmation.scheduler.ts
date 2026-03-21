@@ -15,6 +15,7 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
     this.intervalId = setInterval(() => {
       this.expireAwaitingPaymentOrders();
       this.expirePendingOrders();
+      this.autoAdvanceVendorConfirmedPickup();
       this.autoConfirmExpiredDeliveries();
       this.alertNoDeliverer();
     }, 60_000);
@@ -45,6 +46,18 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
       }
     } catch (err) {
       this.logger.error('Failed to expire pending orders:', err);
+    }
+  }
+
+  // Auto-avançar VENDOR_CONFIRMED_PICKUP se entregador não confirmar em 5 min
+  private async autoAdvanceVendorConfirmedPickup() {
+    try {
+      const count = await this.ordersService.autoAdvanceVendorConfirmedPickup();
+      if (count > 0) {
+        this.logger.log(`Auto-advanced ${count} orders from VENDOR_CONFIRMED_PICKUP to DELIVERING`);
+      }
+    } catch (err) {
+      this.logger.error('Failed to auto-advance vendor confirmed pickup:', err);
     }
   }
 

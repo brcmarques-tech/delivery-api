@@ -850,6 +850,33 @@ export class OrdersService {
     return expiredOrders.length;
   }
 
+  // ─── Auto-avançar VENDOR_CONFIRMED_PICKUP sem coleta do entregador (5 min) ──
+
+  async autoAdvanceVendorConfirmedPickup(): Promise<number> {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const stuckOrders = await this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.delivery', 'delivery')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .where('order.status = :status', { status: OrderStatus.VENDOR_CONFIRMED_PICKUP })
+      .andWhere('order.vendorConfirmedPickupAt <= :fiveMinAgo', { fiveMinAgo })
+      .getMany();
+
+    for (const order of stuckOrders) {
+      try {
+        console.log(`[AUTO-ADVANCE] Order #${order.orderNumber}: VENDOR_CONFIRMED_PICKUP -> DELIVERING (5min timeout)`);
+        await this.updateStatus(order.id, OrderStatus.DELIVERING);
+      } catch (err) {
+        console.error(`Auto-advance failed for order ${order.id}:`, err);
+      }
+    }
+
+    return stuckOrders.length;
+  }
+
   // ─── Auto-confirmar entregas sem resposta do cliente (10 min) ──────────
 
   async autoConfirmExpiredDeliveries(): Promise<number> {
