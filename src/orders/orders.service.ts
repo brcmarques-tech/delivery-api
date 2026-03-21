@@ -382,7 +382,7 @@ export class OrdersService {
   async findByStore(storeId: string): Promise<Order[]> {
     return this.ordersRepository.find({
       where: { store: { id: storeId } },
-      relations: ['customer', 'items', 'items.product', 'delivery'],
+      relations: ['customer', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
       order: { createdAt: 'DESC' },
     });
   }
