@@ -1111,6 +1111,24 @@ export class OrdersService {
       ).catch(() => {});
     }
 
+    // Vendor notifications for status changes
+    const vendorMessages: Record<string, string> = {
+      [OrderStatus.DELIVERING]: 'O entregador está a caminho do cliente',
+      [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: 'Entregador confirmou a entrega ao cliente',
+      [OrderStatus.COMPLETED]: 'Pedido finalizado com sucesso!',
+      [OrderStatus.CANCELLED]: 'O pedido foi cancelado pelo cliente',
+      [OrderStatus.DISPUTED]: 'O cliente abriu uma disputa sobre o pedido',
+    };
+
+    if (vendorMessages[status] && order.store?.owner?.id) {
+      this.notificationsService.sendToVendorUser(
+        order.store.owner.id,
+        `Pedido #${order.orderNumber}`,
+        vendorMessages[status],
+        { type: 'ORDER_STATUS', orderId: order.id, status },
+      ).catch(() => {});
+    }
+
     // WhatsApp notifications
     const customerPhone = order.customer?.phone;
     if (customerPhone) {
