@@ -5,6 +5,7 @@ import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { AppUsersService } from '../users/app-users.service';
 
 const OFFER_TIMEOUT_MS = 60_000; // 60 seconds per deliverer
+const MAX_OFFER_DURATION_MS = 10 * 60_000; // 10 minutes total rotation
 
 interface PendingOffer {
   orderId: string;
@@ -18,8 +19,10 @@ interface PendingOffer {
   orderNumber: string;
   currentDelivererId: string | null;
   declinedBy: Set<string>;
+  permanentlyExcluded: Set<string>; // customer ID, etc.
   timer: ReturnType<typeof setTimeout> | null;
   resolved: boolean;
+  startedAt: number;
 }
 
 @Injectable()
@@ -76,9 +79,11 @@ export class DeliveryOfferService {
       itemCount: order.itemCount,
       orderNumber: order.orderNumber,
       currentDelivererId: null,
-      declinedBy: new Set([order.customerId]), // Exclui o próprio comprador
+      declinedBy: new Set([order.customerId]),
+      permanentlyExcluded: new Set([order.customerId]),
       timer: null,
       resolved: false,
+      startedAt: Date.now(),
     };
 
     this.pendingOffers.set(order.id, offer);
@@ -89,18 +94,14 @@ export class DeliveryOfferService {
   private offerToNext(offer: PendingOffer) {
     if (offer.resolved) return;
 
-    const nearest = this.trackerService.getNearestDeliverers(
-      offer.storeLat,
-      offer.storeLng,
-      offer.declinedBy,
-    );
-
-    this.logger.log(`[OFFER] Order ${offer.orderNumber}: found ${nearest.length} available deliverers (excluded: ${offer.declinedBy.size})`);
-
-    if (nearest.length === 0) {
-      // No more online deliverers — broadcast via socket AND push to all offline deliverers
-      this.logger.log(`No more deliverers for order ${offer.orderNumber}, broadcasting to all`);
-      offer.currentDelivererId = null;
+    // Check 10-minute total timeout
+    const elapsed = Date.now() - offer.startedAt;
+    if (elapsed >= MAX_OFFER_DURATION_MS) {
+      this.logger.log(`[OFFER] Order ${offer.orderNumber}: 10min timeout reached, alerting vendor`);
+      offer.resolved = true;
+      this.pendingOffers.delete(offer.orderId);
+      // Alert vendor via notification (handled by alertNoDeliverer scheduler)
+      // Also broadcast so it stays visible in the list
       if (this.emitToAll) {
         this.emitToAll('newAvailableDelivery', {
           orderId: offer.orderId,
@@ -113,11 +114,27 @@ export class DeliveryOfferService {
           itemCount: offer.itemCount,
         });
       }
-
-      // Push notification to ALL deliverers (including offline ones)
       this.notifyAllDeliverers(offer).catch(() => {});
+      return;
+    }
 
-      this.pendingOffers.delete(offer.orderId);
+    const nearest = this.trackerService.getNearestDeliverers(
+      offer.storeLat,
+      offer.storeLng,
+      offer.declinedBy,
+    );
+
+    this.logger.log(`[OFFER] Order ${offer.orderNumber}: found ${nearest.length} available deliverers (excluded: ${offer.declinedBy.size}, elapsed: ${Math.round(elapsed / 1000)}s)`);
+
+    if (nearest.length === 0) {
+      // All deliverers tried — reset and loop back to the first
+      this.logger.log(`[OFFER] Order ${offer.orderNumber}: all deliverers tried, looping back`);
+      offer.declinedBy = new Set(offer.permanentlyExcluded);
+      offer.currentDelivererId = null;
+      // Small delay before restarting the loop to avoid spamming
+      offer.timer = setTimeout(() => {
+        this.offerToNext(offer);
+      }, 2000);
       return;
     }
 

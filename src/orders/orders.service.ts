@@ -909,14 +909,14 @@ export class OrdersService {
   // ─── Alertar vendedor se nenhum entregador em 15 min ──────────────────
 
   async alertNoDeliverer(): Promise<number> {
-    const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
     const stuckOrders = await this.ordersRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoin('order.delivery', 'delivery')
       .where('order.status = :status', { status: OrderStatus.READY })
-      .andWhere('order.updatedAt <= :fifteenMinAgo', { fifteenMinAgo })
+      .andWhere('order.updatedAt <= :tenMinAgo', { tenMinAgo })
       .andWhere('delivery.id IS NULL')
       .andWhere('order.isPickup = false')
       .getMany();
