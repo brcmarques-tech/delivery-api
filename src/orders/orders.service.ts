@@ -1175,11 +1175,12 @@ export class OrdersService {
       }
     }
 
-    this.pubSub.publish('orderUpdated', { orderUpdated: saved });
+    // Re-fetch with full relations for subscription payload
+    const full = await this.findById(saved.id);
+    this.pubSub.publish('orderUpdated', { orderUpdated: full });
 
     if (status === OrderStatus.READY && this.onOrderReadyCallback && !order.isPickup) {
       console.log(`[UPDATESTATUS] Order ${order.orderNumber} is READY -> triggering delivery offer cascade`);
-      const full = await this.findById(saved.id);
       this.onOrderReadyCallback(full);
     }
 
@@ -1221,7 +1222,8 @@ export class OrdersService {
     updatedOrder.commissionAmount = Math.round(((subtotal - discount) * Number(updatedOrder.commissionPercent)) / 100 * 100) / 100;
     const saved = await this.ordersRepository.save(updatedOrder);
 
-    this.pubSub.publish('orderUpdated', { orderUpdated: saved });
+    const fullUpdated = await this.findById(saved.id);
+    this.pubSub.publish('orderUpdated', { orderUpdated: fullUpdated });
     return saved;
   }
 }
