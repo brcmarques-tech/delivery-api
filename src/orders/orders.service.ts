@@ -678,6 +678,10 @@ export class OrdersService {
       throw new BadRequestException('Voce nao pode cancelar este pedido');
     }
 
+    if (order.delivery) {
+      throw new BadRequestException('Nao e possivel cancelar o pedido depois que um entregador aceitou');
+    }
+
     const cancellableStatuses = [
       OrderStatus.PENDING,
       OrderStatus.ACCEPTED,
