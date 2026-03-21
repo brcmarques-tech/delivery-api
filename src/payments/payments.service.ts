@@ -1567,6 +1567,12 @@ export class PaymentsService implements OnModuleDestroy {
 
     if (!order || order.status === OrderStatus.CANCELLED) return;
 
+    // Don't cancel orders in PAYMENT_REVIEW — antifraud reproved but awaiting manual reprocessing
+    if (order.status === OrderStatus.PAYMENT_REVIEW) {
+      this.logger.log(`Pedido #${order.orderNumber} em PAYMENT_REVIEW — ignorando payment_failed webhook`);
+      return;
+    }
+
     order.status = OrderStatus.CANCELLED;
     await orderRepo.save(order);
     this.logger.log(`Pedido #${order.orderNumber} cancelado por falha no pagamento`);
