@@ -337,11 +337,12 @@ export class OrdersResolver {
 
   @Subscription(() => Order, {
     filter: (payload, variables) => {
-      // Require storeId to prevent unauthorized data access
-      if (!variables.storeId) return false;
       const order = payload.orderUpdated;
-      if (order.store?.id !== variables.storeId) return false;
+      // If storeId provided, filter by store (vendor panel)
+      if (variables.storeId && order.store?.id !== variables.storeId) return false;
+      // If orderId provided, filter by order (customer/deliverer tracking)
       if (variables.orderId && order.id !== variables.orderId) return false;
+      // If neither provided, receive all updates (deliverer available list)
       return true;
     },
   })
@@ -349,7 +350,6 @@ export class OrdersResolver {
     @Args('storeId', { nullable: true }) storeId?: string,
     @Args('orderId', { nullable: true }) orderId?: string,
   ) {
-    if (!storeId) throw new BadRequestException('storeId é obrigatório para subscriptions');
     return this.pubSub.asyncIterableIterator('orderUpdated');
   }
 }
