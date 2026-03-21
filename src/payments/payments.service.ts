@@ -628,6 +628,7 @@ export class PaymentsService implements OnModuleDestroy {
               billing_address: billingAddress,
             },
           },
+          antifraud_enabled: false,
         },
       ],
       metadata: {
