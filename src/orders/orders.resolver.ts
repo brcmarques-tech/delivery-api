@@ -230,6 +230,17 @@ export class OrdersResolver {
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
+  vendorCancelOrder(
+    @Args('orderId') orderId: string,
+    @Args('reason') reason: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.vendorCancelOrder(orderId, user.id, reason);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
   vendorConfirmPickup(
     @Args('orderId') orderId: string,
     @CurrentUser() user: AppUser,

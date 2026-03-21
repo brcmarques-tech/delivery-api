@@ -27,7 +27,7 @@ const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.AWAITING_PAYMENT]: [OrderStatus.PENDING, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
   [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
-  [OrderStatus.PREPARING]: [OrderStatus.READY],
+  [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
   [OrderStatus.READY]: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERING, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
   [OrderStatus.VENDOR_CONFIRMED_PICKUP]: [OrderStatus.PICKED_UP, OrderStatus.DELIVERING],
   [OrderStatus.PICKED_UP]: [OrderStatus.DELIVERING],
@@ -667,6 +667,33 @@ export class OrdersService {
     await this.handlePaymentCancellation(order);
 
     return this.updateStatus(order.id, OrderStatus.REJECTED);
+  }
+
+  // ─── Vendedor cancela pedido (antes de sair para entrega) ────────────
+
+  async vendorCancelOrder(orderId: string, vendorUserId: string, reason: string): Promise<Order> {
+    console.log(`[VENDOR-CANCEL] orderId=${orderId}, reason=${reason}`);
+    const order = await this.findById(orderId);
+    if (order.store?.owner?.id !== vendorUserId) {
+      throw new BadRequestException('Voce nao pode cancelar este pedido');
+    }
+
+    const cancellableStatuses = [
+      OrderStatus.PENDING,
+      OrderStatus.ACCEPTED,
+      OrderStatus.PREPARING,
+      OrderStatus.READY,
+    ];
+    if (!cancellableStatuses.includes(order.status)) {
+      throw new BadRequestException('Nao e possivel cancelar o pedido depois que saiu para entrega');
+    }
+
+    order.rejectionReason = reason;
+    await this.ordersRepository.save(order);
+
+    await this.handlePaymentCancellation(order);
+
+    return this.updateStatus(order.id, OrderStatus.CANCELLED);
   }
 
   // ─── Vendedor confirma coleta pelo entregador ─────────────────────────
