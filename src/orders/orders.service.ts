@@ -30,9 +30,9 @@ const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
-  [OrderStatus.READY]: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERING, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
-  [OrderStatus.VENDOR_CONFIRMED_PICKUP]: [OrderStatus.PICKED_UP, OrderStatus.DELIVERING],
-  [OrderStatus.PICKED_UP]: [OrderStatus.DELIVERING],
+  [OrderStatus.READY]: [OrderStatus.PICKED_UP, OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERING, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
+  [OrderStatus.PICKED_UP]: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERING],
+  [OrderStatus.VENDOR_CONFIRMED_PICKUP]: [OrderStatus.DELIVERING],
   [OrderStatus.DELIVERING]: [OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
   [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: [OrderStatus.COMPLETED, OrderStatus.DISPUTED],
   [OrderStatus.DELIVERED]: [OrderStatus.COMPLETED],
@@ -537,7 +537,6 @@ export class OrdersService {
       .andWhere('(delivery.id IS NULL OR delivery.delivererId IS NULL)')
       .orderBy('order.createdAt', 'ASC')
       .getMany();
-    console.log(`[AVAILABLE] Found ${orders.length} available orders: ${orders.map(o => o.orderNumber).join(', ') || 'none'}`);
     return orders;
   }
 
@@ -675,6 +674,41 @@ export class OrdersService {
     return this.updateStatus(order.id, OrderStatus.DISPUTED);
   }
 
+  async requestCancelDispute(orderId: string, vendorUserId: string): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (order.store?.owner?.id !== vendorUserId) {
+      throw new BadRequestException('Voce nao tem permissao para este pedido');
+    }
+    if (order.status !== OrderStatus.DISPUTED) {
+      throw new BadRequestException('Este pedido nao esta em disputa');
+    }
+
+    if (order.customer?.id) {
+      this.notificationsService.sendToAppUser(
+        order.customer.id,
+        'Solicitação da loja',
+        `${order.store.name} pediu para você cancelar a reclamação do pedido #${order.orderNumber}`,
+        { type: 'REQUEST_CANCEL_DISPUTE', orderId: order.id },
+      ).catch(() => {});
+    }
+
+    return order;
+  }
+
+  async cancelDispute(orderId: string, customerId: string): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (order.customer.id !== customerId) {
+      throw new BadRequestException('Voce nao pode cancelar esta disputa');
+    }
+    if (order.status !== OrderStatus.DISPUTED) {
+      throw new BadRequestException('Este pedido nao esta em disputa');
+    }
+    order.disputeReason = undefined as any;
+    order.disputedAt = undefined as any;
+    await this.ordersRepository.save(order);
+    return this.updateStatus(order.id, OrderStatus.COMPLETED);
+  }
+
   // ─── Vendedor rejeita pedido ──────────────────────────────────────────
 
   async rejectOrder(orderId: string, vendorUserId: string, reason: string): Promise<Order> {
@@ -734,19 +768,29 @@ export class OrdersService {
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode confirmar este pedido');
     }
-    // Vendor confirms pickup after deliverer already picked up (DELIVERING)
-    // or while still READY (legacy flow)
-    if (order.status !== OrderStatus.READY && order.status !== OrderStatus.DELIVERING) {
-      throw new BadRequestException('Pedido precisa estar pronto ou em entrega para confirmar coleta');
+
+    // Vendor can confirm when: READY, PICKED_UP, or DELIVERING
+    const allowed = [OrderStatus.READY, OrderStatus.PICKED_UP, OrderStatus.DELIVERING];
+    if (!allowed.includes(order.status)) {
+      throw new BadRequestException('Pedido precisa estar pronto ou coletado para confirmar coleta');
     }
 
-    // If already DELIVERING (deliverer confirmed pickup first), just record vendor confirmation
+    // If already DELIVERING, just record timestamp
     if (order.status === OrderStatus.DELIVERING) {
       order.vendorConfirmedPickupAt = new Date();
       return this.ordersRepository.save(order);
     }
 
-    return this.updateStatus(order.id, OrderStatus.VENDOR_CONFIRMED_PICKUP);
+    // READY or PICKED_UP → advance to VENDOR_CONFIRMED_PICKUP
+    // If deliverer already picked up (PICKED_UP), vendor confirmation advances and then auto-goes to DELIVERING
+    const updated = await this.updateStatus(order.id, OrderStatus.VENDOR_CONFIRMED_PICKUP);
+
+    // If deliverer already confirmed pickup, auto-advance to DELIVERING
+    if (order.status === OrderStatus.PICKED_UP) {
+      return this.updateStatus(order.id, OrderStatus.DELIVERING);
+    }
+
+    return updated;
   }
 
   // ─── Superadmin resolve disputa ───────────────────────────────────────
@@ -873,6 +917,16 @@ export class OrdersService {
         await this.handlePaymentCancellation(order);
         // updateStatus handles stock restoration for EXPIRED status
         await this.updateStatus(order.id, OrderStatus.EXPIRED);
+
+        // Notify customer that order was not accepted
+        if (order.customer?.id) {
+          this.notificationsService.sendToAppUser(
+            order.customer.id,
+            'Pedido não aceito',
+            `A loja não respondeu a tempo. Seu pagamento será estornado automaticamente. Pedido #${order.orderNumber}`,
+            { type: 'ORDER_STATUS', orderId: order.id },
+          ).catch(() => {});
+        }
       } catch (err) {
         console.error(`Failed to expire order ${order.id}:`, err);
       }
@@ -881,7 +935,7 @@ export class OrdersService {
     return expiredOrders.length;
   }
 
-  // ─── Auto-avançar VENDOR_CONFIRMED_PICKUP sem coleta do entregador (5 min) ──
+  // ─── Auto-avançar pedidos parados em PICKED_UP ou VENDOR_CONFIRMED_PICKUP (5 min) ──
 
   async autoAdvanceVendorConfirmedPickup(): Promise<number> {
     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
@@ -892,8 +946,8 @@ export class OrdersService {
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoinAndSelect('order.customer', 'customer')
-      .where('order.status = :status', { status: OrderStatus.VENDOR_CONFIRMED_PICKUP })
-      .andWhere('order.vendorConfirmedPickupAt <= :fiveMinAgo', { fiveMinAgo })
+      .where('order.status IN (:...statuses)', { statuses: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.PICKED_UP] })
+      .andWhere('order.updatedAt <= :fiveMinAgo', { fiveMinAgo })
       .getMany();
 
     for (const order of stuckOrders) {
@@ -1037,6 +1091,16 @@ export class OrdersService {
         updated.customer.id,
         `Pedido #${updated.orderNumber}`,
         'Pedido finalizado! Obrigado pela compra.',
+        { type: 'ORDER_STATUS', orderId: updated.id, status: OrderStatus.COMPLETED },
+      ).catch(() => {});
+    }
+
+    // Notify vendor (completeOrderWithPayment bypasses updateStatus, so replicate vendor notification)
+    if (updated.store?.owner?.id) {
+      this.notificationsService.sendToVendorUser(
+        updated.store.owner.id,
+        `Pedido #${updated.orderNumber}`,
+        'Pedido finalizado com sucesso!',
         { type: 'ORDER_STATUS', orderId: updated.id, status: OrderStatus.COMPLETED },
       ).catch(() => {});
     }
