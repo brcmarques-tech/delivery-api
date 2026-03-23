@@ -189,7 +189,7 @@ export class DeliveriesService implements OnModuleInit {
       }
     }
 
-    await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERING);
+    await this.ordersService.updateStatus(order.id, OrderStatus.PICKED_UP);
     const savedDelivery = await this.deliveriesRepository.save(delivery);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
     return savedDelivery;
@@ -253,10 +253,6 @@ export class DeliveriesService implements OnModuleInit {
       relations: ['order', 'order.store', 'order.customer', 'order.items', 'order.items.product'],
       order: { createdAt: 'DESC' },
     });
-    console.log(`[MYDELIVERIES] delivererId=${delivererId}, found=${deliveries.length}, active=${deliveries.filter(d => !d.deliveredAt).length}, completed=${deliveries.filter(d => d.deliveredAt).length}`);
-    if (deliveries.length > 0) {
-      deliveries.forEach(d => console.log(`[MYDELIVERIES]   - delivery=${d.id}, order=${d.order?.orderNumber}, status=${d.order?.status}, deliveredAt=${d.deliveredAt || 'null'}`));
-    }
     return deliveries;
   }
 

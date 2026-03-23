@@ -27,11 +27,7 @@ export class NotificationsService {
 
   async sendToAppUser(userId: string, title: string, body: string, data?: Record<string, any>): Promise<void> {
     const user = await this.appUsersRepository.findOne({ where: { id: userId } });
-    this.logger.log(`[sendToAppUser] userId=${userId} name=${user?.name || 'NOT_FOUND'} role=${user?.role || '?'} hasToken=${!!user?.expoPushToken} token=${user?.expoPushToken?.substring(0, 30) || 'NULL'}...`);
-    if (!user?.expoPushToken) {
-      this.logger.warn(`[sendToAppUser] SKIPPED - no push token for user ${userId} (${user?.name || 'NOT_FOUND'})`);
-      return;
-    }
+    if (!user?.expoPushToken) return;
 
     await this.sendPushNotifications([{
       to: user.expoPushToken,
@@ -46,11 +42,7 @@ export class NotificationsService {
 
   async sendToVendorUser(userId: string, title: string, body: string, data?: Record<string, any>): Promise<void> {
     const user = await this.vendorUsersRepository.findOne({ where: { id: userId } });
-    this.logger.log(`[sendToVendorUser] userId=${userId} name=${user?.name || 'NOT_FOUND'} hasToken=${!!user?.expoPushToken} token=${user?.expoPushToken?.substring(0, 30) || 'NULL'}...`);
-    if (!user?.expoPushToken) {
-      this.logger.warn(`[sendToVendorUser] SKIPPED - no push token for user ${userId} (${user?.name || 'NOT_FOUND'})`);
-      return;
-    }
+    if (!user?.expoPushToken) return;
 
     await this.sendPushNotifications([{
       to: user.expoPushToken,
@@ -112,7 +104,6 @@ export class NotificationsService {
   }
 
   private async sendPushNotifications(messages: ExpoPushMessage[]): Promise<void> {
-    this.logger.log(`[sendPush] Sending ${messages.length} notification(s): ${messages.map(m => `to=${m.to.substring(0, 30)}... title="${m.title}"`).join(', ')}`);
     try {
       const response = await fetch('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
@@ -123,18 +114,13 @@ export class NotificationsService {
       });
 
       const result = await response.json();
-      this.logger.log(`[sendPush] Expo response: ${JSON.stringify(result).substring(0, 500)}`);
-
       if (result.errors) {
         this.logger.error('[sendPush] Expo push errors:', JSON.stringify(result.errors));
       }
-
       if (result.data) {
         result.data.forEach((ticket: any, i: number) => {
           if (ticket.status === 'error') {
-            this.logger.error(`[sendPush] FAILED for ${messages[i].to}: ${ticket.message} (details: ${JSON.stringify(ticket.details)})`);
-          } else {
-            this.logger.log(`[sendPush] OK for ${messages[i].to.substring(0, 30)}... ticket=${ticket.id}`);
+            this.logger.error(`[sendPush] FAILED for ${messages[i].to}: ${ticket.message}`);
           }
         });
       }
