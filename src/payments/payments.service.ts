@@ -17,6 +17,8 @@ import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
+import { PubSub } from 'graphql-subscriptions';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 
 // L5: Centralized descriptor constant
 const STATEMENT_DESCRIPTOR = 'BCMTECH';
@@ -91,6 +93,7 @@ export class PaymentsService implements OnModuleDestroy {
     private platformConfigService: PlatformConfigService,
     private whatsAppService: WhatsAppService,
     private notificationsService: NotificationsService,
+    @Inject(PUB_SUB) private pubSub: PubSub,
   ) {
     const secretKey = this.configService.get('PAGARME_SECRET_KEY') || '';
     this.pagarmeAuthHeader = 'Basic ' + Buffer.from(`${secretKey}:`).toString('base64');
@@ -1523,6 +1526,18 @@ export class PaymentsService implements OnModuleDestroy {
         await orderRepo.save(order);
         this.logger.log(`Pagamento aprovado para pedido #${order.orderNumber}`);
 
+        // Re-fetch with full relations so subscription filters can access store.id
+        const freshOrder = await orderRepo.findOne({
+          where: { id: order.id },
+          relations: ['customer', 'store', 'items', 'items.product'],
+        });
+
+        // Publish real-time update so app/vendor panel refresh
+        if (freshOrder) {
+          this.pubSub.publish('orderUpdated', { orderUpdated: freshOrder });
+          this.pubSub.publish('orderCreated', { orderCreated: freshOrder });
+        }
+
         // Increment coupon usage now that payment is confirmed
         if (order.couponCode) {
           try {
@@ -1679,6 +1694,18 @@ export class PaymentsService implements OnModuleDestroy {
       order.couponCredited = true;
       await orderRepo.save(order);
       this.logger.log(`Charge.paid ${wasPaymentReview ? '(antifraud reprocessed)' : 'fallback'}: pedido #${order.orderNumber} confirmado via charge webhook`);
+
+      // Re-fetch with full relations so subscription filters can access store.id
+      const freshOrder = await orderRepo.findOne({
+        where: { id: order.id },
+        relations: ['customer', 'store', 'items', 'items.product'],
+      });
+
+      // Publish real-time update so app/vendor panel refresh
+      if (freshOrder) {
+        this.pubSub.publish('orderUpdated', { orderUpdated: freshOrder });
+        this.pubSub.publish('orderCreated', { orderCreated: freshOrder });
+      }
 
       if (order.customer?.id) {
         this.notificationsService.sendToAppUser(
