@@ -127,9 +127,7 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
   handleAcceptOffer(
     @MessageBody() data: { orderId: string; delivererId: string },
   ) {
-    console.log(`[GATEWAY] acceptOffer received via socket: orderId=${data.orderId}, delivererId=${data.delivererId}`);
     const accepted = this.offerService.acceptOffer(data.orderId, data.delivererId);
-    console.log(`[GATEWAY] acceptOffer result: ${accepted}`);
     return { accepted };
   }
 

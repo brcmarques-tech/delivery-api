@@ -41,9 +41,7 @@ export class DeliveriesService implements OnModuleInit {
   }
 
   async acceptDelivery(orderId: string, deliverer: AppUser): Promise<Delivery> {
-    console.log(`[ACCEPTDELIVERY] orderId=${orderId}, delivererId=${deliverer.id}, name=${deliverer.name}`);
     if (!deliverer.paymentConnected) {
-      console.log(`[ACCEPTDELIVERY] BLOCKED: payment not connected for ${deliverer.id}`);
       throw new BadRequestException(
         'Cadastre sua conta de recebimento para aceitar entregas.',
       );
@@ -55,14 +53,12 @@ export class DeliveriesService implements OnModuleInit {
       relations: ['order'],
     });
     if (activeDelivery) {
-      console.log(`[ACCEPTDELIVERY] BLOCKED: deliverer ${deliverer.id} already has active delivery ${activeDelivery.id} (order ${activeDelivery.order?.orderNumber})`);
       throw new BadRequestException(
         'Voce ja tem uma entrega em andamento. Finalize-a antes de aceitar outra.',
       );
     }
 
     const order = await this.ordersService.findById(orderId);
-    console.log(`[ACCEPTDELIVERY] Order ${order.orderNumber}, status=${order.status}`);
 
     // Atomic acceptance using DB transaction with row-level lock
     // Prevents race condition when 2 deliverers click at the same time
@@ -86,11 +82,8 @@ export class DeliveriesService implements OnModuleInit {
       if (existing && existing.length > 0) {
         const row = existing[0];
         if (row.delivererId && row.delivererId !== deliverer.id) {
-          console.log(`[ACCEPTDELIVERY] BLOCKED: already assigned to ${row.delivererId}`);
           throw new BadRequestException('Esta entrega já foi aceita por outro entregador.');
         }
-        // Assign to existing delivery
-        console.log(`[ACCEPTDELIVERY] Assigning to existing delivery record ${row.id}`);
         await manager.query(
           `UPDATE deliveries SET "delivererId" = $1, "updatedAt" = NOW() WHERE id = $2`,
           [deliverer.id, row.id],
@@ -98,8 +91,6 @@ export class DeliveriesService implements OnModuleInit {
         return { deliveryId: row.id, isNew: false };
       }
 
-      // Create new delivery
-      console.log(`[ACCEPTDELIVERY] Creating new delivery record`);
       const inserted = await manager.query(
         `INSERT INTO deliveries ("orderId", "delivererId", "createdAt", "updatedAt") VALUES ($1, $2, NOW(), NOW()) RETURNING id`,
         [orderId, deliverer.id],
@@ -123,7 +114,6 @@ export class DeliveriesService implements OnModuleInit {
     // Status stays at READY — only changes when deliverer confirms pickup (DELIVERING)
     // The order disappears from "Disponíveis" because it now has a delivery record
     this.notifyVendorDeliveryAccepted(order, deliverer);
-    console.log(`[ACCEPTDELIVERY] SUCCESS (${result.isNew ? 'new' : 'existing'}): delivery=${result.deliveryId}, status stays ${order.status}`);
     return saved;
   }
 
@@ -168,7 +158,6 @@ export class DeliveriesService implements OnModuleInit {
 
   // Entregador confirma que pegou o pedido
   async confirmPickup(deliveryId: string, delivererId: string): Promise<Delivery> {
-    console.log(`[CONFIRMPICKUP] deliveryId=${deliveryId}, delivererId=${delivererId}`);
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
       relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
@@ -191,7 +180,6 @@ export class DeliveriesService implements OnModuleInit {
 
   // Entregador confirma que entregou pro cliente
   async confirmDelivery(deliveryId: string, delivererId: string): Promise<Delivery> {
-    console.log(`[CONFIRMDELIVERY] deliveryId=${deliveryId}, delivererId=${delivererId}`);
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
       relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
