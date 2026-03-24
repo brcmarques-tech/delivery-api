@@ -26,7 +26,7 @@ type OnOrderReadyCallback = (order: Order) => void;
 
 const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.AWAITING_PAYMENT]: [OrderStatus.PENDING, OrderStatus.PAYMENT_REVIEW, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
-  [OrderStatus.PAYMENT_REVIEW]: [OrderStatus.PENDING, OrderStatus.CANCELLED],
+  [OrderStatus.PAYMENT_REVIEW]: [OrderStatus.PENDING, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
   [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
@@ -877,8 +877,8 @@ export class OrdersService {
   // ─── Helper: cancelar pagamento (pré-auth ou estorno) ─────────────────
 
   private async handlePaymentCancellation(order: Order): Promise<void> {
-    // Cartão com pré-autorização: cancela pré-auth
-    if (order.preAuthChargeId) {
+    // Cartão com pré-auth não capturada: cancela pré-auth (libera limite)
+    if (order.preAuthChargeId && !order.capturedAt) {
       try {
         await this.paymentsService.cancelPreAuth(order);
       } catch (err: any) {
@@ -887,7 +887,17 @@ export class OrdersService {
       return;
     }
 
-    // PIX ou Checkout já pago: estorno
+    // Cartão já capturado (com split) ou PIX/Checkout: estorno
+    if (order.preAuthChargeId && order.capturedAt) {
+      try {
+        await this.paymentsService.refundOrder(order.id);
+      } catch (err: any) {
+        console.error('Refund captured charge failed:', err?.message);
+      }
+      return;
+    }
+
+    // PIX ou Checkout já pago (sem pré-auth): estorno
     if (order.mpPreferenceId && (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD')) {
       try {
         await this.paymentsService.refundOrder(order.id);
@@ -908,7 +918,7 @@ export class OrdersService {
       .leftJoinAndSelect('order.customer', 'customer')
       .leftJoinAndSelect('order.items', 'items')
       .leftJoinAndSelect('items.product', 'product')
-      .where('order.status = :status', { status: OrderStatus.PENDING })
+      .where('order.status IN (:...statuses)', { statuses: [OrderStatus.PENDING, OrderStatus.PAYMENT_REVIEW] })
       .andWhere('order.createdAt <= :tenMinAgo', { tenMinAgo })
       .getMany();
 
@@ -1021,22 +1031,6 @@ export class OrdersService {
   }
 
   // ─── Completar pedido com pagamento (captura cartão / transferência PIX) ──
-
-  // Capturar cartão quando entregador confirma coleta (PICKED_UP)
-  // No split — all funds go to platform. Settlement happens after delivery.
-  async captureCardOnPickup(orderId: string): Promise<void> {
-    const order = await this.findById(orderId);
-    if (!order.preAuthChargeId) return;
-
-    try {
-      await this.paymentsService.capturePreAuth(order);
-      order.capturedAt = new Date();
-      await this.ordersRepository.save(order);
-    } catch (err: any) {
-      console.error(`Capture pre-auth failed for order ${orderId}:`, err?.message);
-      throw err;
-    }
-  }
 
   // DEV ONLY: simula pagamento (AWAITING_PAYMENT → PENDING)
   async simulatePayment(orderId: string): Promise<Order> {

@@ -815,6 +815,115 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
+  // Captura a pré-autorização COM split — distribui para vendor, deliverer e plataforma.
+  async captureWithSplit(order: Order): Promise<{ status: string }> {
+    if (!order.preAuthChargeId) {
+      throw new BadRequestException('Pedido nao possui pre-autorizacao');
+    }
+
+    const store = order.store;
+    const vendorRecipientId = store?.owner?.pagarmeRecipientId;
+    const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
+
+    if (!vendorRecipientId) {
+      throw new BadRequestException('Vendedor sem recipient Pagar.me cadastrado');
+    }
+    if (!platformRecipientId) {
+      throw new BadRequestException('Platform recipient ID nao configurado');
+    }
+
+    const totalCents = Math.round(Number(order.total) * 100);
+    const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
+    const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
+    const deliveryCommissionPercent = await this.platformConfigService.getDeliveryCommissionPercent();
+
+    const splitRules: any[] = [];
+    let vendorAmount: number;
+    let platformAmount: number;
+
+    const hasExternalDelivery = !store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0;
+
+    if (hasExternalDelivery) {
+      const delivery = (order as any).delivery;
+      const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
+      const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+      const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
+
+      vendorAmount = totalCents - commissionCents - deliveryFeeCents;
+      platformAmount = commissionCents + deliveryCommissionCents;
+
+      if (delivererRecipientId && delivererAmount > 0) {
+        splitRules.push({
+          amount: delivererAmount,
+          recipient_id: delivererRecipientId,
+          type: 'flat',
+          options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
+        });
+      } else {
+        // No deliverer recipient — platform absorbs deliverer share
+        platformAmount += delivererAmount;
+      }
+    } else {
+      // Pickup or own delivery — vendor gets total minus commission
+      vendorAmount = totalCents - commissionCents;
+      platformAmount = commissionCents;
+    }
+
+    // Cap vendor at 0 minimum
+    if (vendorAmount < 0) {
+      platformAmount += vendorAmount;
+      vendorAmount = 0;
+    }
+
+    if (vendorAmount > 0) {
+      splitRules.push({
+        amount: vendorAmount,
+        recipient_id: vendorRecipientId,
+        type: 'flat',
+        options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
+      });
+    } else {
+      platformAmount = totalCents - splitRules.reduce((sum, r) => sum + r.amount, 0);
+    }
+
+    // Platform gets remainder (absorbs MDR, rounding, and liability)
+    const splitSum = splitRules.reduce((sum, r) => sum + r.amount, 0);
+    platformAmount = totalCents - splitSum;
+
+    if (platformAmount > 0) {
+      splitRules.push({
+        amount: platformAmount,
+        recipient_id: platformRecipientId,
+        type: 'flat',
+        options: { charge_processing_fee: true, liable: true, charge_remainder_fee: true },
+      });
+    }
+
+    // Final validation
+    const finalSum = splitRules.reduce((sum, r) => sum + r.amount, 0);
+    if (finalSum !== totalCents) {
+      this.logger.error(`Split sum mismatch for order #${order.orderNumber}: sum=${finalSum}, total=${totalCents}`);
+      throw new BadRequestException('Erro no calculo do split');
+    }
+
+    try {
+      const body = {
+        amount: totalCents,
+        code: `${order.id.replace(/-/g, '')}-s${Date.now()}`,
+        split: splitRules,
+      };
+
+      const result = await this.pagarmePost(`/charges/${order.preAuthChargeId}/capture`, body);
+      this.logger.log(`Capture-with-split for order #${order.orderNumber} | total: ${totalCents} | splits: ${splitRules.map(r => `${r.recipient_id}:${r.amount}`).join(', ')}`);
+
+      return { status: result.status || 'paid' };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Capture-with-split failed for order #${order.orderNumber}: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(errorData?.message || 'Erro ao capturar pagamento com split');
+    }
+  }
+
   // Cancela a pré-autorização (libera o limite do cartão)
   async cancelPreAuth(order: Order): Promise<void> {
     if (!order.preAuthChargeId) return;
@@ -828,7 +937,7 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
-  // C1 + C3: Reverse settlement transfers from vendor/deliverer back to platform
+  // C1 + C3: Reverse settlement from vendor/deliverer back to platform
   // Used on chargeback or refund of already-completed (settled) orders
   async reverseSettlementTransfers(order: Order): Promise<void> {
     if (!order.isSettled) {
@@ -836,6 +945,13 @@ export class PaymentsService implements OnModuleDestroy {
       return;
     }
 
+    // Credit card with capture-with-split: refund on the charge reverses splits automatically
+    if (order.paymentMethod === 'CREDIT_CARD' && order.preAuthChargeId && order.capturedAt) {
+      this.logger.log(`Order #${order.orderNumber} settled via capture-with-split — refund will reverse splits automatically`);
+      return;
+    }
+
+    // PIX: manual transfer reversal (existing logic)
     const store = order.store;
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const reversalErrors: string[] = [];
@@ -906,7 +1022,8 @@ export class PaymentsService implements OnModuleDestroy {
   }
 
   // Settle payment after delivery is confirmed.
-  // Transfers vendor and deliverer shares from platform account.
+  // Credit card: capture with split rules (Pagar.me distributes automatically).
+  // PIX: manual transfers (balance is instant).
   async settlePayment(order: Order): Promise<void> {
     // C2: Atomic idempotency guard — prevents double settlement
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
@@ -919,6 +1036,24 @@ export class PaymentsService implements OnModuleDestroy {
       return;
     }
 
+    // Credit card with pre-auth still pending: capture with split (Pagar.me distributes automatically)
+    // If capturedAt is already set (e.g. antifraud auto-capture), skip to manual transfers below
+    if (order.paymentMethod === 'CREDIT_CARD' && order.preAuthChargeId && !order.capturedAt) {
+      try {
+        await this.captureWithSplit(order);
+        await orderRepo.update(order.id, { capturedAt: new Date() });
+        const totalCents = Math.round(Number(order.total) * 100);
+        this.logger.log(`Settlement for order #${order.orderNumber} | capture-with-split | total: ${totalCents} cents`);
+      } catch (err: any) {
+        this.logger.error(`Settlement failed for order #${order.orderNumber}: ${err.message}`);
+        // Revert isSettled so it can be retried
+        await orderRepo.update(order.id, { isSettled: false } as any);
+        throw err;
+      }
+      return;
+    }
+
+    // PIX and other methods: manual transfers (existing logic)
     const store = order.store;
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const totalCents = Math.round(Number(order.total) * 100);
@@ -1692,6 +1827,11 @@ export class PaymentsService implements OnModuleDestroy {
     if (order && (order.status === OrderStatus.AWAITING_PAYMENT || order.status === OrderStatus.PAYMENT_REVIEW)) {
       order.status = OrderStatus.PENDING;
       order.couponCredited = true;
+      // Antifraud reprocessing auto-captures the charge (no longer pre-auth)
+      if (wasPaymentReview && order.preAuthChargeId && !order.capturedAt) {
+        order.capturedAt = new Date();
+        this.logger.log(`Charge.paid (antifraud reprocessed): marking capturedAt for order #${order.orderNumber} — charge was auto-captured by Pagar.me`);
+      }
       await orderRepo.save(order);
       this.logger.log(`Charge.paid ${wasPaymentReview ? '(antifraud reprocessed)' : 'fallback'}: pedido #${order.orderNumber} confirmado via charge webhook`);
 
