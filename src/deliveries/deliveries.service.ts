@@ -113,6 +113,9 @@ export class DeliveriesService implements OnModuleInit {
       relations: ['order', 'order.store', 'order.customer', 'deliverer'],
     });
 
+    // Stop the offer cascade — delivery was accepted
+    this.offerService.cancelOffer(orderId);
+
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
     // Publish orderUpdated so vendor panel sees the deliverer info
     const updatedOrder = await this.ordersService.findById(orderId);
@@ -146,10 +149,20 @@ export class DeliveriesService implements OnModuleInit {
     });
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
 
+    const wasFirstLocation = delivery.currentLatitude === null;
     delivery.currentLatitude = latitude;
     delivery.currentLongitude = longitude;
     const saved = await this.deliveriesRepository.save(delivery);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+
+    // First location: notify vendor panel so GPS button appears without F5
+    if (wasFirstLocation) {
+      const fullOrder = await this.ordersService.findById(delivery.order.id);
+      if (fullOrder) {
+        this.pubSub.publish('orderUpdated', { orderUpdated: fullOrder });
+      }
+    }
+
     return saved;
   }
 
@@ -169,27 +182,8 @@ export class DeliveriesService implements OnModuleInit {
 
     delivery.pickedUpAt = new Date();
 
-    // Capturar pré-autorização do cartão (sem split — tudo pra plataforma)
-    // Settlement (transfers) happens after delivery is confirmed
-    if (order.preAuthChargeId) {
-      console.log(`[CONFIRMPICKUP] Capturing pre-auth: chargeId=${order.preAuthChargeId}`);
-      try {
-        await this.ordersService.captureCardOnPickup(order.id);
-        console.log(`[CONFIRMPICKUP] Capture SUCCESS`);
-      } catch (err: any) {
-        console.error(`[CONFIRMPICKUP] Capture FAILED: ${err?.message}`);
-        if (order.store?.owner?.id) {
-          this.notificationsService.sendToVendorUser(
-            order.store.owner.id,
-            'Alerta: falha na captura do pagamento',
-            `O pagamento do pedido #${order.orderNumber} falhou na captura. Verifique no painel do Pagar.me.`,
-            { type: 'CAPTURE_FAILED', orderId: order.id },
-          ).catch(() => {});
-        }
-      }
-    }
-
-    await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERING);
+    // Pre-auth stays active — capture happens with split on customer confirmation
+    await this.ordersService.updateStatus(order.id, OrderStatus.PICKED_UP);
     const savedDelivery = await this.deliveriesRepository.save(delivery);
     this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
     return savedDelivery;
@@ -218,7 +212,9 @@ export class DeliveriesService implements OnModuleInit {
 
       if (vendorAmount > 0) {
         delivery.vendorPayoutAmount = vendorAmount;
-        delivery.vendorPayoutStatus = 'paid_on_pickup';
+        // Credit card: payout happens via capture-with-split on customer confirmation
+        // PIX: already transferred on settlement
+        delivery.vendorPayoutStatus = order.paymentMethod === 'CREDIT_CARD' ? 'pending_capture' : 'paid_on_pickup';
       }
 
       if (!order.store?.hasOwnDelivery && deliveryFee > 0) {
@@ -253,10 +249,6 @@ export class DeliveriesService implements OnModuleInit {
       relations: ['order', 'order.store', 'order.customer', 'order.items', 'order.items.product'],
       order: { createdAt: 'DESC' },
     });
-    console.log(`[MYDELIVERIES] delivererId=${delivererId}, found=${deliveries.length}, active=${deliveries.filter(d => !d.deliveredAt).length}, completed=${deliveries.filter(d => d.deliveredAt).length}`);
-    if (deliveries.length > 0) {
-      deliveries.forEach(d => console.log(`[MYDELIVERIES]   - delivery=${d.id}, order=${d.order?.orderNumber}, status=${d.order?.status}, deliveredAt=${d.deliveredAt || 'null'}`));
-    }
     return deliveries;
   }
 

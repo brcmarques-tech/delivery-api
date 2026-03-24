@@ -208,6 +208,29 @@ export class OrdersResolver {
   }
 
   @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  async requestCancelDispute(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    const order = await this.ordersService.findById(orderId);
+    if (order.store?.owner?.id !== user.id) {
+      throw new BadRequestException('Você não tem permissão para este pedido');
+    }
+    return this.ordersService.requestCancelDispute(orderId, user.id);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard)
+  cancelDispute(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.ordersService.cancelDispute(orderId, user.id);
+  }
+
+  @Mutation(() => Order)
   @UseGuards(GqlAuthGuard)
   cancelOrder(
     @Args('orderId') orderId: string,

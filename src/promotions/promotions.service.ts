@@ -27,29 +27,26 @@ export class PromotionsService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    setInterval(() => this.clearExpiredPromotions(), 30 * 60 * 1000);
     this.clearExpiredPromotions();
+    setInterval(() => this.clearExpiredPromotions(), 5 * 60 * 1000);
   }
 
   private async clearExpiredPromotions() {
     try {
-      const now = new Date();
-      const expired = await this.promotionsRepository.find({
-        where: {
-          isPaid: true,
-          endDate: LessThan(now),
-        },
-        relations: ['product'],
-      });
-      for (const promo of expired) {
-        if (promo.product?.promotionalPrice) {
-          await this.productsRepository.update(promo.product.id, { promotionalPrice: null as any });
-          this.pubSub.publish('productUpdated', { productUpdated: { ...promo.product, promotionalPrice: null } });
-        }
-      }
-      if (expired.length > 0) {
-        this.logger.log(`Cleared promotional prices from ${expired.length} expired promotions`);
-      }
+      await this.productsRepository.manager.query(`
+        UPDATE products p
+        SET "promotionalPrice" = NULL
+        FROM promotions pr
+        WHERE pr."productId" = p.id
+          AND pr."endDate" < NOW()
+          AND p."promotionalPrice" IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM promotions pr2
+            WHERE pr2."productId" = p.id
+              AND pr2."endDate" >= NOW()
+              AND pr2."isPaid" = true
+          )
+      `);
     } catch (err) {
       this.logger.error('Error clearing expired promotions', err);
     }
