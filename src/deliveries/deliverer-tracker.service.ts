@@ -26,9 +26,7 @@ export class DelivererTrackerService {
       vehicleType: vehicleType || 'MOTO',
       updatedAt: new Date(),
     });
-    if (!wasOnline) {
-      this.logger.log(`Deliverer ${userId} online at ${latitude}, ${longitude} (total: ${this.onlineDeliverers.size})`);
-    }
+    if (!wasOnline) { /* first connect */ }
   }
 
   updateLocation(userId: string, latitude: number, longitude: number) {
@@ -37,20 +35,17 @@ export class DelivererTrackerService {
       existing.latitude = latitude;
       existing.longitude = longitude;
       existing.updatedAt = new Date();
-      this.logger.debug(`Deliverer ${userId} location: ${latitude}, ${longitude}`);
     }
   }
 
   setOffline(userId: string) {
     this.onlineDeliverers.delete(userId);
-    this.logger.log(`Deliverer ${userId} offline`);
   }
 
   removeBySocketId(socketId: string) {
     for (const [userId, data] of this.onlineDeliverers) {
       if (data.socketId === socketId) {
         this.onlineDeliverers.delete(userId);
-        this.logger.log(`Deliverer ${userId} disconnected`);
         return userId;
       }
     }
