@@ -928,12 +928,17 @@ export class OrdersService {
         // updateStatus handles stock restoration for EXPIRED status
         await this.updateStatus(order.id, OrderStatus.EXPIRED);
 
-        // Notify customer that order was not accepted
+        // Notify customer
         if (order.customer?.id) {
+          const wasPaymentReview = order.status === OrderStatus.PAYMENT_REVIEW;
+          const title = wasPaymentReview ? 'Pagamento não aprovado' : 'Pedido não aceito';
+          const body = wasPaymentReview
+            ? `O pagamento do pedido #${order.orderNumber} não foi aprovado pela análise de segurança. Seu cartão será estornado automaticamente.`
+            : `A loja não respondeu a tempo. Seu pagamento será estornado automaticamente. Pedido #${order.orderNumber}`;
           this.notificationsService.sendToAppUser(
             order.customer.id,
-            'Pedido não aceito',
-            `A loja não respondeu a tempo. Seu pagamento será estornado automaticamente. Pedido #${order.orderNumber}`,
+            title,
+            body,
             { type: 'ORDER_STATUS', orderId: order.id },
           ).catch(() => {});
         }
@@ -1216,6 +1221,7 @@ export class OrdersService {
       [OrderStatus.COMPLETED]: 'Pedido finalizado! Obrigado pela compra.',
       [OrderStatus.CANCELLED]: 'Seu pedido foi cancelado',
       [OrderStatus.REJECTED]: 'A loja não pôde aceitar seu pedido',
+      [OrderStatus.EXPIRED]: 'Seu pedido expirou. O pagamento será estornado automaticamente.',
     };
 
     if (statusMessages[status] && order.customer?.id) {
