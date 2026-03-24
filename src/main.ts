@@ -33,9 +33,12 @@ async function bootstrap() {
       fetch(`${selfUrl}/graphql?query={__typename}`).catch(() => {});
       if (vendorUrl) fetch(`${vendorUrl}/api/health`).catch(() => {});
       if (superadminUrl) fetch(`${superadminUrl}/api/health`).catch(() => {});
-      if (wahaUrl) fetch(`${wahaUrl}/api/version`, {
-        headers: wahaKey ? { 'X-Api-Key': wahaKey } : {},
-      }).catch(() => {});
+      if (wahaUrl) {
+        // Keep WAHA session alive by checking session status (not just server version)
+        fetch(`${wahaUrl}/api/sessions/default`, {
+          headers: wahaKey ? { 'X-Api-Key': wahaKey } : {},
+        }).catch(() => {});
+      }
     }, 10 * 60 * 1000);
   }
 }
