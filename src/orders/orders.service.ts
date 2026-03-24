@@ -293,10 +293,8 @@ export class OrdersService {
 
     if ((paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') && (input.cardId || input.cardToken)) {
       // Pré-autorização: segura o limite mas não cobra ainda
-      console.log(`[CREATEORDER] Direct charge branch: cardId=${input.cardId}, cardToken=${!!input.cardToken}`);
       try {
         const { pagarmeOrderId, status, chargeId } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
-        console.log(`[CREATEORDER] Direct charge result: pagarmeOrderId=${pagarmeOrderId}, status=${status}, chargeId=${chargeId}`);
         savedOrder.mpPreferenceId = pagarmeOrderId;
         if (chargeId) savedOrder.preAuthChargeId = chargeId;
 
@@ -304,7 +302,6 @@ export class OrdersService {
           // Antifraud blocked but acquirer approved — save for manual reprocessing
           savedOrder.status = OrderStatus.PAYMENT_REVIEW;
           await this.ordersRepository.save(savedOrder);
-          console.log(`[CREATEORDER] Order saved with status PAYMENT_REVIEW (antifraud), chargeId=${chargeId}`);
 
           // Notify support via email
           this.mailService.sendAntifraudReviewEmail(
@@ -324,10 +321,8 @@ export class OrdersService {
         } else {
           savedOrder.status = OrderStatus.PENDING;
           await this.ordersRepository.save(savedOrder);
-          console.log(`[CREATEORDER] Order saved with status PENDING, preAuthChargeId=${savedOrder.preAuthChargeId}`);
         }
       } catch (err: any) {
-        console.log(`[CREATEORDER] Direct charge FAILED: ${err?.message}`);
         savedOrder.status = OrderStatus.CANCELLED;
         await this.ordersRepository.save(savedOrder);
         // Restaurar estoque
@@ -381,7 +376,6 @@ export class OrdersService {
     this.pubSub.publish('orderCreated', { orderCreated: savedOrder });
     this.pubSub.publish('orderUpdated', { orderUpdated: savedOrder });
 
-    console.log(`[CREATEORDER] Returning order: id=${savedOrder.id}, orderNumber=${savedOrder.orderNumber}, status=${savedOrder.status}, checkoutUrl=${savedOrder.checkoutUrl || 'null'}, preAuthChargeId=${savedOrder.preAuthChargeId || 'null'}`);
     return savedOrder;
   }
 
@@ -712,7 +706,6 @@ export class OrdersService {
   // ─── Vendedor rejeita pedido ──────────────────────────────────────────
 
   async rejectOrder(orderId: string, vendorUserId: string, reason: string): Promise<Order> {
-    console.log(`[REJECTORDER] orderId=${orderId}, reason=${reason}`);
     const order = await this.findById(orderId);
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode rejeitar este pedido');
@@ -733,7 +726,6 @@ export class OrdersService {
   // ─── Vendedor cancela pedido (antes de sair para entrega) ────────────
 
   async vendorCancelOrder(orderId: string, vendorUserId: string, reason: string): Promise<Order> {
-    console.log(`[VENDOR-CANCEL] orderId=${orderId}, reason=${reason}`);
     const order = await this.findById(orderId);
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode cancelar este pedido');
@@ -967,7 +959,6 @@ export class OrdersService {
 
     for (const order of stuckOrders) {
       try {
-        console.log(`[AUTO-ADVANCE] Order #${order.orderNumber}: VENDOR_CONFIRMED_PICKUP -> DELIVERING (5min timeout)`);
         await this.updateStatus(order.id, OrderStatus.DELIVERING);
       } catch (err) {
         console.error(`Auto-advance failed for order ${order.id}:`, err);
@@ -1131,11 +1122,9 @@ export class OrdersService {
 
   async updateStatus(id: string, status: OrderStatus, user?: AppUser): Promise<Order> {
     const order = await this.findById(id);
-    console.log(`[UPDATESTATUS] Order ${order.orderNumber}: ${order.status} -> ${status} (by ${user?.id || 'SYSTEM'})`);
 
     const allowed = STATUS_TRANSITIONS[order.status];
     if (!allowed.includes(status)) {
-      console.log(`[UPDATESTATUS] BLOCKED: ${order.status} -> ${status} not allowed`);
       throw new BadRequestException(
         `Nao pode mudar de ${order.status} para ${status}`,
       );
@@ -1198,7 +1187,6 @@ export class OrdersService {
     const fromStatus = order.status;
     order.status = status;
     const saved = await this.ordersRepository.save(order);
-    console.log(`[UPDATESTATUS] Order ${order.orderNumber}: ${fromStatus} -> ${status} SAVED`);
 
     // Auditoria: registra mudança de status
     const log = this.orderStatusLogRepository.create({
@@ -1271,7 +1259,6 @@ export class OrdersService {
     this.pubSub.publish('orderUpdated', { orderUpdated: full });
 
     if (status === OrderStatus.READY && this.onOrderReadyCallback && !order.isPickup) {
-      console.log(`[UPDATESTATUS] Order ${order.orderNumber} is READY -> triggering delivery offer cascade`);
       this.onOrderReadyCallback(full);
     }
 
