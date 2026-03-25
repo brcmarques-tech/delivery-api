@@ -1,0 +1,15 @@
+stages:
+  - deploy
+
+deploy:
+  stage: deploy
+  image: alpine:latest
+  only:
+    - main
+  before_script:
+    - apk add --no-cache openssh-client
+    - chmod 600 "$LIGHTSAIL_SSH_KEY"
+    - mkdir -p ~/.ssh
+    - ssh-keyscan -H "$LIGHTSAIL_HOST" >> ~/.ssh/known_hosts
+  script:
+    - ssh -o ServerAliveInterval=30 -i "$LIGHTSAIL_SSH_KEY" "$LIGHTSAIL_USER@$LIGHTSAIL_HOST" "bash ~/deploy.sh api"
