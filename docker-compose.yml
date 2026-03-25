@@ -24,7 +24,7 @@ services:
       CLOUDINARY_CLOUD_NAME: dgbavxge6
       CLOUDINARY_API_KEY: 279355333423469
       CLOUDINARY_API_SECRET: lILGnp653qtQQmOGV0uQVDn4Uew
-      PAGARME_SECRET_KEY: sk_test_187ae0344f5b4b5bbb5e38b37a2563e7
+      PAGARME_SECRET_KEY: sk_test_6f0b7122384f431faa8b0c6b19463425
       PAGARME_PUBLIC_KEY: pk_test_aMzdnWyuDCykrpN2
       PAGARME_PLATFORM_RECIPIENT_ID: re_cmmutgjxn00d20l9tbqyidmmf
       APP_URL: http://localhost:3000
