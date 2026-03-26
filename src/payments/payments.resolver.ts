@@ -2,7 +2,7 @@ import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
 import { UseGuards, BadRequestException } from '@nestjs/common';
 import { Payment } from './entities/payment.entity';
 import { PaymentsService } from './payments.service';
-import { SavedCard } from './dto/saved-card.type';
+import { SavedCard } from './entities/saved-card.entity';
 import { RecipientBalance, AnticipationSimulation, AnticipationResult } from './dto/recipient-balance.type';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';

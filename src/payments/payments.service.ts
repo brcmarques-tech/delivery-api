@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { Payment } from './entities/payment.entity';
+import { SavedCard } from './entities/saved-card.entity';
 import { WebhookEvent } from './entities/webhook-event.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
@@ -82,6 +83,8 @@ export class PaymentsService implements OnModuleDestroy {
     private paymentsRepository: Repository<Payment>,
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
+    @InjectRepository(SavedCard)
+    private savedCardsRepository: Repository<SavedCard>,
     @InjectRepository(WebhookEvent)
     private webhookEventsRepository: Repository<WebhookEvent>,
     private configService: ConfigService,
@@ -512,7 +515,7 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Saved Cards ────────────────────────────────────────────────────
 
-  async saveCard(userId: string, cardToken: string): Promise<any> {
+  async saveCard(userId: string, cardToken: string): Promise<SavedCard> {
     const user = await this.appUsersService.findById(userId);
     if (!user) throw new NotFoundException('Usuario nao encontrado');
 
@@ -520,14 +523,16 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       const result = await this.pagarmePost(`/customers/${customerId}/cards`, { token: cardToken });
-      return {
+      const card = this.savedCardsRepository.create({
         id: result.id,
+        userId,
         lastFourDigits: result.last_four_digits,
         brand: result.brand,
         holderName: result.holder_name,
         expMonth: result.exp_month,
         expYear: result.exp_year,
-      };
+      });
+      return this.savedCardsRepository.save(card);
     } catch (err: any) {
       const errorData = err.response?.data;
       this.logger.error(`Failed to save card: ${JSON.stringify(errorData || err.message)}`);
@@ -535,73 +540,71 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
-  async listCards(userId: string): Promise<any[]> {
+  async listCards(userId: string): Promise<SavedCard[]> {
+    // Primary source: our database
+    const localCards = await this.savedCardsRepository.find({ where: { userId } });
+    if (localCards.length > 0) return localCards;
+
+    // Fallback: fetch from Pagar.me charges (for cards saved before DB tracking)
     const user = await this.appUsersService.findById(userId);
-    if (!user) throw new NotFoundException('Usuario nao encontrado');
+    if (!user?.pagarmeCustomerId) return [];
 
-    if (!user.pagarmeCustomerId) return [];
-
-    const mapCard = (c: any) => ({
-      id: c.id,
-      lastFourDigits: c.last_four_digits,
-      brand: c.brand,
-      holderName: c.holder_name,
-      expMonth: c.exp_month,
-      expYear: c.exp_year,
-    });
-
-    const allCards = new Map<string, any>();
-
-    // 1) Cards explicitly saved via POST /customers/{id}/cards
-    try {
-      const result = await this.pagarmeGet(`/customers/${user.pagarmeCustomerId}/cards`);
-      const cards = result.data || result;
-      for (const c of (Array.isArray(cards) ? cards : [])) {
-        if (c.id && c.status === 'active') allCards.set(c.id, mapCard(c));
-      }
-    } catch (err: any) {
-      this.logger.warn(`Failed to list saved cards: ${err.response?.data?.message || err.message}`);
-    }
-
-    // 2) Cards used in charges (created during checkout, not returned by cards endpoint)
     try {
       const result = await this.pagarmeGet(
         `/charges?customer_id=${user.pagarmeCustomerId}&payment_method=credit_card&page=1&size=20`,
       );
       const charges = result.data || result;
+      const seen = new Set<string>();
+      const cards: SavedCard[] = [];
+
       for (const charge of (Array.isArray(charges) ? charges : [])) {
-        const card = charge.last_transaction?.card;
-        if (card?.id && card.status === 'active' && !allCards.has(card.id)) {
-          allCards.set(card.id, mapCard(card));
+        const c = charge.last_transaction?.card;
+        if (c?.id && c.status === 'active' && !seen.has(c.id)) {
+          seen.add(c.id);
+          const card = this.savedCardsRepository.create({
+            id: c.id,
+            userId,
+            lastFourDigits: c.last_four_digits,
+            brand: c.brand,
+            holderName: c.holder_name,
+            expMonth: c.exp_month,
+            expYear: c.exp_year,
+          });
+          cards.push(card);
         }
       }
-    } catch (err: any) {
-      this.logger.warn(`Failed to list charge cards: ${err.response?.data?.message || err.message}`);
-    }
 
-    return Array.from(allCards.values());
+      // Persist discovered cards so future lookups hit the DB
+      if (cards.length > 0) {
+        await this.savedCardsRepository.save(cards);
+      }
+      return cards;
+    } catch (err: any) {
+      this.logger.warn(`Failed to list cards from charges: ${err.response?.data?.message || err.message}`);
+      return [];
+    }
   }
 
   async deleteCard(userId: string, cardId: string): Promise<boolean> {
     const user = await this.appUsersService.findById(userId);
     if (!user) throw new NotFoundException('Usuario nao encontrado');
-    if (!user.pagarmeCustomerId) throw new BadRequestException('Nenhum cartao cadastrado');
 
-    // M9: Validate card belongs to user before deleting
-    const userCards = await this.listCards(userId);
-    const cardExists = userCards.some((c: any) => c.id === cardId);
-    if (!cardExists) {
+    // Validate card belongs to user
+    const card = await this.savedCardsRepository.findOne({ where: { id: cardId, userId } });
+    if (!card) {
       throw new BadRequestException('Cartao nao encontrado na sua conta');
     }
 
-    try {
-      await this.pagarmeDelete(`/customers/${user.pagarmeCustomerId}/cards/${cardId}`);
-      return true;
-    } catch (err: any) {
-      const errorData = err.response?.data;
-      this.logger.error(`Failed to delete card: ${JSON.stringify(errorData || err.message)}`);
-      throw new BadRequestException(errorData?.message || 'Erro ao remover cartao');
+    // Delete from Pagar.me (best-effort) and our DB
+    if (user.pagarmeCustomerId) {
+      try {
+        await this.pagarmeDelete(`/customers/${user.pagarmeCustomerId}/cards/${cardId}`);
+      } catch (err: any) {
+        this.logger.warn(`Failed to delete card from Pagarme: ${err.response?.data?.message || err.message}`);
+      }
     }
+    await this.savedCardsRepository.remove(card);
+    return true;
   }
 
   // ─── Direct Charge (saved card) ────────────────────────────────────
