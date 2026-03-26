@@ -541,21 +541,45 @@ export class PaymentsService implements OnModuleDestroy {
 
     if (!user.pagarmeCustomerId) return [];
 
+    const mapCard = (c: any) => ({
+      id: c.id,
+      lastFourDigits: c.last_four_digits,
+      brand: c.brand,
+      holderName: c.holder_name,
+      expMonth: c.exp_month,
+      expYear: c.exp_year,
+    });
+
+    const allCards = new Map<string, any>();
+
+    // 1) Cards explicitly saved via POST /customers/{id}/cards
     try {
       const result = await this.pagarmeGet(`/customers/${user.pagarmeCustomerId}/cards`);
       const cards = result.data || result;
-      return (Array.isArray(cards) ? cards : []).map((c: any) => ({
-        id: c.id,
-        lastFourDigits: c.last_four_digits,
-        brand: c.brand,
-        holderName: c.holder_name,
-        expMonth: c.exp_month,
-        expYear: c.exp_year,
-      }));
+      for (const c of (Array.isArray(cards) ? cards : [])) {
+        if (c.id && c.status === 'active') allCards.set(c.id, mapCard(c));
+      }
     } catch (err: any) {
-      this.logger.warn(`Failed to list cards: ${err.response?.data?.message || err.message}`);
-      return [];
+      this.logger.warn(`Failed to list saved cards: ${err.response?.data?.message || err.message}`);
     }
+
+    // 2) Cards used in charges (created during checkout, not returned by cards endpoint)
+    try {
+      const result = await this.pagarmeGet(
+        `/charges?customer_id=${user.pagarmeCustomerId}&payment_method=credit_card&page=1&size=20`,
+      );
+      const charges = result.data || result;
+      for (const charge of (Array.isArray(charges) ? charges : [])) {
+        const card = charge.last_transaction?.card;
+        if (card?.id && card.status === 'active' && !allCards.has(card.id)) {
+          allCards.set(card.id, mapCard(card));
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(`Failed to list charge cards: ${err.response?.data?.message || err.message}`);
+    }
+
+    return Array.from(allCards.values());
   }
 
   async deleteCard(userId: string, cardId: string): Promise<boolean> {
