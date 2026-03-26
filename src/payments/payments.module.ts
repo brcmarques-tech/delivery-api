@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 import { Payment } from './entities/payment.entity';
+import { SavedCard } from './entities/saved-card.entity';
 import { WebhookEvent } from './entities/webhook-event.entity';
 import { Store } from '../stores/entities/store.entity';
 import { PaymentsService } from './payments.service';
@@ -13,7 +14,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Payment, Store, WebhookEvent]),
+    TypeOrmModule.forFeature([Payment, SavedCard, Store, WebhookEvent]),
     HttpModule,
     forwardRef(() => UsersModule),
     PlatformConfigModule,
