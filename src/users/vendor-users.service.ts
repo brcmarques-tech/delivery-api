@@ -11,6 +11,7 @@ import { UserRole, VendorPlan } from '../common/enums';
 import { MailService } from '../mail/mail.service';
 import { VerificationService } from '../stores/verification.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { peppered } from '../common/utils/pepper';
 
 @Injectable()
 export class VendorUsersService {
@@ -103,7 +104,7 @@ export class VendorUsersService {
       }
     }
 
-    const hashedPassword = await bcrypt.hash(input.password, 10);
+    const hashedPassword = await bcrypt.hash(peppered(input.password), 10);
 
     // Vendor registra como CUSTOMER com pendingRole VENDOR, aguarda aprovacao
     const user = this.vendorUsersRepository.create({
@@ -298,12 +299,12 @@ export class VendorUsersService {
     if (newPassword) {
       if (user.googleId && !user.password) {
         // Google-only account: allow setting first password without current
-        user.password = await bcrypt.hash(newPassword, 10);
+        user.password = await bcrypt.hash(peppered(newPassword), 10);
       } else {
         if (!currentPassword) throw new BadRequestException('Senha atual e obrigatoria para alterar a senha');
-        const valid = await bcrypt.compare(currentPassword, user.password);
+        const valid = await bcrypt.compare(peppered(currentPassword), user.password);
         if (!valid) throw new BadRequestException('Senha atual incorreta');
-        user.password = await bcrypt.hash(newPassword, 10);
+        user.password = await bcrypt.hash(peppered(newPassword), 10);
       }
     }
     return this.vendorUsersRepository.save(user);
@@ -354,7 +355,7 @@ export class VendorUsersService {
       throw new BadRequestException('A senha deve ter pelo menos 6 caracteres');
     }
 
-    user.password = await bcrypt.hash(newPassword, 10);
+    user.password = await bcrypt.hash(peppered(newPassword), 10);
     user.resetPasswordToken = null as any;
     user.resetPasswordExpires = null as any;
     await this.vendorUsersRepository.save(user);

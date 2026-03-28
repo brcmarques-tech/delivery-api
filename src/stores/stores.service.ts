@@ -13,6 +13,7 @@ import { VendorUser } from '../users/entities/vendor-user.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { MailService } from '../mail/mail.service';
+import { peppered } from '../common/utils/pepper';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
@@ -227,7 +228,7 @@ export class StoresService {
     const admin = await this.appUsersRepository.findOne({ where: { id: adminId } });
     if (!admin) throw new NotFoundException('Admin nao encontrado');
 
-    const passwordValid = await bcrypt.compare(password, admin.password);
+    const passwordValid = await bcrypt.compare(peppered(password), admin.password);
     if (!passwordValid) throw new UnauthorizedException('Senha incorreta');
 
     const store = await this.storesRepository.findOne({ where: { id: storeId }, relations: ['owner'] });
@@ -253,7 +254,7 @@ export class StoresService {
     const vendor = await this.vendorUsersRepository.findOne({ where: { id: vendorId } });
     if (!vendor) throw new NotFoundException('Vendedor nao encontrado');
 
-    const passwordValid = await bcrypt.compare(password, vendor.password);
+    const passwordValid = await bcrypt.compare(peppered(password), vendor.password);
     if (!passwordValid) throw new UnauthorizedException('Senha incorreta');
 
     const store = await this.storesRepository.findOne({ where: { id: storeId, owner: { id: vendorId } } });
