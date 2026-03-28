@@ -14,7 +14,6 @@ Sentry.init({
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  app.useGlobalFilters(new Sentry.SentryGlobalFilter());
   app.use(json({ limit: '10mb' }));
   app.use(urlencoded({ extended: true }));
   app.useGlobalPipes(new ValidationPipe({ transform: true }));
