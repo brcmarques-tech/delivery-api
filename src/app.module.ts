@@ -9,6 +9,8 @@ import { UsersModule } from './users/users.module';
 import { StoresModule } from './stores/stores.module';
 import { ProductsModule } from './products/products.module';
 import { CategoriesModule } from './categories/categories.module';
+import { ServicesModule } from './services/services.module';
+import { SchedulesModule } from './schedules/schedules.module';
 import { OrdersModule } from './orders/orders.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
 import { AddressesModule } from './addresses/addresses.module';
@@ -24,6 +26,8 @@ import { PubSubModule } from './pubsub/pubsub.module';
 import { CouponsModule } from './coupons/coupons.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { CartModule } from './cart/cart.module';
+import { AppointmentsModule } from './appointments/appointments.module';
+import { RatingsModule } from './ratings/ratings.module';
 
 @Module({
   imports: [
@@ -73,6 +77,8 @@ import { CartModule } from './cart/cart.module';
     StoresModule,
     ProductsModule,
     CategoriesModule,
+    ServicesModule,
+    SchedulesModule,
     OrdersModule,
     DeliveriesModule,
     AddressesModule,
@@ -87,6 +93,8 @@ import { CartModule } from './cart/cart.module';
     CouponsModule,
     WhatsAppModule,
     CartModule,
+    AppointmentsModule,
+    RatingsModule,
   ],
 })
 export class AppModule {}

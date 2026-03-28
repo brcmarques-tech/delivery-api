@@ -57,4 +57,8 @@ export class CreateOrderInput {
   @Field({ nullable: true })
   @IsOptional()
   cardToken?: string;
+
+  @Field({ nullable: true, defaultValue: false })
+  @IsOptional()
+  ageVerified?: boolean;
 }

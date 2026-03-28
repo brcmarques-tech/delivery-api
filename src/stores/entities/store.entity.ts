@@ -11,7 +11,10 @@ import {
 import { VendorUser } from '../../users/entities/vendor-user.entity';
 import { Product } from '../../products/entities/product.entity';
 import { Category } from '../../categories/entities/category.entity';
+import { Service } from '../../services/entities/service.entity';
+import { Appointment } from '../../appointments/entities/appointment.entity';
 import { VerificationLevel } from '../../common/enums/verification-level.enum';
+import { StoreType } from '../../common/enums/store-type.enum';
 
 @ObjectType()
 @Entity('stores')
@@ -83,6 +86,10 @@ export class Store {
   @Field()
   @Column({ default: true })
   isActive: boolean;
+
+  @Field(() => StoreType)
+  @Column({ type: 'varchar', default: StoreType.PRODUCTS })
+  storeType: StoreType;
 
   @Field()
   @Column({ default: false })
@@ -170,6 +177,16 @@ export class Store {
   @Field(() => [Category], { nullable: true })
   @OneToMany(() => Category, (category) => category.store)
   categories: Category[];
+
+  @Field(() => [Service], { nullable: true })
+  @OneToMany(() => Service, (service) => service.store)
+  services: Service[];
+
+  @Column({ default: 0 })
+  lastAppointmentNumber: number;
+
+  @OneToMany(() => Appointment, (a) => a.store)
+  appointments: Appointment[];
 
   @Field(() => Boolean)
   ownerPaymentConnected: boolean;

@@ -11,6 +11,7 @@ import { OrdersService } from '../orders/orders.service';
 import { DeliveriesService } from '../deliveries/deliveries.service';
 import { DelivererTrackerService } from '../deliveries/deliverer-tracker.service';
 import { PaymentsService } from '../payments/payments.service';
+import { AppointmentsService } from '../appointments/appointments.service';
 
 @ObjectType()
 class RoleCount {
@@ -133,6 +134,12 @@ class DashboardStats {
 
   @Field(() => Float)
   cancellationRate: number;
+
+  @Field(() => Int)
+  totalAppointments: number;
+
+  @Field(() => Float)
+  appointmentRevenue: number;
 }
 
 @Resolver()
@@ -145,6 +152,7 @@ export class DashboardResolver {
     private deliveriesService: DeliveriesService,
     private delivererTracker: DelivererTrackerService,
     private paymentsService: PaymentsService,
+    private appointmentsService: AppointmentsService,
   ) {}
 
   @Query(() => DashboardStats)
@@ -152,10 +160,11 @@ export class DashboardResolver {
   @Roles(UserRole.SUPERADMIN)
   async dashboardStats(): Promise<DashboardStats> {
     const [
-      appUserCount, vendorUserCount, totalStores, totalOrders, totalRevenue, platformRevenue,
+      appUserCount, vendorUserCount, totalStores, totalOrders, orderRevenue, platformRevenue,
       appUsersByRole, ordersByStatus, appPendingCount, vendorPendingCount,
       totalDeliveries, activeDeliveries, completedDeliveries,
       ordersByDay, topStoresRaw, recentOrdersRaw,
+      totalAppointments, appointmentRevenue,
     ] = await Promise.all([
       this.appUsersService.totalCount(),
       this.vendorUsersService.totalCount(),
@@ -173,6 +182,8 @@ export class DashboardResolver {
       this.ordersService.ordersByDay(30),
       this.ordersService.topStores(5),
       this.ordersService.recentOrders(5),
+      this.appointmentsService.analyticsTotalCount(),
+      this.appointmentsService.analyticsTotalRevenue(),
     ]);
 
     const usersByRole = [
@@ -181,8 +192,14 @@ export class DashboardResolver {
     ];
 
     const mappedStatus = ordersByStatus.map((s) => ({ status: s.status, count: Number(s.count) }));
-    const deliveredCount = mappedStatus.find((s) => s.status === 'DELIVERED')?.count || 0;
-    const cancelledCount = mappedStatus.find((s) => s.status === 'CANCELLED')?.count || 0;
+    const deliveredCount = mappedStatus
+      .filter((s) => ['DELIVERED', 'COMPLETED'].includes(s.status))
+      .reduce((sum, s) => sum + s.count, 0);
+    const cancelledCount = mappedStatus
+      .filter((s) => ['CANCELLED', 'REJECTED', 'EXPIRED'].includes(s.status))
+      .reduce((sum, s) => sum + s.count, 0);
+
+    const totalRevenue = orderRevenue + appointmentRevenue;
 
     return {
       totalUsers: appUserCount + vendorUserCount,
@@ -208,8 +225,10 @@ export class DashboardResolver {
         storeName: o.store?.name || 'Desconhecida',
         createdAt: o.createdAt,
       })),
-      avgTicket: deliveredCount > 0 ? totalRevenue / deliveredCount : 0,
+      avgTicket: deliveredCount > 0 ? orderRevenue / deliveredCount : 0,
       cancellationRate: totalOrders > 0 ? (cancelledCount / totalOrders) * 100 : 0,
+      totalAppointments,
+      appointmentRevenue,
     };
   }
 }

@@ -17,8 +17,20 @@ export class CategoriesResolver {
   createCategory(
     @Args('name') name: string,
     @Args('storeId') storeId: string,
+    @Args('requiresAgeVerification', { nullable: true, defaultValue: false }) requiresAgeVerification: boolean,
   ): Promise<Category> {
-    return this.categoriesService.create(name, storeId);
+    return this.categoriesService.create(name, storeId, requiresAgeVerification);
+  }
+
+  @Mutation(() => Category)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  updateCategory(
+    @Args('id') id: string,
+    @Args('name', { nullable: true }) name?: string,
+    @Args('requiresAgeVerification', { nullable: true }) requiresAgeVerification?: boolean,
+  ): Promise<Category> {
+    return this.categoriesService.update(id, { name, requiresAgeVerification });
   }
 
   @Query(() => [Category])

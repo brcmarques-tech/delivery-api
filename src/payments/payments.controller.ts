@@ -53,6 +53,6 @@ export class PaymentsController {
   ): Promise<void> {
     const safeStatus = encodeURIComponent((status || 'unknown').replace(/[^a-zA-Z0-9_-]/g, ''));
     const safeOrderId = encodeURIComponent((orderId || '').replace(/[^a-zA-Z0-9_-]/g, ''));
-    res.redirect(`delivery-app://order-result?status=${safeStatus}&order=${safeOrderId}`);
+    res.redirect(`shopping-app://order-result?status=${safeStatus}&order=${safeOrderId}`);
   }
 }

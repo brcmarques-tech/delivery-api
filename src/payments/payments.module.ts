@@ -5,6 +5,7 @@ import { Payment } from './entities/payment.entity';
 import { SavedCard } from './entities/saved-card.entity';
 import { WebhookEvent } from './entities/webhook-event.entity';
 import { Store } from '../stores/entities/store.entity';
+import { Appointment } from '../appointments/entities/appointment.entity';
 import { PaymentsService } from './payments.service';
 import { PaymentsResolver } from './payments.resolver';
 import { PaymentsController } from './payments.controller';
@@ -14,7 +15,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Payment, SavedCard, Store, WebhookEvent]),
+    TypeOrmModule.forFeature([Payment, SavedCard, Store, WebhookEvent, Appointment]),
     HttpModule,
     forwardRef(() => UsersModule),
     PlatformConfigModule,

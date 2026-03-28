@@ -1,6 +1,6 @@
-# Delivery API
+# Shopping API
 
-API backend (NestJS + GraphQL) do sistema de delivery.
+API backend (NestJS + GraphQL) do sistema de shopping.
 
 ## Pré-requisitos
 

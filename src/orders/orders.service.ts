@@ -7,7 +7,7 @@ import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { OrderStatusLog } from './entities/order-status-log.entity';
 import { Delivery } from '../deliveries/entities/delivery.entity';
-import { CreateOrderInput } from './dto/create-order.input';
+import { CreateOrderInput, OrderItemInput } from './dto/create-order.input';
 import { AppUser } from '../users/entities/app-user.entity';
 import { ProductsService } from '../products/products.service';
 import { StoresService } from '../stores/stores.service';
@@ -127,6 +127,12 @@ export class OrdersService {
         weightGrams,
       });
       items.push(orderItem);
+    }
+
+    // Verificação de idade: se algum produto pertence a categoria +18, exigir confirmação
+    const hasAgeRestrictedItem = await this.hasAgeRestrictedProducts(input.items);
+    if (hasAgeRestrictedItem && !input.ageVerified) {
+      throw new BadRequestException('Este pedido contem produtos com restricao de idade. Confirme que voce tem 18 anos ou mais.');
     }
 
     // Pedido mínimo: plataforma exige mínimo para entregadores do app (taxas Pagar.me + comissão)
@@ -549,7 +555,7 @@ export class OrdersService {
     const result = await this.ordersRepository
       .createQueryBuilder('order')
       .select('COALESCE(SUM(order.total), 0)', 'total')
-      .where('order.status = :status', { status: OrderStatus.DELIVERED })
+      .where('order.status IN (:...statuses)', { statuses: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] })
       .getRawOne();
     return parseFloat(result.total);
   }
@@ -570,7 +576,7 @@ export class OrdersService {
       .createQueryBuilder('order')
       .select("TO_CHAR(order.createdAt, 'YYYY-MM-DD')", 'date')
       .addSelect('COUNT(*)', 'count')
-      .addSelect("COALESCE(SUM(CASE WHEN order.status = 'DELIVERED' THEN order.total ELSE 0 END), 0)", 'revenue')
+      .addSelect("COALESCE(SUM(CASE WHEN order.status IN ('DELIVERED','COMPLETED') THEN order.total ELSE 0 END), 0)", 'revenue')
       .where('order.createdAt >= :since', { since })
       .groupBy("TO_CHAR(order.createdAt, 'YYYY-MM-DD')")
       .orderBy('date', 'ASC')
@@ -593,7 +599,7 @@ export class OrdersService {
       .select('store.id', 'storeId')
       .addSelect('store.name', 'storeName')
       .addSelect('COUNT(*)', 'orderCount')
-      .addSelect("COALESCE(SUM(CASE WHEN order.status = 'DELIVERED' THEN order.total ELSE 0 END), 0)", 'revenue')
+      .addSelect("COALESCE(SUM(CASE WHEN order.status IN ('DELIVERED','COMPLETED') THEN order.total ELSE 0 END), 0)", 'revenue')
       .groupBy('store.id')
       .addGroupBy('store.name')
       .orderBy('revenue', 'DESC')
@@ -1303,5 +1309,13 @@ export class OrdersService {
     const fullUpdated = await this.findById(saved.id);
     this.pubSub.publish('orderUpdated', { orderUpdated: fullUpdated });
     return saved;
+  }
+
+  private async hasAgeRestrictedProducts(items: OrderItemInput[]): Promise<boolean> {
+    for (const item of items) {
+      const product = await this.productsService.findById(item.productId);
+      if (product.category?.requiresAgeVerification) return true;
+    }
+    return false;
   }
 }

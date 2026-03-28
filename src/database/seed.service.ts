@@ -22,9 +22,9 @@ export class SeedService implements OnModuleInit {
   private async seedUsers() {
     // App users (SUPERADMIN, CUSTOMER, DELIVERER)
     const appUsers = [
-      { name: 'Super Admin', email: 'superadmin@bcmtech.com', password: 'super123', phone: '11900000000', role: UserRole.SUPERADMIN },
-      { name: 'Cliente', email: 'cliente@bcmtech.com', password: 'cliente123', phone: '11900000003', role: UserRole.CUSTOMER },
-      { name: 'Entregador', email: 'entregador@bcmtech.com', password: 'entrega123', phone: '11900000004', role: UserRole.DELIVERER },
+      { name: 'Super Admin', email: 'superadmin@bcmtech.com', password: 'teste123', phone: '11900000000', role: UserRole.SUPERADMIN },
+      { name: 'Cliente', email: 'cliente@bcmtech.com', password: 'teste123', phone: '11900000003', role: UserRole.CUSTOMER },
+      { name: 'Entregador', email: 'entregador@bcmtech.com', password: 'teste123', phone: '11900000004', role: UserRole.DELIVERER },
     ];
 
     for (const userData of appUsers) {
@@ -39,8 +39,8 @@ export class SeedService implements OnModuleInit {
 
     // Vendor users
     const vendorUsers = [
-      { name: 'Admin', email: 'admin@bcmtech.com', password: 'admin123', phone: '11900000001' },
-      { name: 'Vendedor', email: 'vendor@bcmtech.com', password: 'vendor123', phone: '11900000002' },
+      { name: 'Admin', email: 'admin@bcmtech.com', password: 'teste123', phone: '11900000001' },
+      { name: 'Vendedor', email: 'vendor@bcmtech.com', password: 'teste123', phone: '11900000002' },
     ];
 
     for (const userData of vendorUsers) {

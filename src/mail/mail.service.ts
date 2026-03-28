@@ -25,7 +25,7 @@ export class MailService {
   }
 
   private get from(): string {
-    return this.configService.get('MAIL_FROM', 'BCM TECH DELIVERY AG <onboarding@resend.dev>');
+    return this.configService.get('MAIL_FROM', 'BCM TECH SHOPPING AG <onboarding@resend.dev>');
   }
 
   private async saveLog(data: Partial<NotificationLog>): Promise<void> {
@@ -65,12 +65,12 @@ export class MailService {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+          <h1 style="color: white; margin: 0;">bcmTech Shopping</h1>
         </div>
         <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
           <h2 style="color: #2D3436;">Parabens, ${name}!</h2>
           <p style="color: #555; font-size: 16px; line-height: 1.6;">
-            Seu cadastro como <strong>${roleLabel}</strong> foi <span style="color: #27AE60; font-weight: bold;">aprovado</span> na plataforma bcmTech Delivery.
+            Seu cadastro como <strong>${roleLabel}</strong> foi <span style="color: #27AE60; font-weight: bold;">aprovado</span> na plataforma bcmTech Shopping.
           </p>
           <p style="color: #555; font-size: 16px; line-height: 1.6;">
             ${role === 'DELIVERER'
@@ -109,12 +109,12 @@ export class MailService {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+          <h1 style="color: white; margin: 0;">bcmTech Shopping</h1>
         </div>
         <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
           <h2 style="color: #2D3436;">Ola, ${name}</h2>
           <p style="color: #555; font-size: 16px; line-height: 1.6;">
-            Infelizmente seu cadastro como <strong>${roleLabel}</strong> nao foi aprovado na plataforma bcmTech Delivery.
+            Infelizmente seu cadastro como <strong>${roleLabel}</strong> nao foi aprovado na plataforma bcmTech Shopping.
           </p>
           <div style="background: #fff3f3; border-left: 4px solid #E74C3C; padding: 15px; margin: 20px 0; border-radius: 0 8px 8px 0;">
             <p style="color: #E74C3C; font-weight: bold; margin: 0 0 5px 0;">Motivo:</p>
@@ -149,7 +149,7 @@ export class MailService {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+          <h1 style="color: white; margin: 0;">bcmTech Shopping</h1>
         </div>
         <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
           <h2 style="color: #2D3436;">Ola, ${name}</h2>
@@ -190,7 +190,7 @@ export class MailService {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+          <h1 style="color: white; margin: 0;">bcmTech Shopping</h1>
         </div>
         <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
           <h2 style="color: #2D3436;">Confirmar exclusao</h2>
@@ -235,7 +235,7 @@ export class MailService {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+          <h1 style="color: white; margin: 0;">bcmTech Shopping</h1>
         </div>
         <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
           <h2 style="color: #2D3436;">Ola, ${log.userName}!</h2>
@@ -311,7 +311,7 @@ export class MailService {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: #E67E22; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+          <h1 style="color: white; margin: 0;">bcmTech Shopping</h1>
           <p style="color: #fff; margin: 5px 0 0 0; font-size: 14px;">Revisao de Antifraude</p>
         </div>
         <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
@@ -337,7 +337,7 @@ export class MailService {
           </p>
           <div style="border-top: 1px solid #eee; margin-top: 20px; padding-top: 15px; text-align: center;">
             <p style="color: #999; font-size: 11px; margin: 0;">
-              Este email foi enviado automaticamente pelo sistema bcmTech Delivery.
+              Este email foi enviado automaticamente pelo sistema bcmTech Shopping.
             </p>
           </div>
         </div>
@@ -373,7 +373,7 @@ export class MailService {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: white; margin: 0;">bcmTech Delivery</h1>
+          <h1 style="color: white; margin: 0;">bcmTech Shopping</h1>
         </div>
         <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
           <h2 style="color: #2D3436; text-align: center;">Codigo de verificacao</h2>

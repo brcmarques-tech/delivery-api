@@ -13,11 +13,20 @@ export class CategoriesService {
     private productsRepository: Repository<Product>,
   ) {}
 
-  async create(name: string, storeId: string): Promise<Category> {
+  async create(name: string, storeId: string, requiresAgeVerification = false): Promise<Category> {
     const category = this.categoriesRepository.create({
       name,
       store: { id: storeId },
+      requiresAgeVerification,
     });
+    return this.categoriesRepository.save(category);
+  }
+
+  async update(id: string, data: { name?: string; requiresAgeVerification?: boolean }): Promise<Category> {
+    const category = await this.categoriesRepository.findOne({ where: { id } });
+    if (!category) throw new NotFoundException('Categoria nao encontrada');
+    if (data.name !== undefined) category.name = data.name;
+    if (data.requiresAgeVerification !== undefined) category.requiresAgeVerification = data.requiresAgeVerification;
     return this.categoriesRepository.save(category);
   }
 

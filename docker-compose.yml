@@ -1,7 +1,7 @@
 services:
   app:
     build: .
-    container_name: delivery-api
+    container_name: shopping-api
     command: sh -c "yarn install && npx nest start --watch"
     ports:
       - '3000:3000'
@@ -11,16 +11,16 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_USERNAME: delivery
-      DB_PASSWORD: delivery123
-      DB_DATABASE: delivery_db
+      DB_USERNAME: shopping
+      DB_PASSWORD: teste123
+      DB_DATABASE: shopping_db
       REDIS_HOST: redis
       REDIS_PORT: 6379
       JWT_SECRET: dev-secret-change-in-production
       JWT_EXPIRATION: 7d
       PORT: 3000
       RESEND_API_KEY: re_fLvy9LTQ_PWEdzcqWyNwajCqEXY3wiQGw
-      MAIL_FROM: BCM TECH DELIVERY <noreply@bcmtech.com.br>
+      MAIL_FROM: BCM TECH SHOPPING <noreply@bcmtech.com.br>
       CLOUDINARY_CLOUD_NAME: dgbavxge6
       CLOUDINARY_API_KEY: 279355333423469
       CLOUDINARY_API_SECRET: lILGnp653qtQQmOGV0uQVDn4Uew
@@ -35,24 +35,31 @@ services:
       WAHA_API_URL: http://18.231.9.158
       WAHA_API_KEY: bcmtech-waha-2026-key
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   postgres:
     image: postgres:16-alpine
-    container_name: delivery-postgres
+    container_name: shopping-postgres
     environment:
-      POSTGRES_USER: delivery
-      POSTGRES_PASSWORD: delivery123
-      POSTGRES_DB: delivery_db
+      POSTGRES_USER: shopping
+      POSTGRES_PASSWORD: teste123
+      POSTGRES_DB: shopping_db
     ports:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U shopping -d shopping_db']
+      interval: 3s
+      timeout: 3s
+      retries: 10
 
   redis:
     image: redis:7-alpine
-    container_name: delivery-redis
+    container_name: shopping-redis
     ports:
       - '6379:6379'
     volumes:

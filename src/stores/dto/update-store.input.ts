@@ -1,5 +1,6 @@
 import { InputType, Field, Float } from '@nestjs/graphql';
 import { IsOptional } from 'class-validator';
+import { StoreType } from '../../common/enums';
 
 @InputType()
 export class UpdateStoreInput {
@@ -93,4 +94,8 @@ export class UpdateStoreInput {
   @Field(() => Float, { nullable: true })
   @IsOptional()
   longitude?: number;
+
+  @Field(() => StoreType, { nullable: true })
+  @IsOptional()
+  storeType?: StoreType;
 }

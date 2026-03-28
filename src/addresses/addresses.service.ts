@@ -33,7 +33,7 @@ export class AddressesService {
       try {
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
         const res = await fetch(url, {
-          headers: { 'User-Agent': 'bcmTech-Delivery/1.0' },
+          headers: { 'User-Agent': 'bcmTech-Shopping/1.0' },
         });
         const data = await res.json();
         if (data.length > 0) {
