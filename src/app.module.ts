@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { SentryGlobalFilter } from '@sentry/nestjs/setup';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { join } from 'path';
@@ -30,6 +32,12 @@ import { AppointmentsModule } from './appointments/appointments.module';
 import { RatingsModule } from './ratings/ratings.module';
 
 @Module({
+  providers: [
+    {
+      provide: APP_FILTER,
+      useClass: SentryGlobalFilter,
+    },
+  ],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
 
