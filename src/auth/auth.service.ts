@@ -14,6 +14,7 @@ import { RegisterVendorInput } from './dto/register-vendor.input';
 import { AppAuthResponse } from './dto/app-auth-response';
 import { VendorAuthResponse } from './dto/vendor-auth-response';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { peppered } from '../common/utils/pepper';
 
 @Injectable()
 export class AuthService {
@@ -78,7 +79,7 @@ export class AuthService {
       throw new UnauthorizedException('Email nao encontrado');
     }
 
-    const passwordValid = await bcrypt.compare(password, user.password);
+    const passwordValid = await bcrypt.compare(peppered(password), user.password);
     if (!passwordValid) {
       throw new UnauthorizedException('Credenciais invalidas');
     }
@@ -107,7 +108,7 @@ export class AuthService {
       throw new UnauthorizedException('Email nao encontrado');
     }
 
-    const passwordValid = await bcrypt.compare(password, user.password);
+    const passwordValid = await bcrypt.compare(peppered(password), user.password);
     if (!passwordValid) {
       throw new UnauthorizedException('Credenciais invalidas');
     }

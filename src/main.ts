@@ -1,12 +1,20 @@
+import * as Sentry from '@sentry/nestjs';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { MailService } from './mail/mail.service';
 
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment: process.env.NODE_ENV || 'development',
+  tracesSampleRate: 0.1,
+});
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  app.useGlobalFilters(new Sentry.SentryGlobalFilter());
   app.use(json({ limit: '10mb' }));
   app.use(urlencoded({ extended: true }));
   app.useGlobalPipes(new ValidationPipe({ transform: true }));

@@ -5,6 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole } from '../common/enums';
+import { peppered } from '../common/utils/pepper';
 
 @Injectable()
 export class SeedService implements OnModuleInit {
@@ -30,7 +31,7 @@ export class SeedService implements OnModuleInit {
     for (const userData of appUsers) {
       const exists = await this.appUsersRepository.findOne({ where: { email: userData.email } });
       if (!exists) {
-        const hashedPassword = await bcrypt.hash(userData.password, 10);
+        const hashedPassword = await bcrypt.hash(peppered(userData.password), 10);
         const user = this.appUsersRepository.create({ ...userData, password: hashedPassword });
         await this.appUsersRepository.save(user);
         this.logger.log(`Seed: app user ${userData.email} criado (${userData.role})`);
@@ -46,7 +47,7 @@ export class SeedService implements OnModuleInit {
     for (const userData of vendorUsers) {
       const exists = await this.vendorUsersRepository.findOne({ where: { email: userData.email } });
       if (!exists) {
-        const hashedPassword = await bcrypt.hash(userData.password, 10);
+        const hashedPassword = await bcrypt.hash(peppered(userData.password), 10);
         const user = this.vendorUsersRepository.create({
           ...userData,
           password: hashedPassword,
