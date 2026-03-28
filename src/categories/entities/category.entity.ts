@@ -33,6 +33,10 @@ export class Category {
   @Column({ default: true })
   isActive: boolean;
 
+  @Field()
+  @Column({ default: false })
+  requiresAgeVerification: boolean;
+
   @Field(() => Store)
   @ManyToOne(() => Store, (store) => store.categories)
   store: Store;

@@ -11,6 +11,8 @@ import { VendorUser } from '../users/entities/vendor-user.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Order } from '../orders/entities/order.entity';
 import { Promotion } from '../promotions/entities/promotion.entity';
+import { Appointment } from '../appointments/entities/appointment.entity';
+import { AppointmentStatus } from '../common/enums/appointment-status.enum';
 import { AppUsersService } from '../users/app-users.service';
 import { VendorUsersService } from '../users/vendor-users.service';
 import { PlatformConfigService } from '../config/platform-config.service';
@@ -1288,7 +1290,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     // Create payment link for plan upgrade
     const body: any = {
-      name: `Plano ${plan} ${billing.label} - bcmTech Delivery`,
+      name: `Plano ${plan} ${billing.label} - bcmTech Shopping`,
       type: 'order',
       amount: totalCents,
       accepted_payment_methods: ['credit_card', 'pix'],
@@ -1668,6 +1670,12 @@ export class PaymentsService implements OnModuleDestroy {
       return;
     }
 
+    // Handle appointment payment
+    if (metadata.type === 'appointment' && metadata.appointment_id) {
+      await this.handleAppointmentPaid(metadata.appointment_id, pagarmeOrderId);
+      return;
+    }
+
     // Handle order payment
     const orderId = metadata.order_id || (code ? code.replace(/^([a-f0-9-]{36}).*$/, '$1') : null);
     if (orderId) {
@@ -1731,6 +1739,27 @@ export class PaymentsService implements OnModuleDestroy {
 
   private async handleOrderPaymentFailed(data: any): Promise<void> {
     const metadata = data.metadata || data.order?.metadata || {};
+
+    // Handle appointment payment failure
+    if (metadata.type === 'appointment' && metadata.appointment_id) {
+      const aptRepo = this.paymentsRepository.manager.getRepository(Appointment);
+      const apt = await aptRepo.findOne({ where: { id: metadata.appointment_id }, relations: ['customer'] });
+      if (apt) {
+        apt.paymentStatus = 'FAILED';
+        await aptRepo.save(apt);
+        this.logger.warn(`Payment failed for appointment ${apt.appointmentNumber}`);
+        if (apt.customer?.id) {
+          this.notificationsService.sendToAppUser(
+            apt.customer.id,
+            'Pagamento recusado',
+            `O pagamento do agendamento ${apt.appointmentNumber} foi recusado. Tente outro metodo.`,
+            { type: 'APPOINTMENT_PAYMENT_FAILED', appointmentId: apt.id },
+          ).catch(() => {});
+        }
+      }
+      return;
+    }
+
     const orderId = metadata.order_id;
     if (!orderId) return;
 
@@ -2251,5 +2280,338 @@ export class PaymentsService implements OnModuleDestroy {
     const commissionRevenue = parseFloat(commissionResult.total);
 
     return paymentRevenue + commissionRevenue;
+  }
+
+  // ─── Appointment Webhook Handlers ───────────────────────────────────────
+
+  private async handleAppointmentPaid(appointmentId: string, pagarmeOrderId: string): Promise<void> {
+    const aptRepo = this.paymentsRepository.manager.getRepository(Appointment);
+    const appointment = await aptRepo.findOne({
+      where: { id: appointmentId },
+      relations: ['customer', 'store', 'store.owner', 'service'],
+    });
+
+    if (!appointment) {
+      this.logger.warn(`Appointment not found for payment webhook: ${appointmentId}`);
+      return;
+    }
+
+    if (appointment.paymentStatus !== 'AWAITING_PAYMENT') {
+      this.logger.log(`Appointment ${appointment.appointmentNumber} already paid, skipping`);
+      return;
+    }
+
+    // Update pagarmeOrderId if placeholder
+    if (appointment.pagarmeOrderId?.startsWith('link-') && pagarmeOrderId) {
+      appointment.pagarmeOrderId = pagarmeOrderId;
+    }
+
+    appointment.paymentStatus = 'PAID';
+    await aptRepo.save(appointment);
+
+    this.logger.log(`Payment confirmed for appointment ${appointment.appointmentNumber}`);
+
+    // Notify customer
+    if (appointment.customer?.id) {
+      this.notificationsService.sendToAppUser(
+        appointment.customer.id,
+        'Pagamento confirmado!',
+        `Pagamento do agendamento ${appointment.appointmentNumber} aprovado.`,
+        { type: 'APPOINTMENT_PAYMENT', appointmentId: appointment.id },
+      ).catch(() => {});
+    }
+
+    // Notify vendor
+    if (appointment.store?.owner?.id) {
+      this.notificationsService.sendToVendorUser(
+        appointment.store.owner.id,
+        'Pagamento recebido!',
+        `${appointment.service?.name} — ${appointment.appointmentNumber} pago pelo cliente.`,
+        { type: 'APPOINTMENT_PAYMENT', appointmentId: appointment.id },
+      ).catch(() => {});
+    }
+  }
+
+  // ─── Appointment Payments ──────────────────────────────────────────────
+
+  async createAppointmentCheckout(
+    appointment: Appointment,
+    customer: AppUser,
+  ): Promise<{ checkoutUrl: string; preferenceId: string }> {
+    await this.ensureCustomer(customer);
+
+    const totalCents = Math.round(Number(appointment.price) * 100);
+
+    try {
+      const body: any = {
+        name: `Agendamento ${appointment.appointmentNumber}`,
+        type: 'order',
+        amount: totalCents,
+        accepted_payment_methods: ['credit_card', 'pix'],
+        payment_settings: {
+          credit_card: {
+            installments: [{ number: 1, total: totalCents }],
+            statement_descriptor: STATEMENT_DESCRIPTOR,
+          },
+          pix: { expires_in: 1800 },
+        },
+        items: [
+          {
+            description: `Agendamento ${appointment.appointmentNumber}`.substring(0, 256),
+            quantity: 1,
+            amount: totalCents,
+          },
+        ],
+        metadata: {
+          type: 'appointment',
+          appointment_id: appointment.id,
+          appointment_number: appointment.appointmentNumber,
+        },
+      };
+
+      const result = await this.pagarmePost('/paymentlinks', body);
+      const checkoutUrl = result.url || `https://pagar.me/pay/${result.id}`;
+
+      this.logger.log(`Pagar.me payment link for appointment ${appointment.appointmentNumber} | total: ${appointment.price}`);
+      return { checkoutUrl, preferenceId: `link-${appointment.id}-${Date.now()}` };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Pagar.me appointment checkout failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(errorData?.message || 'Erro ao criar pagamento no Pagar.me');
+    }
+  }
+
+  async createAppointmentPix(
+    appointment: Appointment,
+    customer: AppUser,
+  ): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string }> {
+    const totalCents = Math.round(Number(appointment.price) * 100);
+    const phone = this.formatPhoneForPagarme(customer.phone);
+    const uniqueCode = `${appointment.id}-${Date.now()}`;
+
+    const orderBody: any = {
+      code: uniqueCode,
+      items: [
+        {
+          amount: totalCents,
+          description: `Agendamento ${appointment.appointmentNumber} (PIX)`.substring(0, 256),
+          quantity: 1,
+          code: uniqueCode,
+        },
+      ],
+      customer: {
+        name: customer.name,
+        email: customer.email,
+        type: 'individual',
+        document: customer.cpf?.replace(/\D/g, '') || '',
+        document_type: 'CPF',
+        ...(phone ? { phones: { mobile_phone: phone } } : {}),
+      },
+      payments: [
+        {
+          payment_method: 'pix',
+          pix: {
+            expires_in: 1800,
+            additional_information: [
+              { name: 'Agendamento', value: appointment.appointmentNumber },
+            ],
+          },
+        },
+      ],
+      metadata: {
+        type: 'appointment',
+        appointment_id: appointment.id,
+        appointment_number: appointment.appointmentNumber,
+      },
+      closed: true,
+    };
+
+    try {
+      const result = await this.pagarmePost('/orders', orderBody);
+      const charge = result.charges?.[0];
+      const lastTransaction = charge?.last_transaction;
+      const qrCode = lastTransaction?.qr_code || '';
+      const qrCodeUrl = lastTransaction?.qr_code_url || '';
+
+      this.logger.log(`Pagar.me PIX for appointment ${appointment.appointmentNumber} | total: ${appointment.price} | pagarme_order: ${result.id}`);
+
+      return {
+        checkoutUrl: qrCodeUrl || '',
+        preferenceId: result.id,
+        qrCode,
+        qrCodeUrl,
+      };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Pagar.me appointment PIX failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(errorData?.message || 'Erro ao criar pagamento PIX no Pagar.me');
+    }
+  }
+
+  async createAppointmentDirectCharge(
+    appointment: Appointment,
+    customer: AppUser,
+    cardId?: string,
+    cardToken?: string,
+  ): Promise<{ pagarmeOrderId: string; status: string; chargeId?: string }> {
+    await this.ensureCustomer(customer);
+
+    const totalCents = Math.round(Number(appointment.price) * 100);
+    const phone = this.formatPhoneForPagarme(customer.phone);
+    const uniqueCode = `${appointment.id}-${Date.now()}`;
+
+    // Build card field
+    let cardField: any;
+    if (cardId) {
+      cardField = { card_id: cardId };
+    } else if (cardToken) {
+      cardField = { card_token: cardToken };
+    } else {
+      throw new BadRequestException('Informe cardId ou cardToken');
+    }
+
+    const orderBody: any = {
+      code: uniqueCode,
+      items: [
+        {
+          amount: totalCents,
+          description: `Agendamento ${appointment.appointmentNumber}`.substring(0, 256),
+          quantity: 1,
+          code: uniqueCode,
+        },
+      ],
+      customer: {
+        name: customer.name,
+        email: customer.email,
+        type: 'individual',
+        document: customer.cpf?.replace(/\D/g, '') || '',
+        document_type: 'CPF',
+        ...(phone ? { phones: { mobile_phone: phone } } : {}),
+      },
+      payments: [
+        {
+          payment_method: 'credit_card',
+          credit_card: {
+            ...cardField,
+            operation_type: 'pre_auth',
+            installments: 1,
+            statement_descriptor: STATEMENT_DESCRIPTOR,
+          },
+        },
+      ],
+      metadata: {
+        type: 'appointment',
+        appointment_id: appointment.id,
+        appointment_number: appointment.appointmentNumber,
+      },
+      closed: true,
+    };
+
+    try {
+      const result = await this.pagarmePost('/orders', orderBody);
+      const charge = result.charges?.[0];
+      const chargeId = charge?.id;
+      const status = charge?.status || result.status;
+
+      this.logger.log(`Pagar.me direct charge for appointment ${appointment.appointmentNumber} | charge: ${chargeId} | status: ${status}`);
+
+      return { pagarmeOrderId: result.id, status, chargeId };
+    } catch (err: any) {
+      const errorData = err.response?.data;
+      this.logger.error(`Pagar.me appointment direct charge failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException(errorData?.message || 'Erro ao processar pagamento');
+    }
+  }
+
+  async settleAppointmentPayment(appointment: Appointment): Promise<void> {
+    // Atomic idempotency guard
+    const aptRepo = this.paymentsRepository.manager.getRepository(Appointment);
+    const settleResult = await aptRepo.manager.query(
+      `UPDATE appointments SET "isSettled" = true WHERE id = $1 AND "isSettled" = false RETURNING id`,
+      [appointment.id],
+    );
+    if (!settleResult || settleResult.length === 0) {
+      this.logger.warn(`Settlement skipped for appointment ${appointment.appointmentNumber} — already settled`);
+      return;
+    }
+
+    // Credit card pre-auth: capture with split
+    if (appointment.paymentMethod === 'CREDIT_CARD' && appointment.preAuthChargeId && !appointment.capturedAt) {
+      try {
+        const totalCents = Math.round(Number(appointment.price) * 100);
+        const commissionCents = Math.round((Number(appointment.commissionAmount) || 0) * 100);
+        const vendorAmount = totalCents - commissionCents;
+        const vendorRecipientId = appointment.store?.owner?.pagarmeRecipientId;
+        const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
+
+        const splitRules: any[] = [];
+        if (vendorRecipientId && vendorAmount > 0) {
+          splitRules.push({
+            amount: vendorAmount,
+            recipient_id: vendorRecipientId,
+            type: 'flat',
+            options: { charge_processing_fee: false, liable: false },
+          });
+        }
+        if (platformRecipientId && commissionCents > 0) {
+          splitRules.push({
+            amount: commissionCents,
+            recipient_id: platformRecipientId,
+            type: 'flat',
+            options: { charge_processing_fee: true, liable: true },
+          });
+        }
+
+        const body: any = {
+          amount: totalCents,
+          code: `${appointment.id.replace(/-/g, '')}-s${Date.now()}`,
+          ...(splitRules.length > 0 ? { split: splitRules } : {}),
+        };
+
+        await this.pagarmePost(`/charges/${appointment.preAuthChargeId}/capture`, body);
+        await aptRepo.update(appointment.id, { capturedAt: new Date() });
+        this.logger.log(`Settlement for appointment ${appointment.appointmentNumber} | capture-with-split | total: ${totalCents} cents`);
+      } catch (err: any) {
+        this.logger.error(`Settlement failed for appointment ${appointment.appointmentNumber}: ${err.message}`);
+        await aptRepo.update(appointment.id, { isSettled: false } as any);
+        throw err;
+      }
+      return;
+    }
+
+    // PIX: manual transfer to vendor
+    const vendorRecipientId = appointment.store?.owner?.pagarmeRecipientId;
+    const totalCents = Math.round(Number(appointment.price) * 100);
+    const commissionCents = Math.round((Number(appointment.commissionAmount) || 0) * 100);
+    const vendorAmount = totalCents - commissionCents;
+
+    if (vendorRecipientId && vendorAmount > 0) {
+      try {
+        const result = await this.pagarmePost('/transfers', {
+          amount: vendorAmount,
+          recipient_id: vendorRecipientId,
+          metadata: {
+            appointment_id: appointment.id,
+            appointment_number: appointment.appointmentNumber,
+            type: 'service_payment',
+          },
+        });
+        this.logger.log(`Transfer to vendor for appointment ${appointment.appointmentNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
+      } catch (err: any) {
+        const errorDetail = JSON.stringify(err.response?.data || err.message);
+        this.logger.error(`Transfer to vendor failed for appointment ${appointment.appointmentNumber}: ${errorDetail}`);
+        if (appointment.store?.owner?.id) {
+          this.notificationsService.sendToVendorUser(
+            appointment.store.owner.id,
+            'Falha na transferencia',
+            `Transferencia do agendamento ${appointment.appointmentNumber} (R$ ${(vendorAmount / 100).toFixed(2)}) falhou.`,
+            { type: 'TRANSFER_FAILED', appointmentId: appointment.id },
+          ).catch(() => {});
+        }
+      }
+    }
+
+    const platformKeeps = commissionCents;
+    this.logger.log(`Settlement for appointment ${appointment.appointmentNumber} | platform keeps: ${platformKeeps} cents`);
   }
 }

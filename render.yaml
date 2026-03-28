@@ -1,12 +1,12 @@
 databases:
-  - name: delivery-db
+  - name: shopping-db
     plan: free
-    databaseName: delivery_db
-    user: delivery
+    databaseName: shopping_db
+    user: shopping
 
 services:
   - type: web
-    name: delivery-api
+    name: shopping-api
     runtime: node
     plan: free
     buildCommand: yarn install --frozen-lockfile && yarn build
@@ -16,7 +16,7 @@ services:
         value: production
       - key: DATABASE_URL
         fromDatabase:
-          name: delivery-db
+          name: shopping-db
           property: connectionString
       - key: JWT_SECRET
         generateValue: true

@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "Delivery Order Flow v2 - Bateria de Testes",
-    "_postman_id": "delivery-order-flow-v2",
+    "name": "Shopping Order Flow v2 - Bateria de Testes",
+    "_postman_id": "shopping-order-flow-v2",
     "description": "Bateria completa de testes do fluxo de pedidos v2.\n\nFluxos cobertos:\n1. Fluxo feliz completo (PENDING → COMPLETED)\n2. Rejeição pelo vendedor\n3. Cancelamento pelo cliente\n4. Disputa pelo cliente\n5. Resolução de disputa pelo superadmin\n\nExecutar na ordem: primeiro a pasta 'Setup', depois os fluxos desejados.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },

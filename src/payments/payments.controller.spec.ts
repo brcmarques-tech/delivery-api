@@ -69,7 +69,7 @@ describe('PaymentsController', () => {
       const mockRes = { redirect: jest.fn() };
       await controller.orderResult('success', 'order-123', mockRes as any);
       expect(mockRes.redirect).toHaveBeenCalledWith(
-        'delivery-app://order-result?status=success&order=order-123',
+        'shopping-app://order-result?status=success&order=order-123',
       );
     });
 
@@ -77,7 +77,7 @@ describe('PaymentsController', () => {
       const mockRes = { redirect: jest.fn() };
       await controller.orderResult(undefined as any, undefined as any, mockRes as any);
       expect(mockRes.redirect).toHaveBeenCalledWith(
-        'delivery-app://order-result?status=unknown&order=',
+        'shopping-app://order-result?status=unknown&order=',
       );
     });
 

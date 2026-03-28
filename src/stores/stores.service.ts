@@ -53,7 +53,7 @@ export class StoresService {
       try {
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
         const res = await fetch(url, {
-          headers: { 'User-Agent': 'bcmTech-Delivery/1.0' },
+          headers: { 'User-Agent': 'bcmTech-Shopping/1.0' },
         });
         const data = await res.json();
         if (data.length > 0) {
@@ -131,7 +131,7 @@ export class StoresService {
   async findById(id: string): Promise<Store> {
     const store = await this.storesRepository.findOne({
       where: { id },
-      relations: ['owner', 'products', 'products.category', 'categories'],
+      relations: ['owner', 'products', 'products.category', 'categories', 'services', 'services.category'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
     return store;

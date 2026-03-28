@@ -67,7 +67,7 @@ export class AuthController {
     const clientId = this.configService.get('GOOGLE_CLIENT_ID');
     const appUrl = this.configService.get('APP_URL');
     const state = this.jwtService.sign(
-      { mode: mode || 'login', userType: userType || 'app', returnUrl: returnUrl || 'delivery-app://google-auth' },
+      { mode: mode || 'login', userType: userType || 'app', returnUrl: returnUrl || 'shopping-app://google-auth' },
       { expiresIn: '10m' },
     );
     const redirectUri = `${appUrl}/auth/google/mobile/callback`;
@@ -91,18 +91,18 @@ export class AuthController {
     @Res() res: express.Response,
   ) {
     if (error || !code) {
-      return res.redirect(`delivery-app://google-auth?error=${error || 'no_code'}`);
+      return res.redirect(`shopping-app://google-auth?error=${error || 'no_code'}`);
     }
 
     let statePayload: any;
     try {
       statePayload = this.jwtService.verify(state);
     } catch {
-      return res.redirect(`delivery-app://google-auth?error=invalid_state`);
+      return res.redirect(`shopping-app://google-auth?error=invalid_state`);
     }
 
     const { mode, userType, returnUrl } = statePayload;
-    const baseReturnUrl = (returnUrl || 'delivery-app://google-auth').replace(/\?.*$/, '');
+    const baseReturnUrl = (returnUrl || 'shopping-app://google-auth').replace(/\?.*$/, '');
     const clientId = this.configService.get('GOOGLE_CLIENT_ID');
     const clientSecret = this.configService.get('GOOGLE_CLIENT_SECRET');
     const appUrl = this.configService.get('APP_URL');
@@ -168,7 +168,7 @@ export class AuthController {
 <html lang="pt-BR"><head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${title} - bcmTech Delivery</title>
+  <title>${title} - bcmTech Shopping</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23FF6B35'/><text x='50' y='72' font-size='60' font-weight='bold' font-family='Arial' fill='white' text-anchor='middle'>B</text></svg>">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -191,7 +191,7 @@ export class AuthController {
   </style>
 </head><body>
   <div class="card">
-    <div class="header"><h1>bcmTech Delivery</h1></div>
+    <div class="header"><h1>bcmTech Shopping</h1></div>
     <div class="body">
       <h2>${title}</h2>
       ${isResult ? `<div class="success" style="margin-top: 16px;">${message}</div>` : `
@@ -211,7 +211,7 @@ export class AuthController {
         </form>
       `}
     </div>
-    <div class="footer">bcmTech Delivery - Arroio Grande, RS</div>
+    <div class="footer">bcmTech Shopping - Arroio Grande, RS</div>
   </div>
 </body></html>`;
   }
