@@ -113,19 +113,30 @@ export class ServicesService {
   async searchPublic(query: string, limit = 20): Promise<Service[]> {
     if (!query.trim()) return [];
 
-    return this.servicesRepository
+    const terms = query.toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+
+    const qb = this.servicesRepository
       .createQueryBuilder('service')
       .leftJoinAndSelect('service.store', 'store')
       .leftJoinAndSelect('service.category', 'category')
       .where('store.isActive = :active', { active: true })
       .andWhere('service.isAvailable = :available', { available: true })
-      .andWhere('service.isActive = :isActive', { isActive: true })
-      .andWhere(
+      .andWhere('service.isActive = :isActive', { isActive: true });
+
+    if (terms.length === 1) {
+      qb.andWhere(
         '(LOWER(service.name) LIKE :q OR LOWER(service.description) LIKE :q OR LOWER(category.name) LIKE :q)',
-        { q: `%${query.toLowerCase()}%` },
-      )
-      .orderBy('service.name')
-      .limit(limit)
-      .getMany();
+        { q: `%${terms[0]}%` },
+      );
+    } else {
+      const conditions = terms.map((t, i) =>
+        `(LOWER(service.name) LIKE :t${i} OR LOWER(service.description) LIKE :t${i} OR LOWER(category.name) LIKE :t${i})`
+      ).join(' OR ');
+      const params: Record<string, string> = {};
+      terms.forEach((t, i) => { params[`t${i}`] = `%${t}%`; });
+      qb.andWhere(`(${conditions})`, params);
+    }
+
+    return qb.orderBy('service.name').limit(limit).getMany();
   }
 }

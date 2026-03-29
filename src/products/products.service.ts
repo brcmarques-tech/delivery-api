@@ -205,17 +205,31 @@ export class ProductsService {
   async searchPublic(query: string, limit = 20): Promise<Product[]> {
     if (!query.trim()) return [];
 
-    return this.productsRepository
+    const terms = query.toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+
+    const qb = this.productsRepository
       .createQueryBuilder('product')
       .leftJoinAndSelect('product.store', 'store')
       .leftJoinAndSelect('product.category', 'category')
       .where('store.isActive = :active', { active: true })
       .andWhere('product.isAvailable = :available', { available: true })
-      .andWhere('product.isActive = :isActive', { isActive: true })
-      .andWhere('(LOWER(product.name) LIKE :q OR LOWER(product.description) LIKE :q)', { q: `%${query.toLowerCase()}%` })
-      .orderBy('product.name')
-      .limit(limit)
-      .getMany();
+      .andWhere('product.isActive = :isActive', { isActive: true });
+
+    if (terms.length === 1) {
+      qb.andWhere(
+        '(LOWER(product.name) LIKE :q OR LOWER(product.description) LIKE :q OR LOWER(category.name) LIKE :q)',
+        { q: `%${terms[0]}%` },
+      );
+    } else {
+      const conditions = terms.map((t, i) =>
+        `(LOWER(product.name) LIKE :t${i} OR LOWER(product.description) LIKE :t${i} OR LOWER(category.name) LIKE :t${i})`
+      ).join(' OR ');
+      const params: Record<string, string> = {};
+      terms.forEach((t, i) => { params[`t${i}`] = `%${t}%`; });
+      qb.andWhere(`(${conditions})`, params);
+    }
+
+    return qb.orderBy('product.name').limit(limit).getMany();
   }
 
   async searchCatalog(query: string, limit = 20): Promise<Product[]> {
