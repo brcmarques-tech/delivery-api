@@ -34,6 +34,9 @@ services:
       GOOGLE_CLIENT_SECRET: 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
       WAHA_API_URL: http://18.231.9.158
       WAHA_API_KEY: bcmtech-waha-2026-key
+      GEMINI_API_KEY: AIzaSyAGr-yytwNTUCpVUmxl1R4mTSiK_jorRFQ
+      WAHA_WEBHOOK_SECRET: bcmtech-waha-webhook-2026
+      AGENT_APP_USER_EMAIL: agente@bcmtech.com.br
     depends_on:
       postgres:
         condition: service_healthy

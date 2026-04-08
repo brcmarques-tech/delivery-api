@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThanOrEqual } from 'typeorm';
 import * as crypto from 'crypto';
@@ -25,16 +31,42 @@ import { PUB_SUB } from '../pubsub/pubsub.module';
 type OnOrderReadyCallback = (order: Order) => void;
 
 const STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
-  [OrderStatus.AWAITING_PAYMENT]: [OrderStatus.PENDING, OrderStatus.PAYMENT_REVIEW, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
-  [OrderStatus.PAYMENT_REVIEW]: [OrderStatus.PENDING, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
-  [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED],
+  [OrderStatus.AWAITING_PAYMENT]: [
+    OrderStatus.PENDING,
+    OrderStatus.PAYMENT_REVIEW,
+    OrderStatus.CANCELLED,
+    OrderStatus.EXPIRED,
+  ],
+  [OrderStatus.PAYMENT_REVIEW]: [
+    OrderStatus.PENDING,
+    OrderStatus.CANCELLED,
+    OrderStatus.EXPIRED,
+  ],
+  [OrderStatus.PENDING]: [
+    OrderStatus.ACCEPTED,
+    OrderStatus.CANCELLED,
+    OrderStatus.REJECTED,
+    OrderStatus.EXPIRED,
+  ],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
-  [OrderStatus.READY]: [OrderStatus.PICKED_UP, OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERING, OrderStatus.DELIVERED, OrderStatus.CANCELLED],
-  [OrderStatus.PICKED_UP]: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.DELIVERING],
+  [OrderStatus.READY]: [
+    OrderStatus.PICKED_UP,
+    OrderStatus.VENDOR_CONFIRMED_PICKUP,
+    OrderStatus.DELIVERING,
+    OrderStatus.DELIVERED,
+    OrderStatus.CANCELLED,
+  ],
+  [OrderStatus.PICKED_UP]: [
+    OrderStatus.VENDOR_CONFIRMED_PICKUP,
+    OrderStatus.DELIVERING,
+  ],
   [OrderStatus.VENDOR_CONFIRMED_PICKUP]: [OrderStatus.DELIVERING],
   [OrderStatus.DELIVERING]: [OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
-  [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: [OrderStatus.COMPLETED, OrderStatus.DISPUTED],
+  [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: [
+    OrderStatus.COMPLETED,
+    OrderStatus.DISPUTED,
+  ],
   [OrderStatus.DELIVERED]: [OrderStatus.COMPLETED],
   [OrderStatus.COMPLETED]: [OrderStatus.DISPUTED],
   [OrderStatus.CANCELLED]: [],
@@ -85,7 +117,10 @@ export class OrdersService {
     if (store.deliveryStartTime && store.deliveryEndTime) {
       const now = new Date();
       const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      if (currentTime < store.deliveryStartTime || currentTime > store.deliveryEndTime) {
+      if (
+        currentTime < store.deliveryStartTime ||
+        currentTime > store.deliveryEndTime
+      ) {
         throw new BadRequestException(
           `Esta loja so aceita pedidos das ${store.deliveryStartTime} as ${store.deliveryEndTime}`,
         );
@@ -130,14 +165,21 @@ export class OrdersService {
     }
 
     // Verificação de idade: se algum produto pertence a categoria +18, exigir confirmação
-    const hasAgeRestrictedItem = await this.hasAgeRestrictedProducts(input.items);
+    const hasAgeRestrictedItem = await this.hasAgeRestrictedProducts(
+      input.items,
+    );
     if (hasAgeRestrictedItem && !input.ageVerified) {
-      throw new BadRequestException('Este pedido contem produtos com restricao de idade. Confirme que voce tem 18 anos ou mais.');
+      throw new BadRequestException(
+        'Este pedido contem produtos com restricao de idade. Confirme que voce tem 18 anos ou mais.',
+      );
     }
 
     // Pedido mínimo: plataforma exige mínimo para entregadores do app (taxas Pagar.me + comissão)
-    const platformMinimum = await this.platformConfigService.getMinimumOrderPlatform();
-    const storeMinimumOrder = store.minimumOrder ? Number(store.minimumOrder) : 0;
+    const platformMinimum =
+      await this.platformConfigService.getMinimumOrderPlatform();
+    const storeMinimumOrder = store.minimumOrder
+      ? Number(store.minimumOrder)
+      : 0;
     const effectiveMinimum = !store.hasOwnDelivery
       ? Math.max(platformMinimum, storeMinimumOrder)
       : storeMinimumOrder;
@@ -152,24 +194,32 @@ export class OrdersService {
 
     if (!isPickup && input.deliveryLatitude && input.deliveryLongitude) {
       const storeFreeDelivery = store.freeDelivery;
-      const freeAbove = store.freeDeliveryAbove ? Number(store.freeDeliveryAbove) : null;
+      const freeAbove = store.freeDeliveryAbove
+        ? Number(store.freeDeliveryAbove)
+        : null;
 
       if (storeFreeDelivery || (freeAbove && subtotal >= freeAbove)) {
         deliveryFee = 0;
       } else {
-        const pricePerKm = await this.platformConfigService.getDeliveryPricePerKm();
-        const basePrice = await this.platformConfigService.getDeliveryBasePrice();
+        const pricePerKm =
+          await this.platformConfigService.getDeliveryPricePerKm();
+        const basePrice =
+          await this.platformConfigService.getDeliveryBasePrice();
         const R = 6371;
-        const dLat = (input.deliveryLatitude - Number(store.latitude)) * Math.PI / 180;
-        const dLng = (input.deliveryLongitude - Number(store.longitude)) * Math.PI / 180;
+        const dLat =
+          ((input.deliveryLatitude - Number(store.latitude)) * Math.PI) / 180;
+        const dLng =
+          ((input.deliveryLongitude - Number(store.longitude)) * Math.PI) / 180;
         const a =
           Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos(Number(store.latitude) * Math.PI / 180) *
-            Math.cos(input.deliveryLatitude * Math.PI / 180) *
-            Math.sin(dLng / 2) * Math.sin(dLng / 2);
+          Math.cos((Number(store.latitude) * Math.PI) / 180) *
+            Math.cos((input.deliveryLatitude * Math.PI) / 180) *
+            Math.sin(dLng / 2) *
+            Math.sin(dLng / 2);
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         const distanceKm = R * c;
-        deliveryFee = Math.round((basePrice + distanceKm * pricePerKm) * 100) / 100;
+        deliveryFee =
+          Math.round((basePrice + distanceKm * pricePerKm) * 100) / 100;
       }
     }
 
@@ -192,7 +242,8 @@ export class OrdersService {
 
     const storeOwner = store.owner;
     const vendorPlan = storeOwner?.vendorPlan || 'FREE';
-    const planConfig = await this.platformConfigService.getPlanConfig(vendorPlan);
+    const planConfig =
+      await this.platformConfigService.getPlanConfig(vendorPlan);
     let commissionPercent = planConfig.commissionPercent;
 
     if (
@@ -200,10 +251,15 @@ export class OrdersService {
       store.commissionReductionExpiresAt &&
       new Date(store.commissionReductionExpiresAt) > new Date()
     ) {
-      commissionPercent = Math.max(0, commissionPercent - Number(store.commissionReductionPercent));
+      commissionPercent = Math.max(
+        0,
+        commissionPercent - Number(store.commissionReductionPercent),
+      );
     }
 
-    const commissionAmount = Math.round(((subtotal - discount) * commissionPercent) / 100 * 100) / 100;
+    const commissionAmount =
+      Math.round((((subtotal - discount) * commissionPercent) / 100) * 100) /
+      100;
 
     let paymentMethod = (input.paymentMethod || 'ON_DELIVERY').toUpperCase();
 
@@ -235,72 +291,105 @@ export class OrdersService {
     const needsPayment = paymentMethod !== 'ON_DELIVERY';
 
     if (needsPayment && !customer.cpf) {
-      throw new BadRequestException('CPF obrigatorio para pagamento online. Atualize seu perfil.');
+      throw new BadRequestException(
+        'CPF obrigatorio para pagamento online. Atualize seu perfil.',
+      );
     }
 
     // H5: Wrap order creation + stock decrement in a transaction to prevent race conditions
-    const savedOrder = await this.ordersRepository.manager.transaction(async (manager) => {
-      const order = manager.getRepository(Order).create({
-        orderNumber: `ORD-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
-        customer,
-        store,
-        items,
-        subtotal,
-        deliveryFee,
-        total,
-        commissionPercent,
-        commissionAmount,
-        isPickup,
-        deliveryAddress: isPickup
-          ? `${store.street}, ${store.number} - ${store.neighborhood}, ${store.city}`
-          : input.deliveryAddress,
-        deliveryLatitude: isPickup ? Number(store.latitude) : input.deliveryLatitude,
-        deliveryLongitude: isPickup ? Number(store.longitude) : input.deliveryLongitude,
-        notes: input.notes,
-        paymentMethod,
-        couponCode,
-        discount,
-        coupon: couponEntity,
-        status: needsPayment ? OrderStatus.AWAITING_PAYMENT : OrderStatus.PENDING,
-      });
+    const savedOrder = await this.ordersRepository.manager.transaction(
+      async (manager) => {
+        const order = manager.getRepository(Order).create({
+          orderNumber: `ORD-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+          customer,
+          store,
+          items,
+          subtotal,
+          deliveryFee,
+          total,
+          commissionPercent,
+          commissionAmount,
+          isPickup,
+          deliveryAddress: isPickup
+            ? `${store.street}, ${store.number} - ${store.neighborhood}, ${store.city}`
+            : input.deliveryAddress,
+          deliveryLatitude: isPickup
+            ? Number(store.latitude)
+            : input.deliveryLatitude,
+          deliveryLongitude: isPickup
+            ? Number(store.longitude)
+            : input.deliveryLongitude,
+          notes: input.notes,
+          paymentMethod,
+          couponCode,
+          discount,
+          coupon: couponEntity,
+          status: needsPayment
+            ? OrderStatus.AWAITING_PAYMENT
+            : OrderStatus.PENDING,
+        });
 
-      const saved = await manager.getRepository(Order).save(order);
+        const saved = await manager.getRepository(Order).save(order);
 
-      // Atomic stock decrement with DB-level check to prevent overselling
-      for (const item of items) {
-        if (item.product.stock !== null && item.product.stock !== undefined && item.product.stock > 0) {
-          const result = await manager.query(
-            `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING stock`,
-            [item.quantity, item.product.id],
-          );
-          if (!result || result.length === 0) {
-            throw new BadRequestException(
-              `Estoque insuficiente para "${item.product.name}". Tente novamente.`,
+        // Atomic stock decrement with DB-level check to prevent overselling
+        for (const item of items) {
+          if (
+            item.product.stock !== null &&
+            item.product.stock !== undefined &&
+            item.product.stock > 0
+          ) {
+            const result = await manager.query(
+              `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING stock`,
+              [item.quantity, item.product.id],
             );
+            if (!result || result.length === 0) {
+              throw new BadRequestException(
+                `Estoque insuficiente para "${item.product.name}". Tente novamente.`,
+              );
+            }
           }
         }
-      }
 
-      // Coupon usage: only increment for non-payment orders (ON_DELIVERY).
-      // For online payments, increment after payment is confirmed (handleOrderPaid webhook).
-      if (couponEntity && !needsPayment) {
-        await this.couponsService.incrementUsage(couponEntity.id);
-      }
+        // Coupon usage: only increment for non-payment orders (ON_DELIVERY).
+        // For online payments, increment after payment is confirmed (handleOrderPaid webhook).
+        if (couponEntity && !needsPayment) {
+          await this.couponsService.incrementUsage(couponEntity.id);
+        }
 
-      return saved;
-    });
+        return saved;
+      },
+    );
     savedOrder.store = store;
 
-    if (!isPickup && input.deliveryAddress && input.deliveryLatitude && input.deliveryLongitude) {
+    if (
+      !isPickup &&
+      input.deliveryAddress &&
+      input.deliveryLatitude &&
+      input.deliveryLongitude
+    ) {
       this.addressesService
-        .saveFromOrder(input.deliveryAddress, input.deliveryLatitude, input.deliveryLongitude, customer)
+        .saveFromOrder(
+          input.deliveryAddress,
+          input.deliveryLatitude,
+          input.deliveryLongitude,
+          customer,
+        )
         .catch(() => {});
     }
 
-    if ((paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') && (input.cardId || input.cardToken)) {
+    if (
+      (paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') &&
+      (input.cardId || input.cardToken)
+    ) {
       // Pré-autorização: segura o limite mas não cobra ainda
       try {
-        const { pagarmeOrderId, status, chargeId } = await this.paymentsService.createOrderDirectCharge(savedOrder, customer, input.cardId, input.cardToken);
+        const { pagarmeOrderId, status, chargeId } =
+          await this.paymentsService.createOrderDirectCharge(
+            savedOrder,
+            customer,
+            input.cardId,
+            input.cardToken,
+          );
         savedOrder.mpPreferenceId = pagarmeOrderId;
         if (chargeId) savedOrder.preAuthChargeId = chargeId;
 
@@ -310,20 +399,24 @@ export class OrdersService {
           await this.ordersRepository.save(savedOrder);
 
           // Notify support via email
-          this.mailService.sendAntifraudReviewEmail(
-            savedOrder.orderNumber,
-            customer.name,
-            Number(savedOrder.total),
-            chargeId || pagarmeOrderId,
-          ).catch(() => {});
+          this.mailService
+            .sendAntifraudReviewEmail(
+              savedOrder.orderNumber,
+              customer.name,
+              Number(savedOrder.total),
+              chargeId || pagarmeOrderId,
+            )
+            .catch(() => {});
 
           // Notify customer
-          this.notificationsService.sendToAppUser(
-            customer.id,
-            'Pagamento em analise',
-            `Seu pedido #${savedOrder.orderNumber} esta em analise de seguranca. Voce sera notificado quando for aprovado.`,
-            { type: 'PAYMENT_REVIEW', orderId: savedOrder.id },
-          ).catch(() => {});
+          this.notificationsService
+            .sendToAppUser(
+              customer.id,
+              'Pagamento em analise',
+              `Seu pedido #${savedOrder.orderNumber} esta em analise de seguranca. Voce sera notificado quando for aprovado.`,
+              { type: 'PAYMENT_REVIEW', orderId: savedOrder.id },
+            )
+            .catch(() => {});
         } else {
           savedOrder.status = OrderStatus.PENDING;
           await this.ordersRepository.save(savedOrder);
@@ -334,21 +427,32 @@ export class OrdersService {
         // Restaurar estoque
         for (const item of items) {
           if (item.product?.id) {
-            await this.productsService.restoreStock(item.product.id, item.quantity);
+            await this.productsService.restoreStock(
+              item.product.id,
+              item.quantity,
+            );
           }
         }
         throw new BadRequestException(
-          err?.message || 'Falha na pré-autorização do cartão. Verifique os dados e tente novamente.',
+          err?.message ||
+            'Falha na pré-autorização do cartão. Verifique os dados e tente novamente.',
         );
       }
-    } else if (paymentMethod === 'MERCADO_PAGO' || paymentMethod === 'CREDIT_CARD') {
-      const { checkoutUrl, preferenceId } = await this.paymentsService.createOrderCheckout(savedOrder, customer);
+    } else if (
+      paymentMethod === 'MERCADO_PAGO' ||
+      paymentMethod === 'CREDIT_CARD'
+    ) {
+      const { checkoutUrl, preferenceId } =
+        await this.paymentsService.createOrderCheckout(savedOrder, customer);
       savedOrder.checkoutUrl = checkoutUrl;
       savedOrder.mpPreferenceId = preferenceId;
       await this.ordersRepository.save(savedOrder);
     } else if (paymentMethod === 'PIX') {
       try {
-        const result = await this.paymentsService.createOrderPix(savedOrder, customer);
+        const result = await this.paymentsService.createOrderPix(
+          savedOrder,
+          customer,
+        );
         savedOrder.checkoutUrl = result.checkoutUrl;
         savedOrder.mpPreferenceId = result.preferenceId;
         if (result.qrCode) savedOrder.pixQrCode = result.qrCode;
@@ -357,26 +461,31 @@ export class OrdersService {
       } catch (err: any) {
         console.error('PIX checkout generation failed:', err?.message || err);
         throw new BadRequestException(
-          err?.message || 'Nao foi possivel gerar o pagamento PIX. Tente novamente ou use outro metodo de pagamento.',
+          err?.message ||
+            'Nao foi possivel gerar o pagamento PIX. Tente novamente ou use outro metodo de pagamento.',
         );
       }
     }
 
     if (store.owner?.id) {
-      this.notificationsService.sendToVendorUser(
-        store.owner.id,
-        'Novo pedido!',
-        `Pedido #${savedOrder.orderNumber} - R$ ${total.toFixed(2)}`,
-        { type: 'NEW_ORDER', orderId: savedOrder.id },
-      ).catch(() => {});
+      this.notificationsService
+        .sendToVendorUser(
+          store.owner.id,
+          'Novo pedido!',
+          `Pedido #${savedOrder.orderNumber} - R$ ${total.toFixed(2)}`,
+          { type: 'NEW_ORDER', orderId: savedOrder.id },
+        )
+        .catch(() => {});
     }
 
     if (store.owner?.phone) {
-      this.whatsAppService.notifyNewOrderToVendor(
-        store.owner.phone,
-        savedOrder.orderNumber,
-        total.toFixed(2),
-      ).catch(() => {});
+      this.whatsAppService
+        .notifyNewOrderToVendor(
+          store.owner.phone,
+          savedOrder.orderNumber,
+          total.toFixed(2),
+        )
+        .catch(() => {});
     }
 
     this.pubSub.publish('orderCreated', { orderCreated: savedOrder });
@@ -392,10 +501,26 @@ export class OrdersService {
   async findById(id: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id },
-      relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer', 'coupon'],
+      relations: [
+        'customer',
+        'store',
+        'store.owner',
+        'items',
+        'items.product',
+        'delivery',
+        'delivery.deliverer',
+        'coupon',
+      ],
     });
     if (!order) throw new NotFoundException('Pedido nao encontrado');
     return order;
+  }
+
+  async findByOrderNumber(orderNumber: string): Promise<Order | null> {
+    return this.ordersRepository.findOne({
+      where: { orderNumber },
+      relations: ['store', 'items', 'items.product'],
+    });
   }
 
   async findByCustomer(customerId: string): Promise<Order[]> {
@@ -409,7 +534,14 @@ export class OrdersService {
   async findByStore(storeId: string): Promise<Order[]> {
     return this.ordersRepository.find({
       where: { store: { id: storeId } },
-      relations: ['store', 'customer', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
+      relations: [
+        'store',
+        'customer',
+        'items',
+        'items.product',
+        'delivery',
+        'delivery.deliverer',
+      ],
       order: { createdAt: 'DESC' },
     });
   }
@@ -513,7 +645,10 @@ export class OrdersService {
     // 30 min matches PIX QR code expiry (expires_in: 1800 in Pagar.me)
     const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000);
     const expired = await this.ordersRepository.find({
-      where: { status: OrderStatus.AWAITING_PAYMENT, createdAt: LessThanOrEqual(thirtyMinAgo) },
+      where: {
+        status: OrderStatus.AWAITING_PAYMENT,
+        createdAt: LessThanOrEqual(thirtyMinAgo),
+      },
       relations: ['items', 'items.product'],
     });
 
@@ -542,7 +677,14 @@ export class OrdersService {
 
   async findAllAdmin(): Promise<Order[]> {
     return this.ordersRepository.find({
-      relations: ['customer', 'store', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
+      relations: [
+        'customer',
+        'store',
+        'items',
+        'items.product',
+        'delivery',
+        'delivery.deliverer',
+      ],
       order: { createdAt: 'DESC' },
     });
   }
@@ -555,7 +697,9 @@ export class OrdersService {
     const result = await this.ordersRepository
       .createQueryBuilder('order')
       .select('COALESCE(SUM(order.total), 0)', 'total')
-      .where('order.status IN (:...statuses)', { statuses: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] })
+      .where('order.status IN (:...statuses)', {
+        statuses: [OrderStatus.DELIVERED, OrderStatus.COMPLETED],
+      })
       .getRawOne();
     return parseFloat(result.total);
   }
@@ -569,19 +713,28 @@ export class OrdersService {
       .getRawMany();
   }
 
-  async ordersByDay(days: number = 30): Promise<{ date: string; count: number; revenue: number }[]> {
+  async ordersByDay(
+    days: number = 30,
+  ): Promise<{ date: string; count: number; revenue: number }[]> {
     const since = new Date();
     since.setDate(since.getDate() - days);
     const result = await this.ordersRepository
       .createQueryBuilder('order')
       .select("TO_CHAR(order.createdAt, 'YYYY-MM-DD')", 'date')
       .addSelect('COUNT(*)', 'count')
-      .addSelect("COALESCE(SUM(CASE WHEN order.status IN ('DELIVERED','COMPLETED') THEN order.total ELSE 0 END), 0)", 'revenue')
+      .addSelect(
+        "COALESCE(SUM(CASE WHEN order.status IN ('DELIVERED','COMPLETED') THEN order.total ELSE 0 END), 0)",
+        'revenue',
+      )
       .where('order.createdAt >= :since', { since })
       .groupBy("TO_CHAR(order.createdAt, 'YYYY-MM-DD')")
       .orderBy('date', 'ASC')
       .getRawMany();
-    return result.map((r: any) => ({ date: r.date, count: Number(r.count), revenue: parseFloat(r.revenue) }));
+    return result.map((r: any) => ({
+      date: r.date,
+      count: Number(r.count),
+      revenue: parseFloat(r.revenue),
+    }));
   }
 
   async recentOrders(limit: number = 5): Promise<Order[]> {
@@ -592,25 +745,39 @@ export class OrdersService {
     });
   }
 
-  async topStores(limit: number = 5): Promise<{ storeId: string; storeName: string; orderCount: number; revenue: number }[]> {
+  async topStores(
+    limit: number = 5,
+  ): Promise<
+    {
+      storeId: string;
+      storeName: string;
+      orderCount: number;
+      revenue: number;
+    }[]
+  > {
     return this.ordersRepository
       .createQueryBuilder('order')
       .innerJoin('order.store', 'store')
       .select('store.id', 'storeId')
       .addSelect('store.name', 'storeName')
       .addSelect('COUNT(*)', 'orderCount')
-      .addSelect("COALESCE(SUM(CASE WHEN order.status IN ('DELIVERED','COMPLETED') THEN order.total ELSE 0 END), 0)", 'revenue')
+      .addSelect(
+        "COALESCE(SUM(CASE WHEN order.status IN ('DELIVERED','COMPLETED') THEN order.total ELSE 0 END), 0)",
+        'revenue',
+      )
       .groupBy('store.id')
       .addGroupBy('store.name')
       .orderBy('revenue', 'DESC')
       .limit(limit)
       .getRawMany()
-      .then((rows) => rows.map((r: any) => ({
-        storeId: r.storeId,
-        storeName: r.storeName,
-        orderCount: Number(r.orderCount),
-        revenue: parseFloat(r.revenue),
-      })));
+      .then((rows) =>
+        rows.map((r: any) => ({
+          storeId: r.storeId,
+          storeName: r.storeName,
+          orderCount: Number(r.orderCount),
+          revenue: parseFloat(r.revenue),
+        })),
+      );
   }
 
   // ─── Confirmação do cliente (recebimento) ─────────────────────────────
@@ -618,13 +785,22 @@ export class OrdersService {
   async confirmReceipt(orderId: string, customerId: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id: orderId },
-      relations: ['customer', 'delivery', 'delivery.deliverer', 'store', 'store.owner'],
+      relations: [
+        'customer',
+        'delivery',
+        'delivery.deliverer',
+        'store',
+        'store.owner',
+      ],
     });
     if (!order) throw new NotFoundException('Pedido nao encontrado');
     if (order.customer.id !== customerId) {
       throw new BadRequestException('Voce nao pode confirmar este pedido');
     }
-    if (order.status !== OrderStatus.DELIVERER_CONFIRMED_DELIVERY && order.status !== OrderStatus.DELIVERED) {
+    if (
+      order.status !== OrderStatus.DELIVERER_CONFIRMED_DELIVERY &&
+      order.status !== OrderStatus.DELIVERED
+    ) {
       throw new BadRequestException('Pedido ainda nao foi entregue');
     }
     if (order.customerConfirmedAt) {
@@ -638,13 +814,19 @@ export class OrdersService {
 
   // ─── Cliente nega recebimento → DISPUTED ─────────────────────────────
 
-  async customerDenyDelivery(orderId: string, customerId: string, reason: string): Promise<Order> {
+  async customerDenyDelivery(
+    orderId: string,
+    customerId: string,
+    reason: string,
+  ): Promise<Order> {
     const order = await this.findById(orderId);
     if (order.customer.id !== customerId) {
       throw new BadRequestException('Voce nao pode disputar este pedido');
     }
     if (order.status !== OrderStatus.DELIVERER_CONFIRMED_DELIVERY) {
-      throw new BadRequestException('Este pedido nao esta aguardando confirmacao de entrega');
+      throw new BadRequestException(
+        'Este pedido nao esta aguardando confirmacao de entrega',
+      );
     }
 
     order.disputeReason = reason;
@@ -654,7 +836,11 @@ export class OrdersService {
 
   // ─── Cliente disputa pedido já completado (48h) ──────────────────────
 
-  async disputeCompletedOrder(orderId: string, customerId: string, reason: string): Promise<Order> {
+  async disputeCompletedOrder(
+    orderId: string,
+    customerId: string,
+    reason: string,
+  ): Promise<Order> {
     const order = await this.findById(orderId);
     if (order.customer.id !== customerId) {
       throw new BadRequestException('Voce nao pode disputar este pedido');
@@ -663,10 +849,14 @@ export class OrdersService {
       throw new BadRequestException('Este pedido nao pode ser disputado');
     }
 
-    const completedAt = order.completedAt ? new Date(order.completedAt).getTime() : 0;
+    const completedAt = order.completedAt
+      ? new Date(order.completedAt).getTime()
+      : 0;
     const hoursSinceCompleted = (Date.now() - completedAt) / (1000 * 60 * 60);
     if (hoursSinceCompleted > 48) {
-      throw new BadRequestException('O prazo de 48 horas para reclamacao expirou');
+      throw new BadRequestException(
+        'O prazo de 48 horas para reclamacao expirou',
+      );
     }
 
     order.disputeReason = reason;
@@ -674,7 +864,10 @@ export class OrdersService {
     return this.updateStatus(order.id, OrderStatus.DISPUTED);
   }
 
-  async requestCancelDispute(orderId: string, vendorUserId: string): Promise<Order> {
+  async requestCancelDispute(
+    orderId: string,
+    vendorUserId: string,
+  ): Promise<Order> {
     const order = await this.findById(orderId);
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao tem permissao para este pedido');
@@ -684,12 +877,14 @@ export class OrdersService {
     }
 
     if (order.customer?.id) {
-      this.notificationsService.sendToAppUser(
-        order.customer.id,
-        'Solicitação da loja',
-        `${order.store.name} pediu para você cancelar a reclamação do pedido #${order.orderNumber}`,
-        { type: 'REQUEST_CANCEL_DISPUTE', orderId: order.id },
-      ).catch(() => {});
+      this.notificationsService
+        .sendToAppUser(
+          order.customer.id,
+          'Solicitação da loja',
+          `${order.store.name} pediu para você cancelar a reclamação do pedido #${order.orderNumber}`,
+          { type: 'REQUEST_CANCEL_DISPUTE', orderId: order.id },
+        )
+        .catch(() => {});
     }
 
     return order;
@@ -711,7 +906,11 @@ export class OrdersService {
 
   // ─── Vendedor rejeita pedido ──────────────────────────────────────────
 
-  async rejectOrder(orderId: string, vendorUserId: string, reason: string): Promise<Order> {
+  async rejectOrder(
+    orderId: string,
+    vendorUserId: string,
+    reason: string,
+  ): Promise<Order> {
     const order = await this.findById(orderId);
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode rejeitar este pedido');
@@ -731,14 +930,20 @@ export class OrdersService {
 
   // ─── Vendedor cancela pedido (antes de sair para entrega) ────────────
 
-  async vendorCancelOrder(orderId: string, vendorUserId: string, reason: string): Promise<Order> {
+  async vendorCancelOrder(
+    orderId: string,
+    vendorUserId: string,
+    reason: string,
+  ): Promise<Order> {
     const order = await this.findById(orderId);
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode cancelar este pedido');
     }
 
     if (order.delivery) {
-      throw new BadRequestException('Nao e possivel cancelar o pedido depois que um entregador aceitou');
+      throw new BadRequestException(
+        'Nao e possivel cancelar o pedido depois que um entregador aceitou',
+      );
     }
 
     const cancellableStatuses = [
@@ -748,7 +953,9 @@ export class OrdersService {
       OrderStatus.READY,
     ];
     if (!cancellableStatuses.includes(order.status)) {
-      throw new BadRequestException('Nao e possivel cancelar o pedido depois que saiu para entrega');
+      throw new BadRequestException(
+        'Nao e possivel cancelar o pedido depois que saiu para entrega',
+      );
     }
 
     order.rejectionReason = reason;
@@ -761,16 +968,25 @@ export class OrdersService {
 
   // ─── Vendedor confirma coleta pelo entregador ─────────────────────────
 
-  async vendorConfirmPickup(orderId: string, vendorUserId: string): Promise<Order> {
+  async vendorConfirmPickup(
+    orderId: string,
+    vendorUserId: string,
+  ): Promise<Order> {
     const order = await this.findById(orderId);
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode confirmar este pedido');
     }
 
     // Vendor can confirm when: READY, PICKED_UP, or DELIVERING
-    const allowed = [OrderStatus.READY, OrderStatus.PICKED_UP, OrderStatus.DELIVERING];
+    const allowed = [
+      OrderStatus.READY,
+      OrderStatus.PICKED_UP,
+      OrderStatus.DELIVERING,
+    ];
     if (!allowed.includes(order.status)) {
-      throw new BadRequestException('Pedido precisa estar pronto ou coletado para confirmar coleta');
+      throw new BadRequestException(
+        'Pedido precisa estar pronto ou coletado para confirmar coleta',
+      );
     }
 
     // If already DELIVERING, just record timestamp
@@ -781,7 +997,10 @@ export class OrdersService {
 
     // READY or PICKED_UP → advance to VENDOR_CONFIRMED_PICKUP
     // If deliverer already picked up (PICKED_UP), vendor confirmation advances and then auto-goes to DELIVERING
-    const updated = await this.updateStatus(order.id, OrderStatus.VENDOR_CONFIRMED_PICKUP);
+    const updated = await this.updateStatus(
+      order.id,
+      OrderStatus.VENDOR_CONFIRMED_PICKUP,
+    );
 
     // If deliverer already confirmed pickup, auto-advance to DELIVERING
     if (order.status === OrderStatus.PICKED_UP) {
@@ -793,10 +1012,20 @@ export class OrdersService {
 
   // ─── Superadmin resolve disputa ───────────────────────────────────────
 
-  async resolveDispute(orderId: string, resolution: string, superadminId: string): Promise<Order> {
+  async resolveDispute(
+    orderId: string,
+    resolution: string,
+    superadminId: string,
+  ): Promise<Order> {
     // M6: Validate resolution value
-    if (!['CUSTOMER_FAVOR', 'VENDOR_FAVOR', 'DELIVERER_FAVOR'].includes(resolution)) {
-      throw new BadRequestException('Resolucao invalida. Use: CUSTOMER_FAVOR, VENDOR_FAVOR ou DELIVERER_FAVOR');
+    if (
+      !['CUSTOMER_FAVOR', 'VENDOR_FAVOR', 'DELIVERER_FAVOR'].includes(
+        resolution,
+      )
+    ) {
+      throw new BadRequestException(
+        'Resolucao invalida. Use: CUSTOMER_FAVOR, VENDOR_FAVOR ou DELIVERER_FAVOR',
+      );
     }
 
     const order = await this.findById(orderId);
@@ -821,18 +1050,27 @@ export class OrdersService {
       // Restore stock (refundOrder doesn't handle this)
       for (const item of order.items) {
         if (item.product) {
-          await this.productsService.restoreStock(item.product.id, item.quantity);
+          await this.productsService.restoreStock(
+            item.product.id,
+            item.quantity,
+          );
         }
       }
       // Reload and return fresh order
       return this.findById(order.id);
     } else {
       // DELIVERER_FAVOR — settle payment (transfer to vendor + deliverer)
-      if (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD') {
+      if (
+        order.paymentMethod === 'PIX' ||
+        order.paymentMethod === 'CREDIT_CARD'
+      ) {
         try {
           await this.paymentsService.settlePayment(order);
         } catch (err: any) {
-          console.error('Settlement on dispute resolution failed:', err?.message);
+          console.error(
+            'Settlement on dispute resolution failed:',
+            err?.message,
+          );
         }
       }
       return this.updateStatus(order.id, OrderStatus.COMPLETED);
@@ -848,25 +1086,41 @@ export class OrdersService {
       throw new BadRequestException('Voce nao pode cancelar este pedido');
     }
 
-    const cancellableStatuses = [OrderStatus.AWAITING_PAYMENT, OrderStatus.PENDING, OrderStatus.ACCEPTED];
+    const cancellableStatuses = [
+      OrderStatus.AWAITING_PAYMENT,
+      OrderStatus.PENDING,
+      OrderStatus.ACCEPTED,
+    ];
     if (!cancellableStatuses.includes(order.status)) {
-      throw new BadRequestException('Este pedido ja esta em preparo e nao pode mais ser cancelado');
+      throw new BadRequestException(
+        'Este pedido ja esta em preparo e nao pode mais ser cancelado',
+      );
     }
 
     // Cancelar pré-autorização ou estornar pagamento
     await this.handlePaymentCancellation(order);
 
     // updateStatus already restores stock for CANCELLED
-    const saved = await this.updateStatus(order.id, OrderStatus.CANCELLED, order.customer);
+    const saved = await this.updateStatus(
+      order.id,
+      OrderStatus.CANCELLED,
+      order.customer,
+    );
 
     // Notificar vendedor
     if (order.store?.owner?.id) {
-      this.notificationsService.sendToVendorUser(
-        order.store.owner.id,
-        `Pedido #${order.orderNumber}`,
-        'Cliente cancelou o pedido',
-        { type: 'ORDER_STATUS', orderId: order.id, status: OrderStatus.CANCELLED },
-      ).catch(() => {});
+      this.notificationsService
+        .sendToVendorUser(
+          order.store.owner.id,
+          `Pedido #${order.orderNumber}`,
+          'Cliente cancelou o pedido',
+          {
+            type: 'ORDER_STATUS',
+            orderId: order.id,
+            status: OrderStatus.CANCELLED,
+          },
+        )
+        .catch(() => {});
     }
 
     return saved;
@@ -896,7 +1150,10 @@ export class OrdersService {
     }
 
     // PIX ou Checkout já pago (sem pré-auth): estorno
-    if (order.mpPreferenceId && (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD')) {
+    if (
+      order.mpPreferenceId &&
+      (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD')
+    ) {
       try {
         await this.paymentsService.refundOrder(order.id);
       } catch (err: any) {
@@ -916,7 +1173,9 @@ export class OrdersService {
       .leftJoinAndSelect('order.customer', 'customer')
       .leftJoinAndSelect('order.items', 'items')
       .leftJoinAndSelect('items.product', 'product')
-      .where('order.status IN (:...statuses)', { statuses: [OrderStatus.PENDING, OrderStatus.PAYMENT_REVIEW] })
+      .where('order.status IN (:...statuses)', {
+        statuses: [OrderStatus.PENDING, OrderStatus.PAYMENT_REVIEW],
+      })
       .andWhere('order.createdAt <= :tenMinAgo', { tenMinAgo })
       .getMany();
 
@@ -929,16 +1188,18 @@ export class OrdersService {
         // Notify customer
         if (order.customer?.id) {
           const wasPaymentReview = order.status === OrderStatus.PAYMENT_REVIEW;
-          const title = wasPaymentReview ? 'Pagamento não aprovado' : 'Pedido não aceito';
+          const title = wasPaymentReview
+            ? 'Pagamento não aprovado'
+            : 'Pedido não aceito';
           const body = wasPaymentReview
             ? `O pagamento do pedido #${order.orderNumber} não foi aprovado pela análise de segurança. Seu cartão será estornado automaticamente.`
             : `A loja não respondeu a tempo. Seu pagamento será estornado automaticamente. Pedido #${order.orderNumber}`;
-          this.notificationsService.sendToAppUser(
-            order.customer.id,
-            title,
-            body,
-            { type: 'ORDER_STATUS', orderId: order.id },
-          ).catch(() => {});
+          this.notificationsService
+            .sendToAppUser(order.customer.id, title, body, {
+              type: 'ORDER_STATUS',
+              orderId: order.id,
+            })
+            .catch(() => {});
         }
       } catch (err) {
         console.error(`Failed to expire order ${order.id}:`, err);
@@ -959,7 +1220,9 @@ export class OrdersService {
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoinAndSelect('order.customer', 'customer')
-      .where('order.status IN (:...statuses)', { statuses: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.PICKED_UP] })
+      .where('order.status IN (:...statuses)', {
+        statuses: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.PICKED_UP],
+      })
       .andWhere('order.updatedAt <= :fiveMinAgo', { fiveMinAgo })
       .getMany();
 
@@ -985,8 +1248,12 @@ export class OrdersService {
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoinAndSelect('order.customer', 'customer')
-      .where('order.status = :status', { status: OrderStatus.DELIVERER_CONFIRMED_DELIVERY })
-      .andWhere('order.delivererConfirmedDeliveryAt <= :tenMinAgo', { tenMinAgo })
+      .where('order.status = :status', {
+        status: OrderStatus.DELIVERER_CONFIRMED_DELIVERY,
+      })
+      .andWhere('order.delivererConfirmedDeliveryAt <= :tenMinAgo', {
+        tenMinAgo,
+      })
       .andWhere('order.customerConfirmedAt IS NULL')
       .getMany();
 
@@ -1020,12 +1287,14 @@ export class OrdersService {
 
     for (const order of stuckOrders) {
       if (order.store?.owner?.id) {
-        this.notificationsService.sendToVendorUser(
-          order.store.owner.id,
-          `Pedido #${order.orderNumber}`,
-          'Nenhum entregador aceitou este pedido ainda. Considere cancelar ou aguardar.',
-          { type: 'NO_DELIVERER', orderId: order.id },
-        ).catch(() => {});
+        this.notificationsService
+          .sendToVendorUser(
+            order.store.owner.id,
+            `Pedido #${order.orderNumber}`,
+            'Nenhum entregador aceitou este pedido ainda. Considere cancelar ou aguardar.',
+            { type: 'NO_DELIVERER', orderId: order.id },
+          )
+          .catch(() => {});
       }
     }
 
@@ -1046,7 +1315,15 @@ export class OrdersService {
   async findDisputed(): Promise<Order[]> {
     return this.ordersRepository.find({
       where: { status: OrderStatus.DISPUTED },
-      relations: ['customer', 'store', 'store.owner', 'delivery', 'delivery.deliverer', 'items', 'items.product'],
+      relations: [
+        'customer',
+        'store',
+        'store.owner',
+        'delivery',
+        'delivery.deliverer',
+        'items',
+        'items.product',
+      ],
       order: { disputedAt: 'DESC' },
     });
   }
@@ -1070,7 +1347,10 @@ export class OrdersService {
     }
 
     // Settle payment: transfer vendor and deliverer shares from platform
-    if (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD') {
+    if (
+      order.paymentMethod === 'PIX' ||
+      order.paymentMethod === 'CREDIT_CARD'
+    ) {
       try {
         await this.paymentsService.settlePayment(order);
       } catch (err: any) {
@@ -1083,22 +1363,34 @@ export class OrdersService {
     this.pubSub.publish('orderUpdated', { orderUpdated: updated });
 
     if (updated.customer?.id) {
-      this.notificationsService.sendToAppUser(
-        updated.customer.id,
-        `Pedido #${updated.orderNumber}`,
-        'Pedido finalizado! Obrigado pela compra.',
-        { type: 'ORDER_STATUS', orderId: updated.id, status: OrderStatus.COMPLETED },
-      ).catch(() => {});
+      this.notificationsService
+        .sendToAppUser(
+          updated.customer.id,
+          `Pedido #${updated.orderNumber}`,
+          'Pedido finalizado! Obrigado pela compra.',
+          {
+            type: 'ORDER_STATUS',
+            orderId: updated.id,
+            status: OrderStatus.COMPLETED,
+          },
+        )
+        .catch(() => {});
     }
 
     // Notify vendor (completeOrderWithPayment bypasses updateStatus, so replicate vendor notification)
     if (updated.store?.owner?.id) {
-      this.notificationsService.sendToVendorUser(
-        updated.store.owner.id,
-        `Pedido #${updated.orderNumber}`,
-        'Pedido finalizado com sucesso!',
-        { type: 'ORDER_STATUS', orderId: updated.id, status: OrderStatus.COMPLETED },
-      ).catch(() => {});
+      this.notificationsService
+        .sendToVendorUser(
+          updated.store.owner.id,
+          `Pedido #${updated.orderNumber}`,
+          'Pedido finalizado com sucesso!',
+          {
+            type: 'ORDER_STATUS',
+            orderId: updated.id,
+            status: OrderStatus.COMPLETED,
+          },
+        )
+        .catch(() => {});
     }
 
     return updated;
@@ -1126,7 +1418,11 @@ export class OrdersService {
     return updated;
   }
 
-  async updateStatus(id: string, status: OrderStatus, user?: AppUser): Promise<Order> {
+  async updateStatus(
+    id: string,
+    status: OrderStatus,
+    user?: AppUser,
+  ): Promise<Order> {
     const order = await this.findById(id);
 
     const allowed = STATUS_TRANSITIONS[order.status];
@@ -1153,14 +1449,23 @@ export class OrdersService {
       order.delivery.deliveredAt = new Date();
       await this.deliveriesRepository.save(order.delivery);
       if (order.store?.id) {
-        this.verificationService.onSaleCompleted(order.store.id).catch(() => {});
+        this.verificationService
+          .onSaleCompleted(order.store.id)
+          .catch(() => {});
       }
     }
 
-    if (status === OrderStatus.CANCELLED || status === OrderStatus.REJECTED || status === OrderStatus.EXPIRED) {
+    if (
+      status === OrderStatus.CANCELLED ||
+      status === OrderStatus.REJECTED ||
+      status === OrderStatus.EXPIRED
+    ) {
       for (const item of order.items) {
         if (item.product) {
-          await this.productsService.restoreStock(item.product.id, item.quantity);
+          await this.productsService.restoreStock(
+            item.product.id,
+            item.quantity,
+          );
         }
       }
       // H2: Decrement coupon usage when order is cancelled/rejected/expired
@@ -1168,7 +1473,10 @@ export class OrdersService {
         try {
           await this.couponsService.decrementUsage(order.coupon.id);
         } catch (err: any) {
-          console.error(`Failed to decrement coupon usage for order ${order.id}:`, err?.message);
+          console.error(
+            `Failed to decrement coupon usage for order ${order.id}:`,
+            err?.message,
+          );
         }
       }
     }
@@ -1201,7 +1509,7 @@ export class OrdersService {
       toStatus: status,
       changedBy: user?.id || 'SYSTEM',
     });
-    this.orderStatusLogRepository.save(log).catch(() => {});
+    await this.orderStatusLogRepository.save(log).catch(() => {});
 
     const statusMessages: Record<string, string> = {
       [OrderStatus.ACCEPTED]: 'Seu pedido foi aceito!',
@@ -1210,53 +1518,76 @@ export class OrdersService {
       [OrderStatus.VENDOR_CONFIRMED_PICKUP]: 'Seu pedido saiu da loja!',
       [OrderStatus.PICKED_UP]: 'Entregador confirmou a retirada',
       [OrderStatus.DELIVERING]: 'Seu pedido está a caminho!',
-      [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: 'Seu pedido foi entregue! Confirme o recebimento.',
+      [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]:
+        'Seu pedido foi entregue! Confirme o recebimento.',
       [OrderStatus.DELIVERED]: 'Seu pedido foi entregue!',
       [OrderStatus.COMPLETED]: 'Pedido finalizado! Obrigado pela compra.',
       [OrderStatus.CANCELLED]: 'Seu pedido foi cancelado',
       [OrderStatus.REJECTED]: 'A loja não pôde aceitar seu pedido',
-      [OrderStatus.EXPIRED]: 'Seu pedido expirou. O pagamento será estornado automaticamente.',
+      [OrderStatus.EXPIRED]:
+        'Seu pedido expirou. O pagamento será estornado automaticamente.',
     };
 
     if (statusMessages[status] && order.customer?.id) {
-      this.notificationsService.sendToAppUser(
-        order.customer.id,
-        `Pedido #${order.orderNumber}`,
-        statusMessages[status],
-        { type: 'ORDER_STATUS', orderId: order.id, status },
-      ).catch(() => {});
+      this.notificationsService
+        .sendToAppUser(
+          order.customer.id,
+          `Pedido #${order.orderNumber}`,
+          statusMessages[status],
+          { type: 'ORDER_STATUS', orderId: order.id, status },
+        )
+        .catch(() => {});
     }
 
     // Vendor notifications for status changes
     const vendorMessages: Record<string, string> = {
       [OrderStatus.DELIVERING]: 'O entregador está a caminho do cliente',
-      [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]: 'Entregador confirmou a entrega ao cliente',
+      [OrderStatus.DELIVERER_CONFIRMED_DELIVERY]:
+        'Entregador confirmou a entrega ao cliente',
       [OrderStatus.COMPLETED]: 'Pedido finalizado com sucesso!',
       [OrderStatus.CANCELLED]: 'O pedido foi cancelado pelo cliente',
       [OrderStatus.DISPUTED]: 'O cliente abriu uma disputa sobre o pedido',
     };
 
     if (vendorMessages[status] && order.store?.owner?.id) {
-      this.notificationsService.sendToVendorUser(
-        order.store.owner.id,
-        `Pedido #${order.orderNumber}`,
-        vendorMessages[status],
-        { type: 'ORDER_STATUS', orderId: order.id, status },
-      ).catch(() => {});
+      this.notificationsService
+        .sendToVendorUser(
+          order.store.owner.id,
+          `Pedido #${order.orderNumber}`,
+          vendorMessages[status],
+          { type: 'ORDER_STATUS', orderId: order.id, status },
+        )
+        .catch(() => {});
     }
 
     // WhatsApp notifications
     const customerPhone = order.customer?.phone;
     if (customerPhone) {
       if (status === OrderStatus.ACCEPTED) {
-        this.whatsAppService.notifyOrderConfirmed(customerPhone, order.orderNumber, order.store?.name || '').catch(() => {});
+        this.whatsAppService
+          .notifyOrderConfirmed(
+            customerPhone,
+            order.orderNumber,
+            order.store?.name || '',
+          )
+          .catch(() => {});
       } else if (status === OrderStatus.READY) {
-        this.whatsAppService.notifyOrderReady(customerPhone, order.orderNumber).catch(() => {});
+        this.whatsAppService
+          .notifyOrderReady(customerPhone, order.orderNumber)
+          .catch(() => {});
       } else if (status === OrderStatus.DELIVERING) {
         const delivererName = order.delivery?.deliverer?.name || 'Entregador';
-        this.whatsAppService.notifyOrderDelivering(customerPhone, order.orderNumber, delivererName).catch(() => {});
+        this.whatsAppService
+          .notifyOrderDelivering(
+            customerPhone,
+            order.orderNumber,
+            delivererName,
+          )
+          .catch(() => {});
       } else if (status === OrderStatus.DELIVERED) {
-        this.whatsAppService.notifyOrderDelivered(customerPhone, order.orderNumber).catch(() => {});
+        this.whatsAppService
+          .notifyOrderDelivered(customerPhone, order.orderNumber)
+          .catch(() => {});
       }
     }
 
@@ -1264,14 +1595,22 @@ export class OrdersService {
     const full = await this.findById(saved.id);
     this.pubSub.publish('orderUpdated', { orderUpdated: full });
 
-    if (status === OrderStatus.READY && this.onOrderReadyCallback && !order.isPickup) {
+    if (
+      status === OrderStatus.READY &&
+      this.onOrderReadyCallback &&
+      !order.isPickup
+    ) {
       this.onOrderReadyCallback(full);
     }
 
     return saved;
   }
 
-  async adjustItemWeight(orderItemId: string, actualWeightGrams: number, vendorUserId?: string): Promise<Order> {
+  async adjustItemWeight(
+    orderItemId: string,
+    actualWeightGrams: number,
+    vendorUserId?: string,
+  ): Promise<Order> {
     const item = await this.orderItemsRepository.findOne({
       where: { id: orderItemId },
       relations: ['order', 'order.items', 'product'],
@@ -1281,10 +1620,15 @@ export class OrdersService {
     const order = await this.findById(item.order.id);
 
     if (vendorUserId && order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Você não tem permissão para ajustar itens deste pedido.');
+      throw new BadRequestException(
+        'Você não tem permissão para ajustar itens deste pedido.',
+      );
     }
 
-    if (order.status !== OrderStatus.PENDING && order.status !== OrderStatus.ACCEPTED) {
+    if (
+      order.status !== OrderStatus.PENDING &&
+      order.status !== OrderStatus.ACCEPTED
+    ) {
       throw new BadRequestException(
         'So e possivel ajustar o peso de itens em pedidos PENDING ou ACCEPTED',
       );
@@ -1299,11 +1643,19 @@ export class OrdersService {
     await this.orderItemsRepository.save(item);
 
     const updatedOrder = await this.findById(order.id);
-    const subtotal = updatedOrder.items.reduce((sum, i) => sum + Number(i.totalPrice), 0);
+    const subtotal = updatedOrder.items.reduce(
+      (sum, i) => sum + Number(i.totalPrice),
+      0,
+    );
     const discount = Number(updatedOrder.discount) || 0;
     updatedOrder.subtotal = subtotal;
     updatedOrder.total = subtotal - discount + Number(updatedOrder.deliveryFee);
-    updatedOrder.commissionAmount = Math.round(((subtotal - discount) * Number(updatedOrder.commissionPercent)) / 100 * 100) / 100;
+    updatedOrder.commissionAmount =
+      Math.round(
+        (((subtotal - discount) * Number(updatedOrder.commissionPercent)) /
+          100) *
+          100,
+      ) / 100;
     const saved = await this.ordersRepository.save(updatedOrder);
 
     const fullUpdated = await this.findById(saved.id);
@@ -1311,7 +1663,9 @@ export class OrdersService {
     return saved;
   }
 
-  private async hasAgeRestrictedProducts(items: OrderItemInput[]): Promise<boolean> {
+  private async hasAgeRestrictedProducts(
+    items: OrderItemInput[],
+  ): Promise<boolean> {
     for (const item of items) {
       const product = await this.productsService.findById(item.productId);
       if (product.category?.requiresAgeVerification) return true;

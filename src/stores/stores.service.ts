@@ -365,6 +365,10 @@ export class StoresService implements OnApplicationBootstrap {
     return store;
   }
 
+  async findByWhatsappNumber(number: string): Promise<Store | null> {
+    return this.storesRepository.findOne({ where: { whatsappNumber: number } });
+  }
+
   async findByOwner(ownerId: string): Promise<Store[]> {
     return this.storesRepository.find({
       where: { owner: { id: ownerId } },

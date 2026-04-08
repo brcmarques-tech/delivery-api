@@ -47,6 +47,10 @@ export class Store {
   @Column()
   phone: string;
 
+  @Field({ nullable: true })
+  @Column({ nullable: true, unique: true })
+  whatsappNumber: string;
+
   @Field()
   @Column()
   street: string;
