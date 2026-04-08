@@ -14,6 +14,7 @@ import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
 import { StoresService } from './stores.service';
 import { StorefrontResult, PublicStoreCard } from './dto/storefront-result';
+import { StorefrontResult } from './dto/storefront-result';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VerificationService } from './verification.service';
 import { CreateStoreInput } from './dto/create-store.input';
