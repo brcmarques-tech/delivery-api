@@ -26,6 +26,9 @@ export class AgentSession {
   @Column({ nullable: true })
   storeId: string;
 
+  @Column({ nullable: true })
+  role: string; // 'vendor' | 'customer'
+
   @Column({ type: 'jsonb', default: [] })
   conversationHistory: ConversationMessage[];
 
