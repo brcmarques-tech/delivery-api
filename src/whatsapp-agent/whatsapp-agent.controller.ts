@@ -36,6 +36,7 @@ export class WhatsAppAgentController {
       type: msg.type ?? 'text',
     };
 
+    this.logger.log(`Payload completo: ${JSON.stringify(msg)}`);
     await this.agentService.enqueueMessage(wahaPayload);
     this.logger.log(`Mensagem de ${wahaPayload.from} enfileirada`);
     return { ok: true };
