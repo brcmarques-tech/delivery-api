@@ -53,8 +53,8 @@ export class AuthResolver {
       const result = await this.otpService.sendPhoneCode(input.value, input.fallbackEmail);
       return result.method;
     }
-    await this.otpService.sendEmailCode(input.value);
-    return 'email';
+    const result = await this.otpService.sendEmailCode(input.value, input.fallbackPhone);
+    return result.method;
   }
 
   @Mutation(() => Boolean)
@@ -70,7 +70,8 @@ export class AuthResolver {
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard)
   async sendEmailVerification(@Args('userType', { defaultValue: 'app' }) userType: string, @CurrentUser() user: any): Promise<boolean> {
-    return this.otpService.sendEmailCode(user.email);
+    const result = await this.otpService.sendEmailCode(user.email);
+    return result.method === 'email' || result.method === 'whatsapp';
   }
 
   @Mutation(() => Boolean)

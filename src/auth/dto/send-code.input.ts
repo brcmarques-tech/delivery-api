@@ -10,4 +10,7 @@ export class SendCodeInput {
 
   @Field({ nullable: true })
   fallbackEmail?: string; // email to use if WhatsApp fails
+
+  @Field({ nullable: true })
+  fallbackPhone?: string; // phone to use if email fails
 }
