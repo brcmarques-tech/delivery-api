@@ -30,7 +30,9 @@ export class WhatsAppAgentController {
   ): Promise<{ ok: boolean }> {
     const secret = this.configService.get<string>('WAHA_WEBHOOK_SECRET');
     if (secret && wahaKey !== secret) {
-      this.logger.warn('WAHA webhook auth failed');
+      this.logger.warn(
+        `WAHA webhook auth failed — received key: "${wahaKey}", expected: "${secret}"`,
+      );
       throw new UnauthorizedException('Invalid webhook key');
     }
 
