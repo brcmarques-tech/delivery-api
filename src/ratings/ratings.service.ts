@@ -79,6 +79,10 @@ export class RatingsService {
     return result?.avg ? parseFloat(result.avg) : 0;
   }
 
+  async totalStoreRatings(storeId: string): Promise<number> {
+    return this.ratingsRepository.count({ where: { storeId } });
+  }
+
   async ratingForAppointment(appointmentId: string): Promise<ServiceRating | null> {
     return this.ratingsRepository.findOne({
       where: { appointmentId },
