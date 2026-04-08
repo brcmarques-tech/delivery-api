@@ -1,9 +1,19 @@
-import { Resolver, Query, Mutation, Args, Float, Int, ResolveField, Parent, Subscription } from '@nestjs/graphql';
+import {
+  Resolver,
+  Query,
+  Mutation,
+  Args,
+  Float,
+  Int,
+  ResolveField,
+  Parent,
+  Subscription,
+} from '@nestjs/graphql';
 import { UseGuards, Inject } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
 import { StoresService } from './stores.service';
-import { StorefrontResult } from './dto/storefront-result';
+import { StorefrontResult, PublicStoreCard } from './dto/storefront-result';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VerificationService } from './verification.service';
 import { CreateStoreInput } from './dto/create-store.input';
@@ -79,6 +89,11 @@ export class StoresResolver {
     return this.storesService.getPublicStorefront(storeId, slug);
   }
 
+  @Query(() => [PublicStoreCard])
+  publicStores(): Promise<PublicStoreCard[]> {
+    return this.storesService.getPublicStores();
+  }
+
   @Query(() => [Store])
   nearbyStores(
     @Args('latitude', { type: () => Float }) lat: number,
@@ -113,7 +128,11 @@ export class StoresResolver {
     @Args('password') password: string,
     @CurrentUser() user: VendorUser,
   ): Promise<boolean> {
-    return this.storesService.requestVendorStoreDelete(storeId, user.id, password);
+    return this.storesService.requestVendorStoreDelete(
+      storeId,
+      user.id,
+      password,
+    );
   }
 
   @Query(() => [Store])
@@ -134,13 +153,14 @@ export class StoresResolver {
     const basePrice = await this.platformConfigService.getDeliveryBasePrice();
 
     const R = 6371;
-    const dLat = (customerLat - Number(store.latitude)) * Math.PI / 180;
-    const dLng = (customerLng - Number(store.longitude)) * Math.PI / 180;
+    const dLat = ((customerLat - Number(store.latitude)) * Math.PI) / 180;
+    const dLng = ((customerLng - Number(store.longitude)) * Math.PI) / 180;
     const a =
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(Number(store.latitude) * Math.PI / 180) *
-        Math.cos(customerLat * Math.PI / 180) *
-        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      Math.cos((Number(store.latitude) * Math.PI) / 180) *
+        Math.cos((customerLat * Math.PI) / 180) *
+        Math.sin(dLng / 2) *
+        Math.sin(dLng / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     const distanceKm = R * c;
 
@@ -164,21 +184,27 @@ export class StoresResolver {
     const storeLng = Number(store.longitude);
 
     const R = 6371;
-    const dLat1 = (customerLat - storeLat) * Math.PI / 180;
-    const dLng1 = (customerLng - storeLng) * Math.PI / 180;
+    const dLat1 = ((customerLat - storeLat) * Math.PI) / 180;
+    const dLng1 = ((customerLng - storeLng) * Math.PI) / 180;
     const a1 =
       Math.sin(dLat1 / 2) * Math.sin(dLat1 / 2) +
-      Math.cos(storeLat * Math.PI / 180) *
-        Math.cos(customerLat * Math.PI / 180) *
-        Math.sin(dLng1 / 2) * Math.sin(dLng1 / 2);
-    const storeToCustomerKm = R * 2 * Math.atan2(Math.sqrt(a1), Math.sqrt(1 - a1));
+      Math.cos((storeLat * Math.PI) / 180) *
+        Math.cos((customerLat * Math.PI) / 180) *
+        Math.sin(dLng1 / 2) *
+        Math.sin(dLng1 / 2);
+    const storeToCustomerKm =
+      R * 2 * Math.atan2(Math.sqrt(a1), Math.sqrt(1 - a1));
 
-    const nearest = this.delivererTracker.getNearestDelivererInfo(storeLat, storeLng);
+    const nearest = this.delivererTracker.getNearestDelivererInfo(
+      storeLat,
+      storeLng,
+    );
     const delivererToStoreKm = nearest ? nearest.distanceKm : 3;
     const vehicleType = nearest ? nearest.vehicleType : 'MOTO';
     const speed = VEHICLE_AVG_SPEEDS_KMH[vehicleType] || DEFAULT_AVG_SPEED_KMH;
 
-    const totalDistanceKm = (delivererToStoreKm + storeToCustomerKm) * ROAD_FACTOR;
+    const totalDistanceKm =
+      (delivererToStoreKm + storeToCustomerKm) * ROAD_FACTOR;
     const travelMinutes = (totalDistanceKm / speed) * 60;
     const totalMinutes = travelMinutes + PREPARATION_TIME_MINUTES;
 
@@ -188,10 +214,20 @@ export class StoresResolver {
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  async toggleStoreActive(@Args('id') id: string, @CurrentUser() admin: any): Promise<Store> {
+  async toggleStoreActive(
+    @Args('id') id: string,
+    @CurrentUser() admin: any,
+  ): Promise<Store> {
     const result = await this.storesService.toggleActive(id);
     const adminEmail = admin.notificationEmail || admin.email;
-    this.mailService.sendAdminActionEmail(adminEmail, admin.name, `Loja ${result.isActive ? 'ativada' : 'desativada'}`, `Loja: ${result.name} (ID: ${result.id})`).catch(() => {});
+    this.mailService
+      .sendAdminActionEmail(
+        adminEmail,
+        admin.name,
+        `Loja ${result.isActive ? 'ativada' : 'desativada'}`,
+        `Loja: ${result.name} (ID: ${result.id})`,
+      )
+      .catch(() => {});
     return result;
   }
 
@@ -240,7 +276,14 @@ export class StoresResolver {
     }
     const result = await this.storesService.saveStore(store);
     const adminEmail = admin.notificationEmail || admin.email;
-    this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Verificacao de loja alterada', `Loja: ${store.name}\nNivel: ${level}${score !== undefined ? `\nScore: ${score}` : ''}`).catch(() => {});
+    this.mailService
+      .sendAdminActionEmail(
+        adminEmail,
+        admin.name,
+        'Verificacao de loja alterada',
+        `Loja: ${store.name}\nNivel: ${level}${score !== undefined ? `\nScore: ${score}` : ''}`,
+      )
+      .catch(() => {});
     return result;
   }
 

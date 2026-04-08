@@ -21,6 +21,7 @@ import {
   StorefrontResult,
   StorefrontCategory,
   StorefrontProduct,
+  PublicStoreCard,
 } from './dto/storefront-result';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { AppUser } from '../users/entities/app-user.entity';
@@ -195,6 +196,43 @@ export class StoresService implements OnApplicationBootstrap {
       totalRatings,
       categories,
     };
+  }
+
+  async getPublicStores(): Promise<PublicStoreCard[]> {
+    const stores = await this.storesRepository.find({
+      where: { isActive: true },
+      order: { name: 'ASC' },
+    });
+
+    const results = await Promise.all(
+      stores.map(async (store) => {
+        const [avgRating, totalRatings] = await Promise.all([
+          this.ratingsService.averageStoreRating(store.id),
+          this.ratingsService.totalStoreRatings(store.id),
+        ]);
+        return {
+          id: store.id,
+          slug: store.slug,
+          name: store.name,
+          description: store.description,
+          logoUrl: store.logoUrl,
+          bannerUrl: store.bannerUrl,
+          city: store.city,
+          state: store.state,
+          isOpen: store.isOpen,
+          storeType: store.storeType,
+          deliveryFee: Number(store.deliveryFee),
+          freeDelivery: store.freeDelivery,
+          estimatedDeliveryMinutes: store.estimatedDeliveryMinutes,
+          minimumOrder: Number(store.minimumOrder),
+          verificationLevel: store.verificationLevel,
+          averageRating: avgRating,
+          totalRatings,
+        };
+      }),
+    );
+
+    return results;
   }
 
   private isInBrazil(lat: number, lng: number): boolean {
