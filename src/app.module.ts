@@ -31,6 +31,7 @@ import { CartModule } from './cart/cart.module';
 import { AppointmentsModule } from './appointments/appointments.module';
 import { RatingsModule } from './ratings/ratings.module';
 import { SiteConfigModule } from './site-config/site-config.module';
+import { WhatsAppAgentModule } from './whatsapp-agent/whatsapp-agent.module';
 
 @Module({
   providers: [
@@ -105,6 +106,7 @@ import { SiteConfigModule } from './site-config/site-config.module';
     AppointmentsModule,
     RatingsModule,
     SiteConfigModule,
+    WhatsAppAgentModule,
   ],
 })
 export class AppModule {}
