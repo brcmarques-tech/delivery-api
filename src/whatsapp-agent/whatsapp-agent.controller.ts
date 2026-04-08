@@ -26,9 +26,16 @@ export class WhatsAppAgentController {
       return { ok: true };
     }
 
+    // WhatsApp new LID format: resolve to real phone via remoteJidAlt
+    let from: string = msg.from;
+    if (from.endsWith('@lid')) {
+      const alt: string = msg._data?.key?.remoteJidAlt ?? '';
+      if (alt) from = alt.replace(/@.*$/, '');
+    }
+
     const wahaPayload: WahaMessagePayload = {
       id: msg.id ?? '',
-      from: msg.from,
+      from,
       to: msg.to ?? msg.session ?? '',
       body: msg.body,
       timestamp: msg.timestamp ?? Date.now(),
@@ -36,7 +43,6 @@ export class WhatsAppAgentController {
       type: msg.type ?? 'text',
     };
 
-    this.logger.log(`Payload completo: ${JSON.stringify(msg)}`);
     await this.agentService.enqueueMessage(wahaPayload);
     this.logger.log(`Mensagem de ${wahaPayload.from} enfileirada`);
     return { ok: true };
