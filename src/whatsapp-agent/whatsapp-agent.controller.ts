@@ -1,13 +1,4 @@
-import {
-  Controller,
-  Post,
-  Body,
-  Headers,
-  HttpCode,
-  UnauthorizedException,
-  Logger,
-} from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Controller, Post, Body, HttpCode, Logger } from '@nestjs/common';
 import {
   WhatsAppAgentService,
   WahaMessagePayload,
@@ -17,25 +8,11 @@ import {
 export class WhatsAppAgentController {
   private readonly logger = new Logger(WhatsAppAgentController.name);
 
-  constructor(
-    private readonly agentService: WhatsAppAgentService,
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly agentService: WhatsAppAgentService) {}
 
   @Post('webhook')
   @HttpCode(200)
-  async handleWebhook(
-    @Body() body: any,
-    @Headers('x-waha-key') wahaKey: string,
-  ): Promise<{ ok: boolean }> {
-    const secret = this.configService.get<string>('WAHA_WEBHOOK_SECRET');
-    if (secret && wahaKey !== secret) {
-      this.logger.warn(
-        `WAHA webhook auth failed — received key: "${wahaKey}", expected: "${secret}"`,
-      );
-      throw new UnauthorizedException('Invalid webhook key');
-    }
-
+  async handleWebhook(@Body() body: any): Promise<{ ok: boolean }> {
     // WAHA sends event wrapped in { event, payload }
     const event = body?.event ?? body?.type;
     const payload = body?.payload ?? body;
