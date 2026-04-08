@@ -488,6 +488,15 @@ export class OrdersService {
         .catch(() => {});
     }
 
+    if (savedOrder.customer?.phone) {
+      const itemCount = savedOrder.items?.length ?? 0;
+      const msg =
+        `Olá ${savedOrder.customer.name}! Recebemos seu pedido *#${savedOrder.orderNumber}* na *${store.name}*.\n` +
+        `Total: R$${total.toFixed(2)} | ${itemCount} ${itemCount === 1 ? 'item' : 'itens'}\n` +
+        `Aguardando confirmação da loja. Responda aqui para consultar o status.`;
+      this.whatsAppService.sendText(savedOrder.customer.phone, msg).catch(() => {});
+    }
+
     this.pubSub.publish('orderCreated', { orderCreated: savedOrder });
     this.pubSub.publish('orderUpdated', { orderUpdated: savedOrder });
 
