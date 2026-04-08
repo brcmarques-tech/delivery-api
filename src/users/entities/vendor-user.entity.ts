@@ -110,6 +110,16 @@ export class VendorUser {
   @Column({ nullable: true })
   pagarmeRecipientId: string;
 
+  // Pagar.me subscription (recurring billing)
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  pagarmeSubscriptionId: string;
+
+  // Pagar.me customer ID
+  @Field({ nullable: true })
+  @Column({ nullable: true })
+  pagarmeCustomerId: string;
+
   // Payment provider connected status (DB column kept as mpConnected for migration compat)
   @Field()
   @Column({ name: 'mpConnected', default: false })

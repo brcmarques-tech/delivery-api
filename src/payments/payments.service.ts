@@ -6,6 +6,8 @@ import { HttpService } from '@nestjs/axios';
 import { Payment } from './entities/payment.entity';
 import { SavedCard } from './entities/saved-card.entity';
 import { WebhookEvent } from './entities/webhook-event.entity';
+import { Subscription } from './entities/subscription.entity';
+import { SubscriptionPlansService } from './subscription-plans.service';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { Store } from '../stores/entities/store.entity';
@@ -89,6 +91,8 @@ export class PaymentsService implements OnModuleDestroy {
     private savedCardsRepository: Repository<SavedCard>,
     @InjectRepository(WebhookEvent)
     private webhookEventsRepository: Repository<WebhookEvent>,
+    @InjectRepository(Subscription)
+    private subscriptionsRepository: Repository<Subscription>,
     private configService: ConfigService,
     private httpService: HttpService,
     @Inject(forwardRef(() => AppUsersService))
@@ -98,6 +102,7 @@ export class PaymentsService implements OnModuleDestroy {
     private platformConfigService: PlatformConfigService,
     private whatsAppService: WhatsAppService,
     private notificationsService: NotificationsService,
+    private subscriptionPlansService: SubscriptionPlansService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {
     const secretKey = this.configService.get('PAGARME_SECRET_KEY') || '';
@@ -1236,7 +1241,7 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Plan Upgrade ──────────────────────────────────────────────────────
 
-  async createPlanUpgrade(user: VendorUser, plan: VendorPlan, billingPeriod: string = 'monthly'): Promise<Payment> {
+  async createPlanUpgrade(user: VendorUser, plan: VendorPlan, billingPeriod: string = 'monthly', cardToken?: string, paymentMethod: string = 'credit_card'): Promise<Payment> {
     // M5: Use dynamic config from platformConfigService instead of hardcoded PLAN_CONFIGS
     const planConfig = await this.platformConfigService.getPlanConfig(plan);
     if (!planConfig || planConfig.monthlyPrice === 0) {
@@ -1260,6 +1265,13 @@ export class PaymentsService implements OnModuleDestroy {
       throw new BadRequestException('Voce precisa aceitar o contrato de assinatura antes de assinar um plano.');
     }
 
+    if (paymentMethod === 'credit_card' && !cardToken) {
+      throw new BadRequestException('Token do cartão é obrigatório para assinatura com cartão.');
+    }
+    if (!['credit_card', 'pix'].includes(paymentMethod)) {
+      throw new BadRequestException('Método de pagamento inválido. Use credit_card ou pix.');
+    }
+
     const billingMap: Record<string, { price: number; months: number; label: string }> = {
       monthly: { price: planConfig.monthlyPrice, months: 1, label: 'Mensal' },
       quarterly: { price: planConfig.quarterlyPrice, months: 3, label: 'Trimestral' },
@@ -1269,6 +1281,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     const billing = billingMap[billingPeriod] || billingMap.monthly;
 
+    // Calculate badge discount
     let badgeDiscount = 0;
     const stores = await this.storesRepository.find({
       where: { owner: { id: user.id } },
@@ -1288,67 +1301,242 @@ export class PaymentsService implements OnModuleDestroy {
 
     const totalCents = Math.round(billing.price * 100);
 
-    // Create payment link for plan upgrade
-    const body: any = {
-      name: `Plano ${plan} ${billing.label} - bcmTech Shopping`,
-      type: 'order',
-      amount: totalCents,
-      accepted_payment_methods: ['credit_card', 'pix'],
-      payment_settings: {
-        credit_card: {
-          installments: Array.from({ length: Math.min(billing.months, 12) }, (_, i) => ({
-            number: i + 1,
-            total: totalCents,
-          })),
-          statement_descriptor: STATEMENT_DESCRIPTOR,
-        },
-        pix: {
-          expires_in: 86400, // 24 hours
-        },
-      },
-      items: [
-        {
-          description: `Plano ${plan} ${billing.label}`.substring(0, 256),
-          quantity: 1,
-          amount: totalCents,
-        },
-      ],
+    // Ensure Pagar.me customer exists
+    const customerId = await this.ensurePagarmeCustomer(user);
+
+    // Get the Pagar.me plan ID
+    const pagarmePlan = await this.subscriptionPlansService.getPagarmePlan(plan, billingPeriod);
+    if (!pagarmePlan) {
+      throw new BadRequestException('Plano de assinatura não encontrado. Tente novamente em alguns minutos.');
+    }
+
+    // Cancel existing subscription if any
+    if (user.pagarmeSubscriptionId) {
+      await this.cancelExistingSubscription(user);
+    }
+
+    // Build subscription body
+    const installmentsCount = paymentMethod === 'credit_card' ? billing.months : 1;
+    const subscriptionBody: any = {
+      plan_id: pagarmePlan.pagarmePlanId,
+      payment_method: paymentMethod,
+      customer_id: customerId,
+      statement_descriptor: STATEMENT_DESCRIPTOR,
       metadata: {
         type: 'plan_upgrade',
         user_id: user.id,
         plan,
         billing_period: billingPeriod,
-        duration_months: billing.months,
+        payment_method: paymentMethod,
       },
     };
 
-    try {
-      const result = await this.pagarmePost('/paymentlinks', body);
-      const checkoutUrl = result.url || `https://pagar.me/pay/${result.id}`;
+    if (paymentMethod === 'credit_card') {
+      subscriptionBody.card_token = cardToken;
+      subscriptionBody.installments = installmentsCount;
+    }
 
+    // Apply badge discount as flat discount on the subscription
+    if (badgeDiscount > 0) {
+      const discountCents = Math.round(totalCents * badgeDiscount / 100);
+      subscriptionBody.discounts = [{
+        value: discountCents,
+        discount_type: 'flat',
+        cycles: 0, // permanent
+      }];
+    }
+
+    try {
+      const result = await this.pagarmePost('/subscriptions', subscriptionBody);
+
+      // Save local Subscription entity
+      const subscription = this.subscriptionsRepository.create({
+        pagarmeSubscriptionId: result.id,
+        pagarmePlanId: pagarmePlan.pagarmePlanId,
+        pagarmeCustomerId: customerId,
+        plan,
+        billingPeriod,
+        status: result.status || 'pending',
+        currentPeriodStart: result.current_cycle?.start_at ? new Date(result.current_cycle.start_at) : new Date(),
+        currentPeriodEnd: result.current_cycle?.end_at ? new Date(result.current_cycle.end_at) : null,
+        amount: billing.price,
+        installments: installmentsCount,
+        metadata: { badgeDiscount, originalPriceCents: Math.round(planConfig.monthlyPrice * billing.months * 100) },
+        vendorUser: user,
+      });
+      await this.subscriptionsRepository.save(subscription);
+
+      // Update vendor user with subscription ID
+      await this.vendorUsersService.updateVendorPlan(user.id, plan, billing.months);
+      await this.paymentsRepository.manager.getRepository(VendorUser).update(user.id, {
+        pagarmeSubscriptionId: result.id,
+        pagarmeCustomerId: customerId,
+      });
+
+      // Create payment record
       const payment = this.paymentsRepository.create({
-        type: 'PLAN_UPGRADE',
-        description: `Upgrade para plano ${plan} (${billing.label})`,
+        type: 'SUBSCRIPTION',
+        description: `Assinatura ${plan} (${billing.label})`,
         amount: billing.price,
         status: 'pending',
         pagarmeOrderId: result.id,
-        checkoutUrl,
-        metadata: { plan, durationMonths: billing.months, billingPeriod },
+        pagarmeSubscriptionId: result.id,
+        metadata: { plan, billingPeriod, installments: installmentsCount, subscriptionId: subscription.id },
         vendorUser: user,
       });
-
       const saved = await this.paymentsRepository.save(payment);
 
       if (user.phone) {
         this.whatsAppService.notifyPlanUpgrade(user.phone, user.name, plan, billing.label).catch(() => {});
       }
 
+      this.logger.log(`Subscription created for vendor ${user.id}: ${result.id} (${plan} ${billingPeriod})`);
       return saved;
     } catch (err: any) {
       const errorData = err.response?.data;
-      this.logger.error(`Plan upgrade payment link failed: ${JSON.stringify(errorData || err.message)}`);
-      throw new BadRequestException('Erro ao criar link de pagamento para upgrade de plano');
+      this.logger.error(`Subscription creation failed: ${JSON.stringify(errorData || err.message)}`);
+      throw new BadRequestException('Erro ao criar assinatura. Verifique os dados do cartão e tente novamente.');
     }
+  }
+
+  /**
+   * Ensure vendor has a Pagar.me customer record.
+   * Creates one if pagarmeCustomerId is null.
+   */
+  private async ensurePagarmeCustomer(user: VendorUser): Promise<string> {
+    if (user.pagarmeCustomerId) return user.pagarmeCustomerId;
+
+    const phone = this.formatPhoneForPagarme(user.phone);
+    const body: any = {
+      name: user.name,
+      email: user.email,
+      type: 'individual',
+      document: user.cpf?.replace(/\D/g, '') || undefined,
+      phones: phone ? { mobile_phone: phone } : undefined,
+    };
+
+    try {
+      const result = await this.pagarmePost('/customers', body);
+      await this.paymentsRepository.manager.getRepository(VendorUser).update(user.id, {
+        pagarmeCustomerId: result.id,
+      });
+      this.logger.log(`Created Pagar.me customer for vendor ${user.id}: ${result.id}`);
+      return result.id;
+    } catch (err: any) {
+      this.logger.error(`Failed to create Pagar.me customer: ${JSON.stringify(err.response?.data || err.message)}`);
+      throw new BadRequestException('Erro ao criar cadastro de cliente. Verifique seus dados.');
+    }
+  }
+
+  /**
+   * Cancel existing Pagar.me subscription (graceful — cancel at period end).
+   */
+  private async cancelExistingSubscription(user: VendorUser): Promise<void> {
+    try {
+      await this.pagarmeDelete(`/subscriptions/${user.pagarmeSubscriptionId}`);
+      this.logger.log(`Canceled previous subscription ${user.pagarmeSubscriptionId} for vendor ${user.id}`);
+
+      // Update local subscription record
+      await this.subscriptionsRepository.update(
+        { pagarmeSubscriptionId: user.pagarmeSubscriptionId },
+        { status: 'canceled', canceledAt: new Date() },
+      );
+    } catch (err: any) {
+      this.logger.warn(`Failed to cancel old subscription ${user.pagarmeSubscriptionId}: ${err.response?.data?.message || err.message}`);
+      // Don't block new subscription creation
+    }
+  }
+
+  // ─── Subscription Management ──────────────────────────────────────────
+
+  async getActiveSubscription(vendorId: string): Promise<Subscription | null> {
+    return this.subscriptionsRepository.findOne({
+      where: {
+        vendorUser: { id: vendorId },
+        status: 'active',
+      },
+      relations: ['vendorUser'],
+    }) || this.subscriptionsRepository.findOne({
+      where: {
+        vendorUser: { id: vendorId },
+        cancelAtPeriodEnd: true,
+      },
+      relations: ['vendorUser'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async cancelVendorSubscription(vendorId: string): Promise<void> {
+    const subscription = await this.subscriptionsRepository.findOne({
+      where: { vendorUser: { id: vendorId }, status: 'active' },
+      relations: ['vendorUser'],
+    });
+    if (!subscription) {
+      throw new BadRequestException('Nenhuma assinatura ativa encontrada.');
+    }
+
+    // Cancel at period end (vendor keeps plan until expiry)
+    try {
+      await this.pagarmeDelete(`/subscriptions/${subscription.pagarmeSubscriptionId}`);
+    } catch (err: any) {
+      this.logger.error(`Failed to cancel subscription on Pagar.me: ${err.response?.data?.message || err.message}`);
+      throw new BadRequestException('Erro ao cancelar assinatura. Tente novamente.');
+    }
+
+    subscription.cancelAtPeriodEnd = true;
+    subscription.status = 'canceled';
+    subscription.canceledAt = new Date();
+    await this.subscriptionsRepository.save(subscription);
+
+    this.logger.log(`Vendor ${vendorId} canceled subscription ${subscription.pagarmeSubscriptionId} (cancel at period end)`);
+  }
+
+  async updateSubscriptionCard(vendorId: string, cardToken: string): Promise<void> {
+    const vendor = await this.vendorUsersService.findById(vendorId);
+    if (!vendor?.pagarmeSubscriptionId) {
+      throw new BadRequestException('Nenhuma assinatura ativa encontrada.');
+    }
+
+    try {
+      await this.pagarmePatch(`/subscriptions/${vendor.pagarmeSubscriptionId}`, {
+        payment_method: 'credit_card',
+        card_token: cardToken,
+      });
+      this.logger.log(`Updated card for subscription ${vendor.pagarmeSubscriptionId}`);
+    } catch (err: any) {
+      this.logger.error(`Failed to update subscription card: ${err.response?.data?.message || err.message}`);
+      throw new BadRequestException('Erro ao atualizar cartão. Verifique os dados e tente novamente.');
+    }
+  }
+
+  async reactivateSubscription(vendorId: string): Promise<void> {
+    const subscription = await this.subscriptionsRepository.findOne({
+      where: { vendorUser: { id: vendorId }, cancelAtPeriodEnd: true },
+      relations: ['vendorUser'],
+    });
+    if (!subscription) {
+      throw new BadRequestException('Nenhuma assinatura pendente de cancelamento encontrada.');
+    }
+
+    // Pagar.me doesn't have a native "reactivate" — we need to create a new subscription
+    // For now, we just remove the cancelAtPeriodEnd flag if the Pagar.me sub is still active
+    try {
+      const remoteSub = await this.pagarmeGet(`/subscriptions/${subscription.pagarmeSubscriptionId}`);
+      if (remoteSub.status === 'canceled') {
+        throw new BadRequestException('A assinatura já foi cancelada no Pagar.me. Crie uma nova assinatura.');
+      }
+    } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
+      this.logger.error(`Failed to check subscription status: ${err.response?.data?.message || err.message}`);
+      throw new BadRequestException('Erro ao verificar status da assinatura.');
+    }
+
+    subscription.cancelAtPeriodEnd = false;
+    subscription.status = 'active';
+    subscription.canceledAt = null;
+    await this.subscriptionsRepository.save(subscription);
+
+    this.logger.log(`Vendor ${vendorId} reactivated subscription ${subscription.pagarmeSubscriptionId}`);
   }
 
   // ─── Promotion Checkout ────────────────────────────────────────────────
@@ -1610,6 +1798,20 @@ export class PaymentsService implements OnModuleDestroy {
       await this.handleOrderPaymentFailed(data);
     } else if (eventType.startsWith('anticipation.')) {
       this.logger.log(`Anticipation event: ${eventType} | id: ${data.id} | status: ${data.status}`);
+    } else if (eventType === 'subscription.created') {
+      await this.handleSubscriptionCreated(data);
+    } else if (eventType === 'subscription.updated') {
+      await this.handleSubscriptionUpdated(data);
+    } else if (eventType === 'subscription.canceled') {
+      await this.handleSubscriptionCanceled(data);
+    } else if (eventType === 'invoice.created') {
+      this.logger.log(`Invoice created: ${data.id} | subscription: ${data.subscription?.id}`);
+    } else if (eventType === 'invoice.paid') {
+      await this.handleInvoicePaid(data);
+    } else if (eventType === 'invoice.payment_failed') {
+      await this.handleInvoicePaymentFailed(data);
+    } else if (eventType === 'invoice.canceled') {
+      this.logger.log(`Invoice canceled: ${data.id} | subscription: ${data.subscription?.id}`);
     }
   }
 
@@ -2613,5 +2815,220 @@ export class PaymentsService implements OnModuleDestroy {
 
     const platformKeeps = commissionCents;
     this.logger.log(`Settlement for appointment ${appointment.appointmentNumber} | platform keeps: ${platformKeeps} cents`);
+  }
+
+  // ─── Subscription Webhook Handlers ──────────────────────────────────
+
+  private async handleSubscriptionCreated(data: any): Promise<void> {
+    const subscriptionId = data.id;
+    const local = await this.subscriptionsRepository.findOne({
+      where: { pagarmeSubscriptionId: subscriptionId },
+      relations: ['vendorUser'],
+    });
+
+    if (!local) {
+      this.logger.warn(`Subscription created webhook for unknown subscription: ${subscriptionId}`);
+      return;
+    }
+
+    local.status = data.status || 'active';
+    if (data.current_cycle) {
+      local.currentPeriodStart = data.current_cycle.start_at ? new Date(data.current_cycle.start_at) : local.currentPeriodStart;
+      local.currentPeriodEnd = data.current_cycle.end_at ? new Date(data.current_cycle.end_at) : local.currentPeriodEnd;
+    }
+    await this.subscriptionsRepository.save(local);
+
+    // Set plan and expiry
+    if (local.vendorUser && local.currentPeriodEnd) {
+      await this.vendorUsersService.updateVendorPlan(
+        local.vendorUser.id,
+        local.plan,
+        Math.ceil((local.currentPeriodEnd.getTime() - Date.now()) / (1000 * 60 * 60 * 24 * 30)),
+      );
+    }
+
+    // Update payment record
+    await this.paymentsRepository.update(
+      { pagarmeSubscriptionId: subscriptionId, status: 'pending' },
+      { status: 'approved' },
+    );
+
+    // Notify vendor
+    if (local.vendorUser?.phone) {
+      this.whatsAppService.sendText(
+        local.vendorUser.phone,
+        `✅ *Assinatura ativada!*\n\nSua assinatura do plano ${local.plan} foi ativada com sucesso.\n\nPróxima cobrança: ${local.currentPeriodEnd?.toLocaleDateString('pt-BR')}`,
+      ).catch(() => {});
+    }
+    if (local.vendorUser?.id) {
+      this.notificationsService.sendToVendorUser(
+        local.vendorUser.id,
+        'Assinatura ativada!',
+        `Sua assinatura do plano ${local.plan} está ativa.`,
+        { type: 'SUBSCRIPTION_ACTIVATED', subscriptionId: local.id },
+      ).catch(() => {});
+    }
+
+    this.logger.log(`Subscription activated: ${subscriptionId} (${local.plan})`);
+  }
+
+  private async handleSubscriptionUpdated(data: any): Promise<void> {
+    const subscriptionId = data.id;
+    const local = await this.subscriptionsRepository.findOne({
+      where: { pagarmeSubscriptionId: subscriptionId },
+    });
+
+    if (!local) return;
+
+    local.status = data.status || local.status;
+    if (data.current_cycle) {
+      local.currentPeriodStart = data.current_cycle.start_at ? new Date(data.current_cycle.start_at) : local.currentPeriodStart;
+      local.currentPeriodEnd = data.current_cycle.end_at ? new Date(data.current_cycle.end_at) : local.currentPeriodEnd;
+    }
+    await this.subscriptionsRepository.save(local);
+    this.logger.log(`Subscription updated: ${subscriptionId} → status: ${local.status}`);
+  }
+
+  private async handleSubscriptionCanceled(data: any): Promise<void> {
+    const subscriptionId = data.id;
+    const local = await this.subscriptionsRepository.findOne({
+      where: { pagarmeSubscriptionId: subscriptionId },
+      relations: ['vendorUser'],
+    });
+
+    if (!local) return;
+
+    local.status = 'canceled';
+    local.canceledAt = new Date();
+    await this.subscriptionsRepository.save(local);
+
+    // If cancel_at_period_end, keep plan until period ends; otherwise downgrade immediately
+    if (!local.cancelAtPeriodEnd && local.vendorUser) {
+      await this.vendorUsersService.updateVendorPlan(local.vendorUser.id, VendorPlan.FREE, 0);
+      await this.paymentsRepository.manager.getRepository(VendorUser).update(local.vendorUser.id, {
+        pagarmeSubscriptionId: null as any,
+      });
+    }
+
+    if (local.vendorUser?.phone) {
+      this.whatsAppService.sendText(
+        local.vendorUser.phone,
+        local.cancelAtPeriodEnd
+          ? `⚠️ *Assinatura cancelada*\n\nSua assinatura do plano ${local.plan} foi cancelada. Você mantém o acesso até ${local.currentPeriodEnd?.toLocaleDateString('pt-BR')}.`
+          : `⚠️ *Assinatura cancelada*\n\nSua assinatura do plano ${local.plan} foi cancelada e seu plano foi alterado para FREE.`,
+      ).catch(() => {});
+    }
+    if (local.vendorUser?.id) {
+      this.notificationsService.sendToVendorUser(
+        local.vendorUser.id,
+        'Assinatura cancelada',
+        local.cancelAtPeriodEnd
+          ? `Sua assinatura será encerrada em ${local.currentPeriodEnd?.toLocaleDateString('pt-BR')}.`
+          : 'Sua assinatura foi cancelada e seu plano foi alterado para FREE.',
+        { type: 'SUBSCRIPTION_CANCELED', subscriptionId: local.id },
+      ).catch(() => {});
+    }
+
+    this.logger.log(`Subscription canceled: ${subscriptionId} (cancelAtPeriodEnd: ${local.cancelAtPeriodEnd})`);
+  }
+
+  private async handleInvoicePaid(data: any): Promise<void> {
+    const subscriptionId = data.subscription?.id;
+    if (!subscriptionId) {
+      this.logger.warn('Invoice paid without subscription ID');
+      return;
+    }
+
+    const local = await this.subscriptionsRepository.findOne({
+      where: { pagarmeSubscriptionId: subscriptionId },
+      relations: ['vendorUser'],
+    });
+
+    if (!local) {
+      this.logger.warn(`Invoice paid for unknown subscription: ${subscriptionId}`);
+      return;
+    }
+
+    // Update cycle dates
+    if (data.cycle) {
+      local.currentPeriodStart = data.cycle.start_at ? new Date(data.cycle.start_at) : local.currentPeriodStart;
+      local.currentPeriodEnd = data.cycle.end_at ? new Date(data.cycle.end_at) : local.currentPeriodEnd;
+    }
+    local.status = 'active';
+    await this.subscriptionsRepository.save(local);
+
+    // Extend plan expiry
+    if (local.vendorUser && local.currentPeriodEnd) {
+      const monthsRemaining = Math.max(1, Math.ceil(
+        (local.currentPeriodEnd.getTime() - Date.now()) / (1000 * 60 * 60 * 24 * 30),
+      ));
+      await this.vendorUsersService.updateVendorPlan(local.vendorUser.id, local.plan, monthsRemaining);
+    }
+
+    // Create renewal payment record
+    const invoiceAmount = data.amount ? data.amount / 100 : Number(local.amount);
+    const payment = this.paymentsRepository.create({
+      type: 'SUBSCRIPTION_RENEWAL',
+      description: `Renovação ${local.plan} (${local.billingPeriod})`,
+      amount: invoiceAmount,
+      status: 'approved',
+      pagarmeOrderId: data.id,
+      pagarmeSubscriptionId: subscriptionId,
+      pagarmeInvoiceId: data.id,
+      metadata: { plan: local.plan, billingPeriod: local.billingPeriod, cycle: data.cycle?.cycle },
+      vendorUser: local.vendorUser,
+    });
+    await this.paymentsRepository.save(payment);
+
+    // Notify
+    if (local.vendorUser?.phone) {
+      this.whatsAppService.sendText(
+        local.vendorUser.phone,
+        `✅ *Pagamento da assinatura confirmado!*\n\nR$ ${invoiceAmount.toFixed(2)} - Plano ${local.plan}\nPróxima cobrança: ${local.currentPeriodEnd?.toLocaleDateString('pt-BR')}`,
+      ).catch(() => {});
+    }
+    if (local.vendorUser?.id) {
+      this.notificationsService.sendToVendorUser(
+        local.vendorUser.id,
+        'Pagamento confirmado',
+        `Sua assinatura do plano ${local.plan} foi renovada.`,
+        { type: 'SUBSCRIPTION_RENEWED', subscriptionId: local.id },
+      ).catch(() => {});
+    }
+
+    this.logger.log(`Invoice paid for subscription ${subscriptionId} | cycle: ${data.cycle?.cycle}`);
+  }
+
+  private async handleInvoicePaymentFailed(data: any): Promise<void> {
+    const subscriptionId = data.subscription?.id;
+    if (!subscriptionId) return;
+
+    const local = await this.subscriptionsRepository.findOne({
+      where: { pagarmeSubscriptionId: subscriptionId },
+      relations: ['vendorUser'],
+    });
+
+    if (!local) return;
+
+    local.status = 'past_due';
+    await this.subscriptionsRepository.save(local);
+
+    // Notify vendor to update card
+    if (local.vendorUser?.phone) {
+      this.whatsAppService.sendText(
+        local.vendorUser.phone,
+        `⚠️ *Falha no pagamento da assinatura*\n\nNão conseguimos cobrar sua assinatura do plano ${local.plan}.\n\nPor favor, atualize seu cartão de crédito no painel para evitar a suspensão do plano.`,
+      ).catch(() => {});
+    }
+    if (local.vendorUser?.id) {
+      this.notificationsService.sendToVendorUser(
+        local.vendorUser.id,
+        'Falha no pagamento',
+        'Não conseguimos cobrar sua assinatura. Atualize seu cartão de crédito.',
+        { type: 'SUBSCRIPTION_PAYMENT_FAILED', subscriptionId: local.id },
+      ).catch(() => {});
+    }
+
+    this.logger.warn(`Invoice payment failed for subscription ${subscriptionId}`);
   }
 }
