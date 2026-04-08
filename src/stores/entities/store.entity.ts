@@ -28,6 +28,10 @@ export class Store {
   name: string;
 
   @Field({ nullable: true })
+  @Column({ nullable: true, unique: true })
+  slug: string;
+
+  @Field({ nullable: true })
   @Column({ nullable: true })
   description: string;
 

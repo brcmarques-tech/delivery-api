@@ -3,6 +3,7 @@ import { UseGuards, Inject } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
 import { StoresService } from './stores.service';
+import { StorefrontResult } from './dto/storefront-result';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VerificationService } from './verification.service';
 import { CreateStoreInput } from './dto/create-store.input';
@@ -63,6 +64,19 @@ export class StoresResolver {
   @Query(() => Store)
   store(@Args('id') id: string): Promise<Store> {
     return this.storesService.findById(id);
+  }
+
+  @Query(() => Store)
+  storeBySlug(@Args('slug') slug: string): Promise<Store> {
+    return this.storesService.findBySlug(slug);
+  }
+
+  @Query(() => StorefrontResult)
+  publicStorefront(
+    @Args('storeId', { nullable: true }) storeId?: string,
+    @Args('slug', { nullable: true }) slug?: string,
+  ): Promise<StorefrontResult> {
+    return this.storesService.getPublicStorefront(storeId, slug);
   }
 
   @Query(() => [Store])
