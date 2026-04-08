@@ -1,4 +1,12 @@
-import { Injectable, NotFoundException, BadRequestException, UnauthorizedException, Logger, Inject } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  UnauthorizedException,
+  Logger,
+  Inject,
+  OnApplicationBootstrap,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
@@ -9,6 +17,11 @@ import { Store } from './entities/store.entity';
 import { StoreFollow } from './entities/store-follow.entity';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
+import {
+  StorefrontResult,
+  StorefrontCategory,
+  StorefrontProduct,
+} from './dto/storefront-result';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
@@ -16,9 +29,10 @@ import { MailService } from '../mail/mail.service';
 import { peppered } from '../common/utils/pepper';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { RatingsService } from '../ratings/ratings.service';
 
 @Injectable()
-export class StoresService {
+export class StoresService implements OnApplicationBootstrap {
   private readonly logger = new Logger(StoresService.name);
 
   constructor(
@@ -35,13 +49,165 @@ export class StoresService {
     private whatsAppService: WhatsAppService,
     private configService: ConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
+    private ratingsService: RatingsService,
   ) {}
+
+  async onApplicationBootstrap(): Promise<void> {
+    await this.backfillSlugs();
+  }
+
+  generateSlug(name: string): string {
+    return name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .substring(0, 50);
+  }
+
+  async ensureUniqueSlug(base: string, excludeId?: string): Promise<string> {
+    let slug = base;
+    let counter = 2;
+    while (true) {
+      const existing = await this.storesRepository.findOne({ where: { slug } });
+      if (!existing || existing.id === excludeId) return slug;
+      slug = `${base}-${counter++}`;
+    }
+  }
+
+  async findBySlug(slug: string): Promise<Store> {
+    const store = await this.storesRepository.findOne({
+      where: { slug },
+      relations: [
+        'owner',
+        'products',
+        'products.category',
+        'categories',
+        'services',
+        'services.category',
+      ],
+    });
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+    return store;
+  }
+
+  async backfillSlugs(): Promise<void> {
+    const stores = await this.storesRepository.find({
+      where: { slug: null as any },
+    });
+    for (const store of stores) {
+      const base = this.generateSlug(store.name);
+      store.slug = await this.ensureUniqueSlug(base, store.id);
+      await this.storesRepository.save(store);
+    }
+    if (stores.length > 0) {
+      this.logger.log(`Backfill: ${stores.length} loja(s) receberam slug`);
+    }
+  }
+
+  async getPublicStorefront(
+    storeId?: string,
+    slug?: string,
+  ): Promise<StorefrontResult> {
+    if (!storeId && !slug) {
+      throw new BadRequestException('Informe storeId ou slug');
+    }
+
+    const store = slug
+      ? await this.storesRepository.findOne({
+          where: { slug },
+          relations: ['categories', 'categories.products'],
+        })
+      : await this.storesRepository.findOne({
+          where: { id: storeId },
+          relations: ['categories', 'categories.products'],
+        });
+
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+
+    const [avgRating, totalRatings] = await Promise.all([
+      this.ratingsService.averageStoreRating(store.id),
+      this.ratingsService.totalStoreRatings(store.id),
+    ]);
+
+    const categories: StorefrontCategory[] = (store.categories || [])
+      .filter((c) => c.isActive)
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        imageUrl: c.imageUrl,
+        sortOrder: c.sortOrder,
+        requiresAgeVerification: c.requiresAgeVerification,
+        products: (c.products || [])
+          .filter((p) => p.isAvailable && p.isActive && !p.deletedAt)
+          .map(
+            (p): StorefrontProduct => ({
+              id: p.id,
+              name: p.name,
+              description: p.description,
+              price: Number(p.price),
+              promotionalPrice: p.promotionalPrice
+                ? Number(p.promotionalPrice)
+                : undefined,
+              imageUrl: p.imageUrl,
+              isAvailable: p.isAvailable,
+              stock: p.stock,
+              unit: p.unit,
+              isVariableWeight: p.isVariableWeight,
+            }),
+          ),
+      }));
+
+    return {
+      id: store.id,
+      slug: store.slug,
+      name: store.name,
+      description: store.description,
+      logoUrl: store.logoUrl,
+      bannerUrl: store.bannerUrl,
+      phone: store.phone,
+      street: store.street,
+      number: store.number,
+      complement: store.complement,
+      neighborhood: store.neighborhood,
+      city: store.city,
+      state: store.state,
+      zipCode: store.zipCode,
+      isOpen: store.isOpen,
+      isActive: store.isActive,
+      storeType: store.storeType,
+      hasOwnDelivery: store.hasOwnDelivery,
+      freeDelivery: store.freeDelivery,
+      deliveryFee: Number(store.deliveryFee),
+      estimatedDeliveryMinutes: store.estimatedDeliveryMinutes,
+      minimumOrder: Number(store.minimumOrder),
+      deliveryStartTime: store.deliveryStartTime,
+      deliveryEndTime: store.deliveryEndTime,
+      freeDeliveryAbove: store.freeDeliveryAbove
+        ? Number(store.freeDeliveryAbove)
+        : undefined,
+      verificationLevel: store.verificationLevel,
+      averageRating: avgRating,
+      totalRatings,
+      categories,
+    };
+  }
 
   private isInBrazil(lat: number, lng: number): boolean {
     return lat >= -34 && lat <= 6 && lng >= -74 && lng <= -34;
   }
 
-  private async geocodeAddress(input: { street?: string; number?: string; neighborhood?: string; city?: string; state?: string }): Promise<{ latitude: number; longitude: number }> {
+  private async geocodeAddress(input: {
+    street?: string;
+    number?: string;
+    neighborhood?: string;
+    city?: string;
+    state?: string;
+  }): Promise<{ latitude: number; longitude: number }> {
     const queries = [
       `${input.street}, ${input.number}, ${input.neighborhood}, ${input.city}, ${input.state}, Brazil`,
       `${input.street}, ${input.number}, ${input.city}, ${input.state}, Brazil`,
@@ -61,10 +227,14 @@ export class StoresService {
           const lat = parseFloat(data[0].lat);
           const lng = parseFloat(data[0].lon);
           if (this.isInBrazil(lat, lng)) {
-            this.logger.log(`Geocoded with query: "${query}" -> ${lat}, ${lng}`);
+            this.logger.log(
+              `Geocoded with query: "${query}" -> ${lat}, ${lng}`,
+            );
             return { latitude: lat, longitude: lng };
           }
-          this.logger.warn(`Geocoding fora do Brasil para: "${query}" -> ${lat}, ${lng}`);
+          this.logger.warn(
+            `Geocoding fora do Brasil para: "${query}" -> ${lat}, ${lng}`,
+          );
         }
       } catch (err) {
         this.logger.warn(`Geocoding attempt failed for: ${query}`, err);
@@ -77,7 +247,9 @@ export class StoresService {
   }
 
   async create(input: CreateStoreInput, owner: VendorUser): Promise<Store> {
-    const planConfig = await this.platformConfigService.getPlanConfig(owner.vendorPlan || 'FREE');
+    const planConfig = await this.platformConfigService.getPlanConfig(
+      owner.vendorPlan || 'FREE',
+    );
     const currentStores = await this.storesRepository.count({
       where: { owner: { id: owner.id } },
     });
@@ -96,8 +268,14 @@ export class StoresService {
 
     const store = this.storesRepository.create({ ...input, owner });
     const saved = await this.storesRepository.save(store);
-    this.pubSub.publish('storeUpdated', { storeUpdated: saved });
-    return saved;
+
+    // Gerar slug após salvar (precisamos do id para garantir unicidade)
+    const base = this.generateSlug(saved.name);
+    saved.slug = await this.ensureUniqueSlug(base, saved.id);
+    const withSlug = await this.storesRepository.save(saved);
+
+    this.pubSub.publish('storeUpdated', { storeUpdated: withSlug });
+    return withSlug;
   }
 
   private isWithinHighlightDays(highlightDaysPerMonth: number): boolean {
@@ -112,12 +290,16 @@ export class StoresService {
       stores.map(async (store) => {
         const plan = store.owner?.vendorPlan || 'FREE';
         const config = await this.platformConfigService.getPlanConfig(plan);
-        const isHighlighted = this.isWithinHighlightDays(config.highlightDaysPerMonth);
+        const isHighlighted = this.isWithinHighlightDays(
+          config.highlightDaysPerMonth,
+        );
         const effectivePriority = isHighlighted ? config.listingPriority : 0;
         return { store, effectivePriority };
       }),
     );
-    storesWithPriority.sort((a, b) => b.effectivePriority - a.effectivePriority);
+    storesWithPriority.sort(
+      (a, b) => b.effectivePriority - a.effectivePriority,
+    );
     return storesWithPriority.map((s) => s.store);
   }
 
@@ -132,7 +314,14 @@ export class StoresService {
   async findById(id: string): Promise<Store> {
     const store = await this.storesRepository.findOne({
       where: { id },
-      relations: ['owner', 'products', 'products.category', 'categories', 'services', 'services.category'],
+      relations: [
+        'owner',
+        'products',
+        'products.category',
+        'categories',
+        'services',
+        'services.category',
+      ],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
     return store;
@@ -145,7 +334,11 @@ export class StoresService {
     });
   }
 
-  async findNearby(lat: number, lng: number, radiusKm: number = 10): Promise<Store[]> {
+  async findNearby(
+    lat: number,
+    lng: number,
+    radiusKm: number = 10,
+  ): Promise<Store[]> {
     const stores = await this.storesRepository
       .createQueryBuilder('store')
       .leftJoinAndSelect('store.owner', 'owner')
@@ -166,7 +359,14 @@ export class StoresService {
     const { id, ...updates } = input;
 
     // Detecta se o endereço mudou
-    const addressFields = ['street', 'number', 'neighborhood', 'city', 'state', 'zipCode'] as const;
+    const addressFields = [
+      'street',
+      'number',
+      'neighborhood',
+      'city',
+      'state',
+      'zipCode',
+    ] as const;
     const addressChanged = addressFields.some(
       (f) => updates[f] !== undefined && updates[f] !== (store as any)[f],
     );
@@ -180,15 +380,21 @@ export class StoresService {
     if (input.latitude && input.longitude) {
       store.latitude = input.latitude;
       store.longitude = input.longitude;
-      this.logger.log(`Coordenadas definidas manualmente para loja ${store.name}: ${input.latitude}, ${input.longitude}`);
+      this.logger.log(
+        `Coordenadas definidas manualmente para loja ${store.name}: ${input.latitude}, ${input.longitude}`,
+      );
     } else if (addressChanged && store.street && store.city && store.state) {
       try {
         const coords = await this.geocodeAddress(store);
         store.latitude = coords.latitude;
         store.longitude = coords.longitude;
-        this.logger.log(`Coordenadas atualizadas para loja ${store.name}: ${coords.latitude}, ${coords.longitude}`);
+        this.logger.log(
+          `Coordenadas atualizadas para loja ${store.name}: ${coords.latitude}, ${coords.longitude}`,
+        );
       } catch (err) {
-        this.logger.warn(`Nao foi possivel recalcular coordenadas para loja ${store.name}`);
+        this.logger.warn(
+          `Nao foi possivel recalcular coordenadas para loja ${store.name}`,
+        );
       }
     }
 
@@ -224,14 +430,26 @@ export class StoresService {
     return saved;
   }
 
-  async requestStoreDelete(storeId: string, adminId: string, password: string): Promise<boolean> {
-    const admin = await this.appUsersRepository.findOne({ where: { id: adminId } });
+  async requestStoreDelete(
+    storeId: string,
+    adminId: string,
+    password: string,
+  ): Promise<boolean> {
+    const admin = await this.appUsersRepository.findOne({
+      where: { id: adminId },
+    });
     if (!admin) throw new NotFoundException('Admin nao encontrado');
 
-    const passwordValid = await bcrypt.compare(peppered(password), admin.password);
+    const passwordValid = await bcrypt.compare(
+      peppered(password),
+      admin.password,
+    );
     if (!passwordValid) throw new UnauthorizedException('Senha incorreta');
 
-    const store = await this.storesRepository.findOne({ where: { id: storeId }, relations: ['owner'] });
+    const store = await this.storesRepository.findOne({
+      where: { id: storeId },
+      relations: ['owner'],
+    });
     if (!store) throw new NotFoundException('Loja nao encontrada');
 
     const token = crypto.randomBytes(32).toString('hex');
@@ -243,21 +461,44 @@ export class StoresService {
     const confirmUrl = `${apiUrl}/stores/confirm-delete?token=${token}`;
 
     const emailTo = admin.notificationEmail || admin.email;
-    await this.mailService.sendStoreDeleteConfirmation(emailTo, admin.name, store.name, confirmUrl);
+    await this.mailService.sendStoreDeleteConfirmation(
+      emailTo,
+      admin.name,
+      store.name,
+      confirmUrl,
+    );
     if (admin.phone) {
-      this.whatsAppService.notifyStoreDeleteRequest(admin.phone, admin.name, store.name, confirmUrl).catch(() => {});
+      this.whatsAppService
+        .notifyStoreDeleteRequest(
+          admin.phone,
+          admin.name,
+          store.name,
+          confirmUrl,
+        )
+        .catch(() => {});
     }
     return true;
   }
 
-  async requestVendorStoreDelete(storeId: string, vendorId: string, password: string): Promise<boolean> {
-    const vendor = await this.vendorUsersRepository.findOne({ where: { id: vendorId } });
+  async requestVendorStoreDelete(
+    storeId: string,
+    vendorId: string,
+    password: string,
+  ): Promise<boolean> {
+    const vendor = await this.vendorUsersRepository.findOne({
+      where: { id: vendorId },
+    });
     if (!vendor) throw new NotFoundException('Vendedor nao encontrado');
 
-    const passwordValid = await bcrypt.compare(peppered(password), vendor.password);
+    const passwordValid = await bcrypt.compare(
+      peppered(password),
+      vendor.password,
+    );
     if (!passwordValid) throw new UnauthorizedException('Senha incorreta');
 
-    const store = await this.storesRepository.findOne({ where: { id: storeId, owner: { id: vendorId } } });
+    const store = await this.storesRepository.findOne({
+      where: { id: storeId, owner: { id: vendorId } },
+    });
     if (!store) throw new NotFoundException('Loja nao encontrada');
 
     const token = crypto.randomBytes(32).toString('hex');
@@ -268,18 +509,34 @@ export class StoresService {
     const apiUrl = this.configService.get('APP_URL', 'http://localhost:3000');
     const confirmUrl = `${apiUrl}/stores/confirm-delete?token=${token}`;
 
-    await this.mailService.sendStoreDeleteConfirmation(vendor.email, vendor.name, store.name, confirmUrl);
+    await this.mailService.sendStoreDeleteConfirmation(
+      vendor.email,
+      vendor.name,
+      store.name,
+      confirmUrl,
+    );
     if (vendor.phone) {
-      this.whatsAppService.notifyStoreDeleteRequest(vendor.phone, vendor.name, store.name, confirmUrl).catch(() => {});
+      this.whatsAppService
+        .notifyStoreDeleteRequest(
+          vendor.phone,
+          vendor.name,
+          store.name,
+          confirmUrl,
+        )
+        .catch(() => {});
     }
     return true;
   }
 
   async confirmStoreDelete(token: string): Promise<string> {
-    const store = await this.storesRepository.findOne({ where: { deleteToken: token } });
+    const store = await this.storesRepository.findOne({
+      where: { deleteToken: token },
+    });
     if (!store) throw new BadRequestException('Token invalido');
     if (!store.deleteTokenExpires || store.deleteTokenExpires < new Date()) {
-      throw new BadRequestException('Token expirado. Solicite a exclusao novamente.');
+      throw new BadRequestException(
+        'Token expirado. Solicite a exclusao novamente.',
+      );
     }
 
     const storeName = store.name;
@@ -297,7 +554,9 @@ export class StoresService {
 
   // Follow system
   async followStore(userId: string, storeId: string): Promise<boolean> {
-    const store = await this.storesRepository.findOne({ where: { id: storeId } });
+    const store = await this.storesRepository.findOne({
+      where: { id: storeId },
+    });
     if (!store) throw new NotFoundException('Loja nao encontrada');
 
     const existing = await this.storeFollowRepository.findOne({

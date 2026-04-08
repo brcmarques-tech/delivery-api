@@ -11,12 +11,14 @@ import { StoresController } from './stores.controller';
 import { VerificationService } from './verification.service';
 import { PlatformConfigModule } from '../config/platform-config.module';
 import { DeliveriesModule } from '../deliveries/deliveries.module';
+import { RatingsModule } from '../ratings/ratings.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Store, StoreFollow, VendorUser, AppUser, Coupon]),
     PlatformConfigModule,
     forwardRef(() => DeliveriesModule),
+    RatingsModule,
   ],
   controllers: [StoresController],
   providers: [StoresService, StoresResolver, VerificationService],
