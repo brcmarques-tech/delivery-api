@@ -3,6 +3,60 @@ import { StoreType } from '../../common/enums/store-type.enum';
 import { VerificationLevel } from '../../common/enums/verification-level.enum';
 
 @ObjectType()
+export class PublicStoreCard {
+  @Field(() => ID)
+  id: string;
+
+  @Field({ nullable: true })
+  slug: string;
+
+  @Field()
+  name: string;
+
+  @Field({ nullable: true })
+  description: string;
+
+  @Field({ nullable: true })
+  logoUrl: string;
+
+  @Field({ nullable: true })
+  bannerUrl: string;
+
+  @Field()
+  city: string;
+
+  @Field()
+  state: string;
+
+  @Field()
+  isOpen: boolean;
+
+  @Field(() => StoreType)
+  storeType: StoreType;
+
+  @Field(() => Float)
+  deliveryFee: number;
+
+  @Field()
+  freeDelivery: boolean;
+
+  @Field(() => Int)
+  estimatedDeliveryMinutes: number;
+
+  @Field(() => Float)
+  minimumOrder: number;
+
+  @Field(() => VerificationLevel)
+  verificationLevel: VerificationLevel;
+
+  @Field(() => Float)
+  averageRating: number;
+
+  @Field(() => Int)
+  totalRatings: number;
+}
+
+@ObjectType()
 export class StorefrontProduct {
   @Field(() => ID)
   id: string;
