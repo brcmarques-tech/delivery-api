@@ -21,6 +21,10 @@ export class UpdateStoreInput {
 
   @Field({ nullable: true })
   @IsOptional()
+  whatsappNumber?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
   street?: string;
 
   @Field({ nullable: true })
