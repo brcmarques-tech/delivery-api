@@ -1,0 +1,74 @@
+services:
+  app:
+    build: .
+    container_name: shopping-api
+    command: sh -c "yarn install && node dist/main"
+    ports:
+      - '3000:3000'
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION: 7d
+      PORT: 3000
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      MAIL_FROM: ${MAIL_FROM}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET}
+      PAGARME_SECRET_KEY: ${PAGARME_SECRET_KEY}
+      PAGARME_PUBLIC_KEY: ${PAGARME_PUBLIC_KEY}
+      PAGARME_PLATFORM_RECIPIENT_ID: ${PAGARME_PLATFORM_RECIPIENT_ID}
+      APP_URL: ${APP_URL}
+      VENDOR_APP_URL: ${VENDOR_APP_URL}
+      SERPAPI_KEY: ${SERPAPI_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      WAHA_API_URL: ${WAHA_API_URL}
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET}
+      AGENT_APP_USER_EMAIL: ${AGENT_APP_USER_EMAIL}
+      N8N_AGENT_KEY: ${N8N_AGENT_KEY}
+    depends_on:
+      redis:
+        condition: service_started
+
+  redis:
+    image: redis:7-alpine
+    container_name: shopping-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: shopping-n8n
+    restart: unless-stopped
+    ports:
+      - '5678:5678'
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: America/Sao_Paulo
+      TZ: America/Sao_Paulo
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+      N8N_SECURE_COOKIE: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_CONCURRENCY_PRODUCTION_LIMIT: "-1"
+      # Variaveis para usar nos workflows
+      API_BASE_URL: http://shopping-api:3000
+      N8N_AGENT_KEY: ${N8N_AGENT_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      WAHA_API_URL: ${WAHA_API_URL}
+      WAHA_API_KEY: ${WAHA_API_KEY}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - app
+      - redis
+
+volumes:
+  redis_data:
+  n8n_data:
