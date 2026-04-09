@@ -1,1 +1,746 @@
-{"updatedAt":"2026-04-08T22:45:21.000Z","createdAt":"2026-04-08T22:35:35.780Z","id":"hXc7StQIztZYNQvX","name":"Customer Agent","description":null,"active":true,"isArchived":false,"nodes":[{"id":"customer-trigger","name":"Execute Workflow Trigger","type":"n8n-nodes-base.executeWorkflowTrigger","typeVersion":1.1,"position":[0,300],"parameters":{"inputSource":"passthrough"}},{"id":"customer-ai-agent","name":"Customer AI Agent","type":"@n8n/n8n-nodes-langchain.agent","typeVersion":1.7,"position":[300,300],"parameters":{"agent":"toolsAgent","promptType":"define","text":"={{ $json.text }}","systemMessage":"Você é um assistente de atendimento ao cliente do aplicativo bcmTech Shopping.\nResponda via WhatsApp de forma amigável e concisa.\nVocê pode consultar pedidos e cancelar pedidos pendentes do cliente {{ $json.customerName }}.\nNão pode cancelar pedidos já em preparo ou entregues.\nResponda sempre em português brasileiro.\nData/hora atual: {{ $now }}","options":{"maxIterations":5,"returnIntermediateSteps":false}}},{"id":"customer-send","name":"Send Customer Reply","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[600,300],"parameters":{"method":"POST","url":"={{ $env.WAHA_API_URL }}/api/sendText","sendHeaders":true,"headerParameters":{"parameters":[{"name":"X-Api-Key","value":"={{ $env.WAHA_API_KEY }}"},{"name":"Content-Type","value":"application/json"}]},"sendBody":true,"bodyParameters":{"parameters":[{"name":"chatId","value":"={{ $('Execute Workflow Trigger').item.json.phone }}@c.us"},{"name":"text","value":"={{ $json.output }}"},{"name":"session","value":"default"}]}}},{"id":"customer-memory","name":"Redis Chat Memory","type":"@n8n/n8n-nodes-langchain.memoryRedisChat","typeVersion":1.3,"position":[300,500],"parameters":{"sessionKey":"=customer:{{ $('Execute Workflow Trigger').item.json.phone }}","sessionTimeToLive":86400,"contextWindowLength":10},"credentials":{"redis":{"id":"rO9AQ4gEAPKh7INv","name":"Redis Shopping"}}},{"id":"customer-llm","name":"Gemini Flash","type":"@n8n/n8n-nodes-langchain.lmChatGoogleGemini","typeVersion":1,"position":[150,500],"parameters":{"modelName":"gemini-2.0-flash","options":{"temperature":0.3}},"credentials":{"googlePalmApi":{"id":"OaOgQXEtq3LspOZ1","name":"Google Gemini"}}},{"id":"tool-my-orders","name":"Get My Orders","type":"@n8n/n8n-nodes-langchain.toolHttpRequest","typeVersion":1.1,"position":[300,650],"parameters":{"description":"Busca todos os pedidos do cliente. Retorna lista com status e detalhes.","method":"GET","url":"={{ $env.API_BASE_URL }}/n8n/orders/customer","sendQuery":true,"parametersQuery":{"values":[{"name":"customerId","valueProvider":"fieldValue","value":"={{ $('Execute Workflow Trigger').item.json.customerId }}"}]},"sendHeaders":true,"parametersHeaders":{"values":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"}]},"optimizeResponse":true,"responseOptimization":"removeFields","fieldsToRemove":"updatedAt,deletedAt"}},{"id":"tool-order-number","name":"Get Order by Number","type":"@n8n/n8n-nodes-langchain.toolHttpRequest","typeVersion":1.1,"position":[450,650],"parameters":{"description":"Busca detalhes de um pedido específico pelo número do pedido.","method":"GET","url":"={{ $env.API_BASE_URL }}/n8n/orders/number/{orderNumber}","sendQuery":false,"sendPlaceholders":true,"placeholderDefinitions":{"values":[{"name":"orderNumber","description":"Número do pedido (ex: 1001)","required":true}]},"sendHeaders":true,"parametersHeaders":{"values":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"}]}}},{"id":"tool-cancel-order","name":"Cancel Order","type":"@n8n/n8n-nodes-langchain.toolHttpRequest","typeVersion":1.1,"position":[600,650],"parameters":{"description":"Cancela um pedido. Só funciona para pedidos PENDING. Forneça o orderNumber.","method":"POST","url":"={{ $env.API_BASE_URL }}/n8n/orders/status","sendBody":true,"parametersBody":{"values":[{"name":"orderNumber","valueProvider":"modelRequired"},{"name":"status","valueProvider":"fieldValue","value":"CANCELLED"},{"name":"customerId","valueProvider":"fieldValue","value":"={{ $('Execute Workflow Trigger').item.json.customerId }}"}]},"sendHeaders":true,"parametersHeaders":{"values":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"},{"name":"Content-Type","value":"application/json"}]}}}],"connections":{"Execute Workflow Trigger":{"main":[[{"node":"Customer AI Agent","type":"main","index":0}]]},"Customer AI Agent":{"main":[[{"node":"Send Customer Reply","type":"main","index":0}]]},"Redis Chat Memory":{"ai_memory":[[{"node":"Customer AI Agent","type":"ai_memory","index":0}]]},"Gemini Flash":{"ai_languageModel":[[{"node":"Customer AI Agent","type":"ai_languageModel","index":0}]]},"Get My Orders":{"ai_tool":[[{"node":"Customer AI Agent","type":"ai_tool","index":0}]]},"Get Order by Number":{"ai_tool":[[{"node":"Customer AI Agent","type":"ai_tool","index":0}]]},"Cancel Order":{"ai_tool":[[{"node":"Customer AI Agent","type":"ai_tool","index":0}]]}},"settings":{"executionOrder":"v1","callerPolicy":"workflowsFromSameOwner","availableInMCP":false},"staticData":null,"meta":null,"pinData":null,"versionId":"112e270c-8b33-48a9-a00e-d7fcbdb6ca46","activeVersionId":"112e270c-8b33-48a9-a00e-d7fcbdb6ca46","versionCounter":11,"triggerCount":0,"shared":[{"updatedAt":"2026-04-08T22:35:35.781Z","createdAt":"2026-04-08T22:35:35.781Z","role":"workflow:owner","workflowId":"hXc7StQIztZYNQvX","projectId":"NEMw0FEfxLPogrgy","project":{"updatedAt":"2026-04-08T22:20:28.972Z","createdAt":"2026-04-08T22:17:12.819Z","id":"NEMw0FEfxLPogrgy","name":"Admin BCM <admin@bcmtech.com.br>","type":"personal","icon":null,"description":null,"creatorId":"c6254477-dcc9-487d-856b-506c19b6c54b"}}],"tags":[],"activeVersion":{"updatedAt":"2026-04-08T22:40:14.819Z","createdAt":"2026-04-08T22:40:14.819Z","versionId":"112e270c-8b33-48a9-a00e-d7fcbdb6ca46","workflowId":"hXc7StQIztZYNQvX","nodes":[{"id":"customer-trigger","name":"Execute Workflow Trigger","type":"n8n-nodes-base.executeWorkflowTrigger","typeVersion":1.1,"position":[0,300],"parameters":{"inputSource":"passthrough"}},{"id":"customer-ai-agent","name":"Customer AI Agent","type":"@n8n/n8n-nodes-langchain.agent","typeVersion":1.7,"position":[300,300],"parameters":{"agent":"toolsAgent","promptType":"define","text":"={{ $json.text }}","systemMessage":"Você é um assistente de atendimento ao cliente do aplicativo bcmTech Shopping.\nResponda via WhatsApp de forma amigável e concisa.\nVocê pode consultar pedidos e cancelar pedidos pendentes do cliente {{ $json.customerName }}.\nNão pode cancelar pedidos já em preparo ou entregues.\nResponda sempre em português brasileiro.\nData/hora atual: {{ $now }}","options":{"maxIterations":5,"returnIntermediateSteps":false}}},{"id":"customer-send","name":"Send Customer Reply","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[600,300],"parameters":{"method":"POST","url":"={{ $env.WAHA_API_URL }}/api/sendText","sendHeaders":true,"headerParameters":{"parameters":[{"name":"X-Api-Key","value":"={{ $env.WAHA_API_KEY }}"},{"name":"Content-Type","value":"application/json"}]},"sendBody":true,"bodyParameters":{"parameters":[{"name":"chatId","value":"={{ $('Execute Workflow Trigger').item.json.phone }}@c.us"},{"name":"text","value":"={{ $json.output }}"},{"name":"session","value":"default"}]}}},{"id":"customer-memory","name":"Redis Chat Memory","type":"@n8n/n8n-nodes-langchain.memoryRedisChat","typeVersion":1.3,"position":[300,500],"parameters":{"sessionKey":"=customer:{{ $('Execute Workflow Trigger').item.json.phone }}","sessionTimeToLive":86400,"contextWindowLength":10},"credentials":{"redis":{"id":"rO9AQ4gEAPKh7INv","name":"Redis Shopping"}}},{"id":"customer-llm","name":"Gemini Flash","type":"@n8n/n8n-nodes-langchain.lmChatGoogleGemini","typeVersion":1,"position":[150,500],"parameters":{"modelName":"gemini-2.0-flash","options":{"temperature":0.3}},"credentials":{"googlePalmApi":{"id":"OaOgQXEtq3LspOZ1","name":"Google Gemini"}}},{"id":"tool-my-orders","name":"Get My Orders","type":"@n8n/n8n-nodes-langchain.toolHttpRequest","typeVersion":1.1,"position":[300,650],"parameters":{"description":"Busca todos os pedidos do cliente. Retorna lista com status e detalhes.","method":"GET","url":"={{ $env.API_BASE_URL }}/n8n/orders/customer","sendQuery":true,"parametersQuery":{"values":[{"name":"customerId","valueProvider":"fieldValue","value":"={{ $('Execute Workflow Trigger').item.json.customerId }}"}]},"sendHeaders":true,"parametersHeaders":{"values":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"}]},"optimizeResponse":true,"responseOptimization":"removeFields","fieldsToRemove":"updatedAt,deletedAt"}},{"id":"tool-order-number","name":"Get Order by Number","type":"@n8n/n8n-nodes-langchain.toolHttpRequest","typeVersion":1.1,"position":[450,650],"parameters":{"description":"Busca detalhes de um pedido específico pelo número do pedido.","method":"GET","url":"={{ $env.API_BASE_URL }}/n8n/orders/number/{orderNumber}","sendQuery":false,"sendPlaceholders":true,"placeholderDefinitions":{"values":[{"name":"orderNumber","description":"Número do pedido (ex: 1001)","required":true}]},"sendHeaders":true,"parametersHeaders":{"values":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"}]}}},{"id":"tool-cancel-order","name":"Cancel Order","type":"@n8n/n8n-nodes-langchain.toolHttpRequest","typeVersion":1.1,"position":[600,650],"parameters":{"description":"Cancela um pedido. Só funciona para pedidos PENDING. Forneça o orderNumber.","method":"POST","url":"={{ $env.API_BASE_URL }}/n8n/orders/status","sendBody":true,"parametersBody":{"values":[{"name":"orderNumber","valueProvider":"modelRequired"},{"name":"status","valueProvider":"fieldValue","value":"CANCELLED"},{"name":"customerId","valueProvider":"fieldValue","value":"={{ $('Execute Workflow Trigger').item.json.customerId }}"}]},"sendHeaders":true,"parametersHeaders":{"values":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"},{"name":"Content-Type","value":"application/json"}]}}}],"connections":{"Execute Workflow Trigger":{"main":[[{"node":"Customer AI Agent","type":"main","index":0}]]},"Customer AI Agent":{"main":[[{"node":"Send Customer Reply","type":"main","index":0}]]},"Redis Chat Memory":{"ai_memory":[[{"node":"Customer AI Agent","type":"ai_memory","index":0}]]},"Gemini Flash":{"ai_languageModel":[[{"node":"Customer AI Agent","type":"ai_languageModel","index":0}]]},"Get My Orders":{"ai_tool":[[{"node":"Customer AI Agent","type":"ai_tool","index":0}]]},"Get Order by Number":{"ai_tool":[[{"node":"Customer AI Agent","type":"ai_tool","index":0}]]},"Cancel Order":{"ai_tool":[[{"node":"Customer AI Agent","type":"ai_tool","index":0}]]}},"authors":"Admin BCM","name":null,"description":null,"autosaved":false,"workflowPublishHistory":[{"createdAt":"2026-04-08T22:40:14.873Z","id":2,"workflowId":"hXc7StQIztZYNQvX","versionId":"112e270c-8b33-48a9-a00e-d7fcbdb6ca46","event":"activated","userId":"c6254477-dcc9-487d-856b-506c19b6c54b"}]}}
+{
+  "updatedAt": "2026-04-08T22:45:21.000Z",
+  "createdAt": "2026-04-08T22:35:35.780Z",
+  "id": "hXc7StQIztZYNQvX",
+  "name": "Customer Agent",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "customer-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "customer-ai-agent",
+      "name": "Customer AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        300,
+        300
+      ],
+      "parameters": {
+        "agent": "toolsAgent",
+        "promptType": "define",
+        "text": "={{ $json.text }}",
+        "systemMessage": "Você é um assistente de atendimento ao cliente do aplicativo bcmTech Shopping.\nResponda via WhatsApp de forma amigável e concisa.\nVocê pode: consultar pedidos, cancelar pedidos pendentes e rastrear entregas em andamento do cliente {{ $json.customerName }}.\nNão pode cancelar pedidos já em preparo ou entregues.\nPara rastreamento, use o número do pedido fornecido pelo cliente.\nResponda sempre em português brasileiro.\nData/hora atual: {{ $now }}",
+        "options": {
+          "maxIterations": 5,
+          "returnIntermediateSteps": false
+        }
+      }
+    },
+    {
+      "id": "customer-send",
+      "name": "Send Customer Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        600,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WAHA_API_URL }}/api/sendText",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Api-Key",
+              "value": "={{ $env.WAHA_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chatId",
+              "value": "={{ $('Execute Workflow Trigger').item.json.phone }}@c.us"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.output }}"
+            },
+            {
+              "name": "session",
+              "value": "default"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "customer-memory",
+      "name": "Redis Chat Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryRedisChat",
+      "typeVersion": 1.3,
+      "position": [
+        300,
+        500
+      ],
+      "parameters": {
+        "sessionKey": "=customer:{{ $('Execute Workflow Trigger').item.json.phone }}",
+        "sessionTimeToLive": 86400,
+        "contextWindowLength": 10
+      },
+      "credentials": {
+        "redis": {
+          "id": "rO9AQ4gEAPKh7INv",
+          "name": "Redis Shopping"
+        }
+      }
+    },
+    {
+      "id": "customer-llm",
+      "name": "Gemini Flash",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        150,
+        500
+      ],
+      "parameters": {
+        "modelName": "gemini-2.0-flash",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "OaOgQXEtq3LspOZ1",
+          "name": "Google Gemini"
+        }
+      }
+    },
+    {
+      "id": "tool-my-orders",
+      "name": "Get My Orders",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        300,
+        650
+      ],
+      "parameters": {
+        "description": "Busca todos os pedidos do cliente. Retorna lista com status e detalhes.",
+        "method": "GET",
+        "url": "={{ $env.API_BASE_URL }}/n8n/orders/customer",
+        "sendQuery": true,
+        "parametersQuery": {
+          "values": [
+            {
+              "name": "customerId",
+              "valueProvider": "fieldValue",
+              "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "parametersHeaders": {
+          "values": [
+            {
+              "name": "X-N8N-Key",
+              "value": "={{ $env.N8N_AGENT_KEY }}"
+            }
+          ]
+        },
+        "optimizeResponse": true,
+        "responseOptimization": "removeFields",
+        "fieldsToRemove": "updatedAt,deletedAt"
+      }
+    },
+    {
+      "id": "tool-order-number",
+      "name": "Get Order by Number",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        450,
+        650
+      ],
+      "parameters": {
+        "description": "Busca detalhes de um pedido específico pelo número do pedido.",
+        "method": "GET",
+        "url": "={{ $env.API_BASE_URL }}/n8n/orders/number/{orderNumber}",
+        "sendQuery": false,
+        "sendPlaceholders": true,
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "orderNumber",
+              "description": "Número do pedido (ex: 1001)",
+              "required": true
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "parametersHeaders": {
+          "values": [
+            {
+              "name": "X-N8N-Key",
+              "value": "={{ $env.N8N_AGENT_KEY }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tool-cancel-order",
+      "name": "Cancel Order",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        600,
+        650
+      ],
+      "parameters": {
+        "description": "Cancela um pedido. Só funciona para pedidos PENDING. Forneça o orderNumber.",
+        "method": "POST",
+        "url": "={{ $env.API_BASE_URL }}/n8n/orders/status",
+        "sendBody": true,
+        "parametersBody": {
+          "values": [
+            {
+              "name": "orderNumber",
+              "valueProvider": "modelRequired"
+            },
+            {
+              "name": "status",
+              "valueProvider": "fieldValue",
+              "value": "CANCELLED"
+            },
+            {
+              "name": "customerId",
+              "valueProvider": "fieldValue",
+              "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "parametersHeaders": {
+          "values": [
+            {
+              "name": "X-N8N-Key",
+              "value": "={{ $env.N8N_AGENT_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tool-tracking",
+      "name": "Track Order Delivery",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        750,
+        650
+      ],
+      "parameters": {
+        "description": "Rastreia a entrega de um pedido em tempo real: status, entregador, ETA e localização. Use quando o cliente perguntar onde está seu pedido.",
+        "method": "GET",
+        "url": "={{ $env.API_BASE_URL }}/n8n/orders/{orderNumber}/tracking",
+        "sendPlaceholders": true,
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "orderNumber",
+              "description": "Número do pedido (ex: 1001)",
+              "required": true
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "parametersHeaders": {
+          "values": [
+            {
+              "name": "X-N8N-Key",
+              "value": "={{ $env.N8N_AGENT_KEY }}"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Customer AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Customer AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send Customer Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Customer AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Flash": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Customer AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get My Orders": {
+      "ai_tool": [
+        [
+          {
+            "node": "Customer AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Order by Number": {
+      "ai_tool": [
+        [
+          {
+            "node": "Customer AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Order": {
+      "ai_tool": [
+        [
+          {
+            "node": "Customer AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Track Order Delivery": {
+      "ai_tool": [
+        [
+          {
+            "node": "Customer AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "112e270c-8b33-48a9-a00e-d7fcbdb6ca46",
+  "activeVersionId": "112e270c-8b33-48a9-a00e-d7fcbdb6ca46",
+  "versionCounter": 11,
+  "triggerCount": 0,
+  "shared": [
+    {
+      "updatedAt": "2026-04-08T22:35:35.781Z",
+      "createdAt": "2026-04-08T22:35:35.781Z",
+      "role": "workflow:owner",
+      "workflowId": "hXc7StQIztZYNQvX",
+      "projectId": "NEMw0FEfxLPogrgy",
+      "project": {
+        "updatedAt": "2026-04-08T22:20:28.972Z",
+        "createdAt": "2026-04-08T22:17:12.819Z",
+        "id": "NEMw0FEfxLPogrgy",
+        "name": "Admin BCM <admin@bcmtech.com.br>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "c6254477-dcc9-487d-856b-506c19b6c54b"
+      }
+    }
+  ],
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-04-08T22:40:14.819Z",
+    "createdAt": "2026-04-08T22:40:14.819Z",
+    "versionId": "112e270c-8b33-48a9-a00e-d7fcbdb6ca46",
+    "workflowId": "hXc7StQIztZYNQvX",
+    "nodes": [
+      {
+        "id": "customer-trigger",
+        "name": "Execute Workflow Trigger",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1.1,
+        "position": [
+          0,
+          300
+        ],
+        "parameters": {
+          "inputSource": "passthrough"
+        }
+      },
+      {
+        "id": "customer-ai-agent",
+        "name": "Customer AI Agent",
+        "type": "@n8n/n8n-nodes-langchain.agent",
+        "typeVersion": 1.7,
+        "position": [
+          300,
+          300
+        ],
+        "parameters": {
+          "agent": "toolsAgent",
+          "promptType": "define",
+          "text": "={{ $json.text }}",
+          "systemMessage": "Você é um assistente de atendimento ao cliente do aplicativo bcmTech Shopping.\nResponda via WhatsApp de forma amigável e concisa.\nVocê pode consultar pedidos e cancelar pedidos pendentes do cliente {{ $json.customerName }}.\nNão pode cancelar pedidos já em preparo ou entregues.\nResponda sempre em português brasileiro.\nData/hora atual: {{ $now }}",
+          "options": {
+            "maxIterations": 5,
+            "returnIntermediateSteps": false
+          }
+        }
+      },
+      {
+        "id": "customer-send",
+        "name": "Send Customer Reply",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          600,
+          300
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $env.WAHA_API_URL }}/api/sendText",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-Api-Key",
+                "value": "={{ $env.WAHA_API_KEY }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "chatId",
+                "value": "={{ $('Execute Workflow Trigger').item.json.phone }}@c.us"
+              },
+              {
+                "name": "text",
+                "value": "={{ $json.output }}"
+              },
+              {
+                "name": "session",
+                "value": "default"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "customer-memory",
+        "name": "Redis Chat Memory",
+        "type": "@n8n/n8n-nodes-langchain.memoryRedisChat",
+        "typeVersion": 1.3,
+        "position": [
+          300,
+          500
+        ],
+        "parameters": {
+          "sessionKey": "=customer:{{ $('Execute Workflow Trigger').item.json.phone }}",
+          "sessionTimeToLive": 86400,
+          "contextWindowLength": 10
+        },
+        "credentials": {
+          "redis": {
+            "id": "rO9AQ4gEAPKh7INv",
+            "name": "Redis Shopping"
+          }
+        }
+      },
+      {
+        "id": "customer-llm",
+        "name": "Gemini Flash",
+        "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+        "typeVersion": 1,
+        "position": [
+          150,
+          500
+        ],
+        "parameters": {
+          "modelName": "gemini-2.0-flash",
+          "options": {
+            "temperature": 0.3
+          }
+        },
+        "credentials": {
+          "googlePalmApi": {
+            "id": "OaOgQXEtq3LspOZ1",
+            "name": "Google Gemini"
+          }
+        }
+      },
+      {
+        "id": "tool-my-orders",
+        "name": "Get My Orders",
+        "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+        "typeVersion": 1.1,
+        "position": [
+          300,
+          650
+        ],
+        "parameters": {
+          "description": "Busca todos os pedidos do cliente. Retorna lista com status e detalhes.",
+          "method": "GET",
+          "url": "={{ $env.API_BASE_URL }}/n8n/orders/customer",
+          "sendQuery": true,
+          "parametersQuery": {
+            "values": [
+              {
+                "name": "customerId",
+                "valueProvider": "fieldValue",
+                "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "parametersHeaders": {
+            "values": [
+              {
+                "name": "X-N8N-Key",
+                "value": "={{ $env.N8N_AGENT_KEY }}"
+              }
+            ]
+          },
+          "optimizeResponse": true,
+          "responseOptimization": "removeFields",
+          "fieldsToRemove": "updatedAt,deletedAt"
+        }
+      },
+      {
+        "id": "tool-order-number",
+        "name": "Get Order by Number",
+        "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+        "typeVersion": 1.1,
+        "position": [
+          450,
+          650
+        ],
+        "parameters": {
+          "description": "Busca detalhes de um pedido específico pelo número do pedido.",
+          "method": "GET",
+          "url": "={{ $env.API_BASE_URL }}/n8n/orders/number/{orderNumber}",
+          "sendQuery": false,
+          "sendPlaceholders": true,
+          "placeholderDefinitions": {
+            "values": [
+              {
+                "name": "orderNumber",
+                "description": "Número do pedido (ex: 1001)",
+                "required": true
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "parametersHeaders": {
+            "values": [
+              {
+                "name": "X-N8N-Key",
+                "value": "={{ $env.N8N_AGENT_KEY }}"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "tool-cancel-order",
+        "name": "Cancel Order",
+        "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+        "typeVersion": 1.1,
+        "position": [
+          600,
+          650
+        ],
+        "parameters": {
+          "description": "Cancela um pedido. Só funciona para pedidos PENDING. Forneça o orderNumber.",
+          "method": "POST",
+          "url": "={{ $env.API_BASE_URL }}/n8n/orders/status",
+          "sendBody": true,
+          "parametersBody": {
+            "values": [
+              {
+                "name": "orderNumber",
+                "valueProvider": "modelRequired"
+              },
+              {
+                "name": "status",
+                "valueProvider": "fieldValue",
+                "value": "CANCELLED"
+              },
+              {
+                "name": "customerId",
+                "valueProvider": "fieldValue",
+                "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "parametersHeaders": {
+            "values": [
+              {
+                "name": "X-N8N-Key",
+                "value": "={{ $env.N8N_AGENT_KEY }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Execute Workflow Trigger": {
+        "main": [
+          [
+            {
+              "node": "Customer AI Agent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Customer AI Agent": {
+        "main": [
+          [
+            {
+              "node": "Send Customer Reply",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Redis Chat Memory": {
+        "ai_memory": [
+          [
+            {
+              "node": "Customer AI Agent",
+              "type": "ai_memory",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Gemini Flash": {
+        "ai_languageModel": [
+          [
+            {
+              "node": "Customer AI Agent",
+              "type": "ai_languageModel",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Get My Orders": {
+        "ai_tool": [
+          [
+            {
+              "node": "Customer AI Agent",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Get Order by Number": {
+        "ai_tool": [
+          [
+            {
+              "node": "Customer AI Agent",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Cancel Order": {
+        "ai_tool": [
+          [
+            {
+              "node": "Customer AI Agent",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "Admin BCM",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-04-08T22:40:14.873Z",
+        "id": 2,
+        "workflowId": "hXc7StQIztZYNQvX",
+        "versionId": "112e270c-8b33-48a9-a00e-d7fcbdb6ca46",
+        "event": "activated",
+        "userId": "c6254477-dcc9-487d-856b-506c19b6c54b"
+      }
+    ]
+  }
+}

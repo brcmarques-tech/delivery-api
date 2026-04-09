@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   Query,
@@ -16,7 +17,10 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { StoresService } from '../stores/stores.service';
 import { OrdersService } from '../orders/orders.service';
+import { ProductsService } from '../products/products.service';
+import { CouponsService } from '../coupons/coupons.service';
 import { AppUser } from '../users/entities/app-user.entity';
+import { Store } from '../stores/entities/store.entity';
 import { OrderStatus } from '../common/enums';
 
 @Controller('n8n')
@@ -24,14 +28,18 @@ export class N8nAgentController {
   constructor(
     private readonly storesService: StoresService,
     private readonly ordersService: OrdersService,
+    private readonly productsService: ProductsService,
+    private readonly couponsService: CouponsService,
     private readonly configService: ConfigService,
     @InjectRepository(AppUser)
     private readonly appUsersRepository: Repository<AppUser>,
+    @InjectRepository(Store)
+    private readonly storesRepository: Repository<Store>,
   ) {}
 
   private checkAuth(key: string) {
     const expected = this.configService.get<string>('N8N_AGENT_KEY');
-    if (expected && key !== expected) throw new UnauthorizedException();
+    if (!expected || key !== expected) throw new UnauthorizedException();
   }
 
   @Get('stores/by-phone')
@@ -191,6 +199,114 @@ export class N8nAgentController {
         customer: o.customer?.name,
         total: o.total,
       })),
+    };
+  }
+
+  // --- Store management ---
+
+  @Get('stores/:id')
+  async storeDetails(
+    @Param('id') id: string,
+    @Headers('x-n8n-key') key: string,
+  ) {
+    this.checkAuth(key);
+    const store = await this.storesService.findById(id);
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+    return {
+      id: store.id,
+      name: store.name,
+      isOpen: store.isOpen,
+      deliveryStartTime: store.deliveryStartTime,
+      deliveryEndTime: store.deliveryEndTime,
+      deliveryFee: store.deliveryFee,
+      minimumOrder: store.minimumOrder,
+      estimatedDeliveryMinutes: store.estimatedDeliveryMinutes,
+    };
+  }
+
+  @Post('stores/:id/toggle-open')
+  @HttpCode(200)
+  async toggleStoreOpen(
+    @Param('id') id: string,
+    @Headers('x-n8n-key') key: string,
+  ) {
+    this.checkAuth(key);
+    const store = await this.storesRepository.findOne({ where: { id } });
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+    store.isOpen = !store.isOpen;
+    const saved = await this.storesRepository.save(store);
+    return { storeName: saved.name, isOpen: saved.isOpen };
+  }
+
+  // --- Product management ---
+
+  @Get('products')
+  async productsByStore(
+    @Query('storeId') storeId: string,
+    @Headers('x-n8n-key') key: string,
+  ) {
+    this.checkAuth(key);
+    const products = await this.productsService.findByStore(storeId);
+    return products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      price: p.price,
+      promotionalPrice: p.promotionalPrice ?? null,
+      stock: p.stock,
+      isAvailable: p.isAvailable,
+      category: p.category?.name ?? null,
+    }));
+  }
+
+  @Patch('products/:id/availability')
+  async toggleProductAvailability(
+    @Param('id') id: string,
+    @Headers('x-n8n-key') key: string,
+  ) {
+    this.checkAuth(key);
+    const product = await this.productsService.toggleAvailability(id);
+    return { productName: product.name, isAvailable: product.isAvailable };
+  }
+
+  // --- Coupon management ---
+
+  @Get('coupons')
+  async couponsByStore(
+    @Query('storeId') storeId: string,
+    @Headers('x-n8n-key') key: string,
+  ) {
+    this.checkAuth(key);
+    const coupons = await this.couponsService.findByStore(storeId);
+    return coupons.map((c) => ({
+      code: c.code,
+      discountType: c.discountType,
+      discountValue: c.discountValue,
+      usesCount: c.usesCount,
+      maxUses: c.maxUses,
+      isActive: c.isActive,
+      expiresAt: c.expiresAt,
+    }));
+  }
+
+  // --- Order tracking ---
+
+  @Get('orders/:orderNumber/tracking')
+  async orderTracking(
+    @Param('orderNumber') orderNumber: string,
+    @Headers('x-n8n-key') key: string,
+  ) {
+    this.checkAuth(key);
+    const order = await this.ordersService.findByOrderNumber(orderNumber);
+    if (!order) throw new NotFoundException('Pedido nao encontrado');
+    const delivery = order.delivery;
+    return {
+      orderNumber: order.orderNumber,
+      status: order.status,
+      estimatedDeliveryEta: order.estimatedDeliveryEta ?? null,
+      delivererName: delivery?.deliverer?.name ?? null,
+      delivererPhone: delivery?.deliverer?.phone ?? null,
+      currentLatitude: delivery?.currentLatitude ?? null,
+      currentLongitude: delivery?.currentLongitude ?? null,
     };
   }
 
