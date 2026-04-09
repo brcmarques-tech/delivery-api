@@ -1,6 +1,7 @@
 import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
 import { UseGuards, BadRequestException } from '@nestjs/common';
 import { Payment } from './entities/payment.entity';
+import { Subscription } from './entities/subscription.entity';
 import { PaymentsService } from './payments.service';
 import { SavedCard } from './entities/saved-card.entity';
 import { RecipientBalance, AnticipationSimulation, AnticipationResult } from './dto/recipient-balance.type';
@@ -24,9 +25,45 @@ export class PaymentsResolver {
   createPlanUpgrade(
     @Args('plan', { type: () => VendorPlan }) plan: VendorPlan,
     @Args('billingPeriod', { nullable: true, defaultValue: 'monthly' }) billingPeriod: string,
+    @Args('cardToken', { nullable: true }) cardToken: string,
+    @Args('paymentMethod', { nullable: true, defaultValue: 'credit_card' }) paymentMethod: string,
     @CurrentUser() user: VendorUser,
   ): Promise<Payment> {
-    return this.paymentsService.createPlanUpgrade(user, plan, billingPeriod);
+    return this.paymentsService.createPlanUpgrade(user, plan, billingPeriod, cardToken, paymentMethod);
+  }
+
+  @Query(() => Subscription, { nullable: true })
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  mySubscription(@CurrentUser() user: VendorUser): Promise<Subscription | null> {
+    return this.paymentsService.getActiveSubscription(user.id);
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  async cancelSubscription(@CurrentUser() user: VendorUser): Promise<boolean> {
+    await this.paymentsService.cancelVendorSubscription(user.id);
+    return true;
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  async updateSubscriptionCard(
+    @Args('cardToken') cardToken: string,
+    @CurrentUser() user: VendorUser,
+  ): Promise<boolean> {
+    await this.paymentsService.updateSubscriptionCard(user.id, cardToken);
+    return true;
+  }
+
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  async reactivateSubscription(@CurrentUser() user: VendorUser): Promise<boolean> {
+    await this.paymentsService.reactivateSubscription(user.id);
+    return true;
   }
 
   @Query(() => [Payment])

@@ -31,7 +31,8 @@ import { CartModule } from './cart/cart.module';
 import { AppointmentsModule } from './appointments/appointments.module';
 import { RatingsModule } from './ratings/ratings.module';
 import { SiteConfigModule } from './site-config/site-config.module';
-import { WhatsAppAgentModule } from './whatsapp-agent/whatsapp-agent.module';
+// import { WhatsAppAgentModule } from './whatsapp-agent/whatsapp-agent.module'; // migrated to n8n
+import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
 
 @Module({
   providers: [
@@ -106,7 +107,8 @@ import { WhatsAppAgentModule } from './whatsapp-agent/whatsapp-agent.module';
     AppointmentsModule,
     RatingsModule,
     SiteConfigModule,
-    WhatsAppAgentModule,
+    // WhatsAppAgentModule, // migrated to n8n
+    N8nAgentModule,
   ],
 })
 export class AppModule {}

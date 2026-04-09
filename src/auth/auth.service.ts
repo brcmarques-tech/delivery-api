@@ -113,14 +113,6 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais invalidas');
     }
 
-    if (user.sessionToken && !forceLogin) {
-      throw new BadRequestException('ACTIVE_SESSION');
-    }
-
-    if (user.sessionToken && forceLogin) {
-      this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'vendor' } });
-    }
-
     const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
   }
@@ -221,13 +213,6 @@ export class AuthService {
     }
     if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
 
-    if (user.sessionToken && !forceLogin) {
-      throw new BadRequestException('ACTIVE_SESSION');
-    }
-    if (user.sessionToken && forceLogin) {
-      this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'vendor' } });
-    }
-
     const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
   }
@@ -246,11 +231,6 @@ export class AuthService {
         }
       }
       if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
-
-      // Google auth always overrides — notify old session if exists
-      if (user.sessionToken) {
-        this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'vendor' } });
-      }
 
       const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
       return { accessToken, user };

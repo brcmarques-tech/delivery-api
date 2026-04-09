@@ -72,7 +72,7 @@ export class OtpService {
     throw new BadRequestException('Nao foi possivel enviar o codigo por WhatsApp. Verifique o numero.');
   }
 
-  async sendEmailCode(email: string): Promise<boolean> {
+  async sendEmailCode(email: string, fallbackPhone?: string): Promise<{ method: 'email' | 'whatsapp' }> {
     const key = `email:${email.toLowerCase()}`;
     const existing = this.store.get(key);
 
@@ -86,10 +86,22 @@ export class OtpService {
     try {
       await this.mailService.sendVerificationCode(email, code);
       this.logger.log(`OTP enviado por email para ${email}`);
-      return true;
+      return { method: 'email' };
     } catch {
+      // Fallback: enviar por WhatsApp se email falhar
+      if (fallbackPhone) {
+        const sent = await this.whatsAppService.sendText(
+          fallbackPhone,
+          `🔐 *Codigo de verificacao*\n\nSeu codigo: *${code}*\n\nValido por 10 minutos.\nNao compartilhe este codigo.`,
+        );
+        if (sent) {
+          this.logger.log(`OTP enviado por WhatsApp (fallback) para ${fallbackPhone}`);
+          return { method: 'whatsapp' };
+        }
+      }
+
       this.store.delete(key);
-      throw new BadRequestException('Nao foi possivel enviar o codigo por email.');
+      throw new BadRequestException('Nao foi possivel enviar o codigo por email nem por WhatsApp.');
     }
   }
 
