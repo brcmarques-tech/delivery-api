@@ -1,7 +1,7 @@
 {
-  "updatedAt": "2026-04-08T22:45:19.000Z",
-  "createdAt": "2026-04-08T22:35:35.735Z",
-  "id": "0QrsaDYuuSgMkGFB",
+  "updatedAt": "2026-04-09T00:51:05.965Z",
+  "createdAt": "2026-04-08T23:12:54.610Z",
+  "id": "hfeCXL7Q821EwKij",
   "name": "Vendor Agent",
   "description": null,
   "active": true,
@@ -33,7 +33,7 @@
         "agent": "toolsAgent",
         "promptType": "define",
         "text": "={{ $json.text }}",
-        "systemMessage": "Você é um assistente de gestão para o vendedor da loja {{ $json.storeName }}.\nResponda APENAS via WhatsApp, mantendo respostas curtas e objetivas.\nVocê tem acesso a ferramentas para: consultar e atualizar pedidos, abrir/fechar a loja, listar produtos e verificar cupons ativos.\nStatus válidos para pedidos: ACCEPTED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED.\nSempre confirme ações destrutivas (fechar loja, cancelar pedido) antes de executar.\nResponda sempre em português brasileiro.\nData/hora atual: {{ $now }}",
+        "systemMessage": "Voc\u00ea \u00e9 um assistente de gest\u00e3o para o vendedor da loja {{ $json.storeName }}.\nResponda APENAS via WhatsApp, mantendo respostas curtas e objetivas.\nVoc\u00ea tem acesso a ferramentas para: consultar e atualizar pedidos, abrir/fechar a loja, listar produtos e verificar cupons ativos.\nStatus v\u00e1lidos para pedidos: ACCEPTED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED.\nSempre confirme a\u00e7\u00f5es destrutivas (fechar loja, cancelar pedido) antes de executar.\nResponda sempre em portugu\u00eas brasileiro.\nData/hora atual: {{ $now }}",
         "options": {
           "maxIterations": 5,
           "returnIntermediateSteps": false
@@ -95,13 +95,14 @@
       ],
       "parameters": {
         "sessionKey": "=vendor:{{ $('Execute Workflow Trigger').item.json.phone }}",
-        "sessionTimeToLive": 86400,
-        "contextWindowLength": 10
+        "contextWindowLength": 10,
+        "sessionIdType": "customKey",
+        "sessionTTL": 86400
       },
       "credentials": {
         "redis": {
-          "id": "rO9AQ4gEAPKh7INv",
-          "name": "Redis Shopping"
+          "id": "JcbQEHqszYq4BrJr",
+          "name": "Redis Shopping Prod"
         }
       }
     },
@@ -122,7 +123,7 @@
       },
       "credentials": {
         "googlePalmApi": {
-          "id": "OaOgQXEtq3LspOZ1",
+          "id": "mVtzjfZhFsbxFIlF",
           "name": "Google Gemini"
         }
       }
@@ -137,7 +138,7 @@
         650
       ],
       "parameters": {
-        "description": "Busca pedidos pendentes da loja. Retorna lista de pedidos aguardando confirmação.",
+        "description": "Busca pedidos pendentes da loja. Retorna lista de pedidos aguardando confirma\u00e7\u00e3o.",
         "method": "GET",
         "url": "={{ $env.API_BASE_URL }}/n8n/orders/pending",
         "sendQuery": true,
@@ -174,7 +175,7 @@
         650
       ],
       "parameters": {
-        "description": "Busca pedidos da loja por status. Status possíveis: PENDING, ACCEPTED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED.",
+        "description": "Busca pedidos da loja por status. Status poss\u00edveis: PENDING, ACCEPTED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED.",
         "method": "GET",
         "url": "={{ $env.API_BASE_URL }}/n8n/orders",
         "sendQuery": true,
@@ -215,7 +216,7 @@
         650
       ],
       "parameters": {
-        "description": "Atualiza o status de um pedido. Forneça orderNumber e o novo status (ACCEPTED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED).",
+        "description": "Atualiza o status de um pedido. Forne\u00e7a orderNumber e o novo status (ACCEPTED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED).",
         "method": "POST",
         "url": "={{ $env.API_BASE_URL }}/n8n/orders/status",
         "sendBody": true,
@@ -297,7 +298,7 @@
       "parameters": {
         "description": "Abre ou fecha a loja. Use quando o vendedor pedir para abrir ou fechar a loja.",
         "method": "POST",
-        "url": "={{ $env.API_BASE_URL }}/n8n/stores/{{ $(\"Execute Workflow Trigger\").item.json.storeId }}/toggle-open",
+        "url": "={{ $env.API_BASE_URL + '/n8n/stores/' + $('Execute Workflow Trigger').item.json.storeId + '/toggle-open' }}",
         "sendHeaders": true,
         "parametersHeaders": {
           "values": [
@@ -323,7 +324,7 @@
         650
       ],
       "parameters": {
-        "description": "Lista produtos da loja com estoque e disponibilidade. Use para verificar o cardápio ou estoque.",
+        "description": "Lista produtos da loja com estoque e disponibilidade. Use para verificar o card\u00e1pio ou estoque.",
         "method": "GET",
         "url": "={{ $env.API_BASE_URL }}/n8n/products",
         "sendQuery": true,
@@ -332,7 +333,7 @@
             {
               "name": "storeId",
               "valueProvider": "fieldValue",
-              "value": "={{ $(\"Execute Workflow Trigger\").item.json.storeId }}"
+              "value": "={{ $('Execute Workflow Trigger').item.json.storeId }}"
             }
           ]
         },
@@ -360,7 +361,7 @@
         650
       ],
       "parameters": {
-        "description": "Lista cupons da loja com código, desconto e número de usos. Use quando o vendedor perguntar sobre promoções ou cupons.",
+        "description": "Lista cupons da loja com c\u00f3digo, desconto e n\u00famero de usos. Use quando o vendedor perguntar sobre promo\u00e7\u00f5es ou cupons.",
         "method": "GET",
         "url": "={{ $env.API_BASE_URL }}/n8n/coupons",
         "sendQuery": true,
@@ -369,7 +370,7 @@
             {
               "name": "storeId",
               "valueProvider": "fieldValue",
-              "value": "={{ $(\"Execute Workflow Trigger\").item.json.storeId }}"
+              "value": "={{ $('Execute Workflow Trigger').item.json.storeId }}"
             }
           ]
         },
@@ -516,35 +517,36 @@
   "staticData": null,
   "meta": null,
   "pinData": null,
-  "versionId": "f97d5ef5-42df-4565-be6c-236d689341be",
-  "activeVersionId": "f97d5ef5-42df-4565-be6c-236d689341be",
-  "versionCounter": 11,
+  "versionId": "6f41033b-9eaf-4d4d-9c20-dcaf9b6a7ecd",
+  "activeVersionId": "6f41033b-9eaf-4d4d-9c20-dcaf9b6a7ecd",
+  "versionCounter": 31,
   "triggerCount": 0,
   "shared": [
     {
-      "updatedAt": "2026-04-08T22:35:35.737Z",
-      "createdAt": "2026-04-08T22:35:35.737Z",
+      "updatedAt": "2026-04-08T23:12:54.625Z",
+      "createdAt": "2026-04-08T23:12:54.625Z",
       "role": "workflow:owner",
-      "workflowId": "0QrsaDYuuSgMkGFB",
-      "projectId": "NEMw0FEfxLPogrgy",
+      "workflowId": "hfeCXL7Q821EwKij",
+      "projectId": "e2PqzAych49mG6u0",
       "project": {
-        "updatedAt": "2026-04-08T22:20:28.972Z",
-        "createdAt": "2026-04-08T22:17:12.819Z",
-        "id": "NEMw0FEfxLPogrgy",
+        "updatedAt": "2026-04-08T23:11:50.843Z",
+        "createdAt": "2026-04-08T23:11:05.345Z",
+        "id": "e2PqzAych49mG6u0",
         "name": "Admin BCM <admin@bcmtech.com.br>",
         "type": "personal",
         "icon": null,
         "description": null,
-        "creatorId": "c6254477-dcc9-487d-856b-506c19b6c54b"
+        "creatorId": "b6c9d1f3-323c-42a2-81a5-cfaf98622b3b"
       }
     }
   ],
   "tags": [],
+  "parentFolder": null,
   "activeVersion": {
-    "updatedAt": "2026-04-08T22:40:14.790Z",
-    "createdAt": "2026-04-08T22:40:14.790Z",
-    "versionId": "f97d5ef5-42df-4565-be6c-236d689341be",
-    "workflowId": "0QrsaDYuuSgMkGFB",
+    "updatedAt": "2026-04-09T00:51:05.966Z",
+    "createdAt": "2026-04-09T00:51:05.966Z",
+    "versionId": "6f41033b-9eaf-4d4d-9c20-dcaf9b6a7ecd",
+    "workflowId": "hfeCXL7Q821EwKij",
     "nodes": [
       {
         "id": "vendor-trigger",
@@ -572,7 +574,7 @@
           "agent": "toolsAgent",
           "promptType": "define",
           "text": "={{ $json.text }}",
-          "systemMessage": "Você é um assistente de gestão de pedidos para o vendedor da loja {{ $json.storeName }}.\nVocê responde APENAS via WhatsApp, então mantenha respostas curtas e objetivas.\nVocê tem acesso a ferramentas para consultar e atualizar pedidos.\nSempre confirme ações antes de executá-las.\nResponda sempre em português brasileiro.\nData/hora atual: {{ $now }}",
+          "systemMessage": "Voc\u00ea \u00e9 um assistente de gest\u00e3o para o vendedor da loja {{ $json.storeName }}.\nResponda APENAS via WhatsApp, mantendo respostas curtas e objetivas.\nVoc\u00ea tem acesso a ferramentas para: consultar e atualizar pedidos, abrir/fechar a loja, listar produtos e verificar cupons ativos.\nStatus v\u00e1lidos para pedidos: ACCEPTED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED.\nSempre confirme a\u00e7\u00f5es destrutivas (fechar loja, cancelar pedido) antes de executar.\nResponda sempre em portugu\u00eas brasileiro.\nData/hora atual: {{ $now }}",
           "options": {
             "maxIterations": 5,
             "returnIntermediateSteps": false
@@ -634,13 +636,14 @@
         ],
         "parameters": {
           "sessionKey": "=vendor:{{ $('Execute Workflow Trigger').item.json.phone }}",
-          "sessionTimeToLive": 86400,
-          "contextWindowLength": 10
+          "contextWindowLength": 10,
+          "sessionIdType": "customKey",
+          "sessionTTL": 86400
         },
         "credentials": {
           "redis": {
-            "id": "rO9AQ4gEAPKh7INv",
-            "name": "Redis Shopping"
+            "id": "JcbQEHqszYq4BrJr",
+            "name": "Redis Shopping Prod"
           }
         }
       },
@@ -661,7 +664,7 @@
         },
         "credentials": {
           "googlePalmApi": {
-            "id": "OaOgQXEtq3LspOZ1",
+            "id": "mVtzjfZhFsbxFIlF",
             "name": "Google Gemini"
           }
         }
@@ -676,7 +679,7 @@
           650
         ],
         "parameters": {
-          "description": "Busca pedidos pendentes da loja. Retorna lista de pedidos aguardando confirmação.",
+          "description": "Busca pedidos pendentes da loja. Retorna lista de pedidos aguardando confirma\u00e7\u00e3o.",
           "method": "GET",
           "url": "={{ $env.API_BASE_URL }}/n8n/orders/pending",
           "sendQuery": true,
@@ -713,7 +716,7 @@
           650
         ],
         "parameters": {
-          "description": "Busca pedidos da loja por status. Status possíveis: PENDING, CONFIRMED, PREPARING, READY, OUT_FOR_DELIVERY, DELIVERED, CANCELLED.",
+          "description": "Busca pedidos da loja por status. Status poss\u00edveis: PENDING, ACCEPTED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED.",
           "method": "GET",
           "url": "={{ $env.API_BASE_URL }}/n8n/orders",
           "sendQuery": true,
@@ -754,7 +757,7 @@
           650
         ],
         "parameters": {
-          "description": "Atualiza o status de um pedido. Forneça orderNumber e o novo status (CONFIRMED, PREPARING, READY, OUT_FOR_DELIVERY, DELIVERED, CANCELLED).",
+          "description": "Atualiza o status de um pedido. Forne\u00e7a orderNumber e o novo status (ACCEPTED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED).",
           "method": "POST",
           "url": "={{ $env.API_BASE_URL }}/n8n/orders/status",
           "sendBody": true,
@@ -803,6 +806,105 @@
           "description": "Retorna resumo do dia da loja: total de pedidos, faturamento, pedidos por status.",
           "method": "GET",
           "url": "={{ $env.API_BASE_URL }}/n8n/orders/summary",
+          "sendQuery": true,
+          "parametersQuery": {
+            "values": [
+              {
+                "name": "storeId",
+                "valueProvider": "fieldValue",
+                "value": "={{ $('Execute Workflow Trigger').item.json.storeId }}"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "parametersHeaders": {
+            "values": [
+              {
+                "name": "X-N8N-Key",
+                "value": "={{ $env.N8N_AGENT_KEY }}"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "tool-toggle-store",
+        "name": "Toggle Store Open/Closed",
+        "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+        "typeVersion": 1.1,
+        "position": [
+          900,
+          650
+        ],
+        "parameters": {
+          "description": "Abre ou fecha a loja. Use quando o vendedor pedir para abrir ou fechar a loja.",
+          "method": "POST",
+          "url": "={{ $env.API_BASE_URL + '/n8n/stores/' + $('Execute Workflow Trigger').item.json.storeId + '/toggle-open' }}",
+          "sendHeaders": true,
+          "parametersHeaders": {
+            "values": [
+              {
+                "name": "X-N8N-Key",
+                "value": "={{ $env.N8N_AGENT_KEY }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "tool-list-products",
+        "name": "List Products",
+        "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+        "typeVersion": 1.1,
+        "position": [
+          1050,
+          650
+        ],
+        "parameters": {
+          "description": "Lista produtos da loja com estoque e disponibilidade. Use para verificar o card\u00e1pio ou estoque.",
+          "method": "GET",
+          "url": "={{ $env.API_BASE_URL }}/n8n/products",
+          "sendQuery": true,
+          "parametersQuery": {
+            "values": [
+              {
+                "name": "storeId",
+                "valueProvider": "fieldValue",
+                "value": "={{ $('Execute Workflow Trigger').item.json.storeId }}"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "parametersHeaders": {
+            "values": [
+              {
+                "name": "X-N8N-Key",
+                "value": "={{ $env.N8N_AGENT_KEY }}"
+              }
+            ]
+          },
+          "optimizeResponse": true,
+          "responseOptimization": "removeFields",
+          "fieldsToRemove": "id,promotionalPrice"
+        }
+      },
+      {
+        "id": "tool-list-coupons",
+        "name": "List Coupons",
+        "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+        "typeVersion": 1.1,
+        "position": [
+          1200,
+          650
+        ],
+        "parameters": {
+          "description": "Lista cupons da loja com c\u00f3digo, desconto e n\u00famero de usos. Use quando o vendedor perguntar sobre promo\u00e7\u00f5es ou cupons.",
+          "method": "GET",
+          "url": "={{ $env.API_BASE_URL }}/n8n/coupons",
           "sendQuery": true,
           "parametersQuery": {
             "values": [
@@ -913,6 +1015,39 @@
             }
           ]
         ]
+      },
+      "Toggle Store Open/Closed": {
+        "ai_tool": [
+          [
+            {
+              "node": "Vendor AI Agent",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "List Products": {
+        "ai_tool": [
+          [
+            {
+              "node": "Vendor AI Agent",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "List Coupons": {
+        "ai_tool": [
+          [
+            {
+              "node": "Vendor AI Agent",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
       }
     },
     "authors": "Admin BCM",
@@ -921,13 +1056,29 @@
     "autosaved": false,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-04-08T22:40:14.848Z",
-        "id": 1,
-        "workflowId": "0QrsaDYuuSgMkGFB",
-        "versionId": "f97d5ef5-42df-4565-be6c-236d689341be",
+        "createdAt": "2026-04-09T00:51:06.101Z",
+        "id": 28,
+        "workflowId": "hfeCXL7Q821EwKij",
+        "versionId": "6f41033b-9eaf-4d4d-9c20-dcaf9b6a7ecd",
         "event": "activated",
-        "userId": "c6254477-dcc9-487d-856b-506c19b6c54b"
+        "userId": "b6c9d1f3-323c-42a2-81a5-cfaf98622b3b"
       }
     ]
-  }
+  },
+  "scopes": [
+    "workflow:create",
+    "workflow:delete",
+    "workflow:execute",
+    "workflow:execute-chat",
+    "workflow:list",
+    "workflow:move",
+    "workflow:publish",
+    "workflow:read",
+    "workflow:share",
+    "workflow:unpublish",
+    "workflow:unshare",
+    "workflow:update",
+    "workflow:updateRedactionSetting"
+  ],
+  "checksum": "f9221444cca48babb37db411282129b11e37209b812cad3ebb8abcd90e922b17"
 }

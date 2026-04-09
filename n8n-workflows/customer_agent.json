@@ -1,7 +1,7 @@
 {
-  "updatedAt": "2026-04-08T22:45:21.000Z",
-  "createdAt": "2026-04-08T22:35:35.780Z",
-  "id": "hXc7StQIztZYNQvX",
+  "updatedAt": "2026-04-09T00:51:06.181Z",
+  "createdAt": "2026-04-08T23:12:54.884Z",
+  "id": "SacM4Z6Ow3Ms2Cda",
   "name": "Customer Agent",
   "description": null,
   "active": true,
@@ -33,7 +33,7 @@
         "agent": "toolsAgent",
         "promptType": "define",
         "text": "={{ $json.text }}",
-        "systemMessage": "Você é um assistente de atendimento ao cliente do aplicativo bcmTech Shopping.\nResponda via WhatsApp de forma amigável e concisa.\nVocê pode: consultar pedidos, cancelar pedidos pendentes e rastrear entregas em andamento do cliente {{ $json.customerName }}.\nNão pode cancelar pedidos já em preparo ou entregues.\nPara rastreamento, use o número do pedido fornecido pelo cliente.\nResponda sempre em português brasileiro.\nData/hora atual: {{ $now }}",
+        "systemMessage": "Voc\u00ea \u00e9 um assistente de atendimento ao cliente do aplicativo bcmTech Shopping.\nResponda via WhatsApp de forma amig\u00e1vel e concisa.\nVoc\u00ea pode: consultar pedidos, cancelar pedidos pendentes e rastrear entregas em andamento do cliente {{ $json.customerName }}.\nN\u00e3o pode cancelar pedidos j\u00e1 em preparo ou entregues.\nPara rastreamento, use o n\u00famero do pedido fornecido pelo cliente.\nResponda sempre em portugu\u00eas brasileiro.\nData/hora atual: {{ $now }}",
         "options": {
           "maxIterations": 5,
           "returnIntermediateSteps": false
@@ -95,13 +95,14 @@
       ],
       "parameters": {
         "sessionKey": "=customer:{{ $('Execute Workflow Trigger').item.json.phone }}",
-        "sessionTimeToLive": 86400,
-        "contextWindowLength": 10
+        "contextWindowLength": 10,
+        "sessionIdType": "customKey",
+        "sessionTTL": 86400
       },
       "credentials": {
         "redis": {
-          "id": "rO9AQ4gEAPKh7INv",
-          "name": "Redis Shopping"
+          "id": "JcbQEHqszYq4BrJr",
+          "name": "Redis Shopping Prod"
         }
       }
     },
@@ -122,7 +123,7 @@
       },
       "credentials": {
         "googlePalmApi": {
-          "id": "OaOgQXEtq3LspOZ1",
+          "id": "mVtzjfZhFsbxFIlF",
           "name": "Google Gemini"
         }
       }
@@ -174,7 +175,7 @@
         650
       ],
       "parameters": {
-        "description": "Busca detalhes de um pedido específico pelo número do pedido.",
+        "description": "Busca detalhes de um pedido espec\u00edfico pelo n\u00famero do pedido.",
         "method": "GET",
         "url": "={{ $env.API_BASE_URL }}/n8n/orders/number/{orderNumber}",
         "sendQuery": false,
@@ -183,7 +184,7 @@
           "values": [
             {
               "name": "orderNumber",
-              "description": "Número do pedido (ex: 1001)",
+              "description": "N\u00famero do pedido (ex: 1001)",
               "required": true
             }
           ]
@@ -209,7 +210,7 @@
         650
       ],
       "parameters": {
-        "description": "Cancela um pedido. Só funciona para pedidos PENDING. Forneça o orderNumber.",
+        "description": "Cancela um pedido. S\u00f3 funciona para pedidos PENDING. Forne\u00e7a o orderNumber.",
         "method": "POST",
         "url": "={{ $env.API_BASE_URL }}/n8n/orders/status",
         "sendBody": true,
@@ -256,7 +257,7 @@
         650
       ],
       "parameters": {
-        "description": "Rastreia a entrega de um pedido em tempo real: status, entregador, ETA e localização. Use quando o cliente perguntar onde está seu pedido.",
+        "description": "Rastreia a entrega de um pedido em tempo real: status, entregador, ETA e localiza\u00e7\u00e3o. Use quando o cliente perguntar onde est\u00e1 seu pedido.",
         "method": "GET",
         "url": "={{ $env.API_BASE_URL }}/n8n/orders/{orderNumber}/tracking",
         "sendPlaceholders": true,
@@ -264,7 +265,7 @@
           "values": [
             {
               "name": "orderNumber",
-              "description": "Número do pedido (ex: 1001)",
+              "description": "N\u00famero do pedido (ex: 1001)",
               "required": true
             }
           ]
@@ -379,35 +380,36 @@
   "staticData": null,
   "meta": null,
   "pinData": null,
-  "versionId": "112e270c-8b33-48a9-a00e-d7fcbdb6ca46",
-  "activeVersionId": "112e270c-8b33-48a9-a00e-d7fcbdb6ca46",
-  "versionCounter": 11,
+  "versionId": "a02ec12e-f959-47ac-9a59-9e373ac9823a",
+  "activeVersionId": "a02ec12e-f959-47ac-9a59-9e373ac9823a",
+  "versionCounter": 25,
   "triggerCount": 0,
   "shared": [
     {
-      "updatedAt": "2026-04-08T22:35:35.781Z",
-      "createdAt": "2026-04-08T22:35:35.781Z",
+      "updatedAt": "2026-04-08T23:12:54.886Z",
+      "createdAt": "2026-04-08T23:12:54.886Z",
       "role": "workflow:owner",
-      "workflowId": "hXc7StQIztZYNQvX",
-      "projectId": "NEMw0FEfxLPogrgy",
+      "workflowId": "SacM4Z6Ow3Ms2Cda",
+      "projectId": "e2PqzAych49mG6u0",
       "project": {
-        "updatedAt": "2026-04-08T22:20:28.972Z",
-        "createdAt": "2026-04-08T22:17:12.819Z",
-        "id": "NEMw0FEfxLPogrgy",
+        "updatedAt": "2026-04-08T23:11:50.843Z",
+        "createdAt": "2026-04-08T23:11:05.345Z",
+        "id": "e2PqzAych49mG6u0",
         "name": "Admin BCM <admin@bcmtech.com.br>",
         "type": "personal",
         "icon": null,
         "description": null,
-        "creatorId": "c6254477-dcc9-487d-856b-506c19b6c54b"
+        "creatorId": "b6c9d1f3-323c-42a2-81a5-cfaf98622b3b"
       }
     }
   ],
   "tags": [],
+  "parentFolder": null,
   "activeVersion": {
-    "updatedAt": "2026-04-08T22:40:14.819Z",
-    "createdAt": "2026-04-08T22:40:14.819Z",
-    "versionId": "112e270c-8b33-48a9-a00e-d7fcbdb6ca46",
-    "workflowId": "hXc7StQIztZYNQvX",
+    "updatedAt": "2026-04-09T00:51:06.183Z",
+    "createdAt": "2026-04-09T00:51:06.183Z",
+    "versionId": "a02ec12e-f959-47ac-9a59-9e373ac9823a",
+    "workflowId": "SacM4Z6Ow3Ms2Cda",
     "nodes": [
       {
         "id": "customer-trigger",
@@ -435,7 +437,7 @@
           "agent": "toolsAgent",
           "promptType": "define",
           "text": "={{ $json.text }}",
-          "systemMessage": "Você é um assistente de atendimento ao cliente do aplicativo bcmTech Shopping.\nResponda via WhatsApp de forma amigável e concisa.\nVocê pode consultar pedidos e cancelar pedidos pendentes do cliente {{ $json.customerName }}.\nNão pode cancelar pedidos já em preparo ou entregues.\nResponda sempre em português brasileiro.\nData/hora atual: {{ $now }}",
+          "systemMessage": "Voc\u00ea \u00e9 um assistente de atendimento ao cliente do aplicativo bcmTech Shopping.\nResponda via WhatsApp de forma amig\u00e1vel e concisa.\nVoc\u00ea pode: consultar pedidos, cancelar pedidos pendentes e rastrear entregas em andamento do cliente {{ $json.customerName }}.\nN\u00e3o pode cancelar pedidos j\u00e1 em preparo ou entregues.\nPara rastreamento, use o n\u00famero do pedido fornecido pelo cliente.\nResponda sempre em portugu\u00eas brasileiro.\nData/hora atual: {{ $now }}",
           "options": {
             "maxIterations": 5,
             "returnIntermediateSteps": false
@@ -497,13 +499,14 @@
         ],
         "parameters": {
           "sessionKey": "=customer:{{ $('Execute Workflow Trigger').item.json.phone }}",
-          "sessionTimeToLive": 86400,
-          "contextWindowLength": 10
+          "contextWindowLength": 10,
+          "sessionIdType": "customKey",
+          "sessionTTL": 86400
         },
         "credentials": {
           "redis": {
-            "id": "rO9AQ4gEAPKh7INv",
-            "name": "Redis Shopping"
+            "id": "JcbQEHqszYq4BrJr",
+            "name": "Redis Shopping Prod"
           }
         }
       },
@@ -524,7 +527,7 @@
         },
         "credentials": {
           "googlePalmApi": {
-            "id": "OaOgQXEtq3LspOZ1",
+            "id": "mVtzjfZhFsbxFIlF",
             "name": "Google Gemini"
           }
         }
@@ -576,7 +579,7 @@
           650
         ],
         "parameters": {
-          "description": "Busca detalhes de um pedido específico pelo número do pedido.",
+          "description": "Busca detalhes de um pedido espec\u00edfico pelo n\u00famero do pedido.",
           "method": "GET",
           "url": "={{ $env.API_BASE_URL }}/n8n/orders/number/{orderNumber}",
           "sendQuery": false,
@@ -585,7 +588,7 @@
             "values": [
               {
                 "name": "orderNumber",
-                "description": "Número do pedido (ex: 1001)",
+                "description": "N\u00famero do pedido (ex: 1001)",
                 "required": true
               }
             ]
@@ -611,7 +614,7 @@
           650
         ],
         "parameters": {
-          "description": "Cancela um pedido. Só funciona para pedidos PENDING. Forneça o orderNumber.",
+          "description": "Cancela um pedido. S\u00f3 funciona para pedidos PENDING. Forne\u00e7a o orderNumber.",
           "method": "POST",
           "url": "={{ $env.API_BASE_URL }}/n8n/orders/status",
           "sendBody": true,
@@ -643,6 +646,40 @@
               {
                 "name": "Content-Type",
                 "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "tool-tracking",
+        "name": "Track Order Delivery",
+        "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+        "typeVersion": 1.1,
+        "position": [
+          750,
+          650
+        ],
+        "parameters": {
+          "description": "Rastreia a entrega de um pedido em tempo real: status, entregador, ETA e localiza\u00e7\u00e3o. Use quando o cliente perguntar onde est\u00e1 seu pedido.",
+          "method": "GET",
+          "url": "={{ $env.API_BASE_URL }}/n8n/orders/{orderNumber}/tracking",
+          "sendPlaceholders": true,
+          "placeholderDefinitions": {
+            "values": [
+              {
+                "name": "orderNumber",
+                "description": "N\u00famero do pedido (ex: 1001)",
+                "required": true
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "parametersHeaders": {
+            "values": [
+              {
+                "name": "X-N8N-Key",
+                "value": "={{ $env.N8N_AGENT_KEY }}"
               }
             ]
           }
@@ -726,6 +763,17 @@
             }
           ]
         ]
+      },
+      "Track Order Delivery": {
+        "ai_tool": [
+          [
+            {
+              "node": "Customer AI Agent",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
       }
     },
     "authors": "Admin BCM",
@@ -734,13 +782,29 @@
     "autosaved": false,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-04-08T22:40:14.873Z",
-        "id": 2,
-        "workflowId": "hXc7StQIztZYNQvX",
-        "versionId": "112e270c-8b33-48a9-a00e-d7fcbdb6ca46",
+        "createdAt": "2026-04-09T00:51:06.529Z",
+        "id": 30,
+        "workflowId": "SacM4Z6Ow3Ms2Cda",
+        "versionId": "a02ec12e-f959-47ac-9a59-9e373ac9823a",
         "event": "activated",
-        "userId": "c6254477-dcc9-487d-856b-506c19b6c54b"
+        "userId": "b6c9d1f3-323c-42a2-81a5-cfaf98622b3b"
       }
     ]
-  }
+  },
+  "scopes": [
+    "workflow:create",
+    "workflow:delete",
+    "workflow:execute",
+    "workflow:execute-chat",
+    "workflow:list",
+    "workflow:move",
+    "workflow:publish",
+    "workflow:read",
+    "workflow:share",
+    "workflow:unpublish",
+    "workflow:unshare",
+    "workflow:update",
+    "workflow:updateRedactionSetting"
+  ],
+  "checksum": "7275d897d881361a30c7c57f18dbef6335de9d8e12c842abe8b91f77bf830da5"
 }
