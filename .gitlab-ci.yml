@@ -4,8 +4,25 @@ stages:
 deploy:
   stage: deploy
   image: alpine:latest
-  only:
-    - main
+  # DEPLOY AUTOMATICO DESATIVADO EM 2026-07-22
+  #
+  # A instancia Lightsail foi deletada em 2026-04-23 (ver COLOCAR_NO_AR.md).
+  # A variavel LIGHTSAIL_HOST ainda contem 32.194.117.29 — um IP que a AWS ja
+  # devolveu ao pool e que hoje pode pertencer a outra pessoa. Com o job ativo,
+  # todo push na main tentava abrir SSH nesse endereco: o pipeline falhava por
+  # timeout e, pior, iniciava conexao com um host desconhecido.
+  #
+  # PARA REATIVAR:
+  #   1. Restaurar a instancia a partir do snapshot (ver COLOCAR_NO_AR.md)
+  #   2. Atualizar LIGHTSAIL_HOST em Settings > CI/CD > Variables com o novo IP
+  #   3. Criar a variavel DEPLOY_ENABLED = "true" no mesmo lugar
+  #
+  # Enquanto DEPLOY_ENABLED nao existir, o job nem e criado — sem pipeline
+  # pendente e sem e-mail de falha.
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $DEPLOY_ENABLED == "true"'
+      when: on_success
+    - when: never
   before_script:
     - apk add --no-cache openssh-client
     - chmod 600 "$LIGHTSAIL_SSH_KEY"
