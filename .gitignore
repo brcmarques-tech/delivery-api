@@ -1,6 +1,15 @@
 node_modules/
 dist/
-.env
-*.env.local
 .DS_Store
 .gitnexus
+
+# env files — os padroes abaixo cobrem tambem backups (.env.bak-*, .env.local.bak),
+# que antes ficavam rastreaveis e continham chaves de PRODUCAO do Pagar.me.
+.env
+.env.*
+*.env.local
+*.env.bak
+!.env.example
+
+# artefatos locais
+.claude/

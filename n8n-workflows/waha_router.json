@@ -1,1 +1,850 @@
-{"updatedAt":"2026-04-08T22:45:23.000Z","createdAt":"2026-04-08T22:35:35.410Z","id":"eFwJFRlQdLTsCq1g","name":"WAHA Router","description":null,"active":true,"isArchived":false,"nodes":[{"id":"webhook-node","name":"Webhook WAHA","type":"n8n-nodes-base.webhook","typeVersion":2,"position":[0,300],"webhookId":"waha-message","parameters":{"httpMethod":"POST","path":"waha-message","responseMode":"onReceived","options":{}}},{"id":"code-lid","name":"Resolve Phone","type":"n8n-nodes-base.code","typeVersion":2,"position":[250,300],"parameters":{"jsCode":"\nconst body = $input.first().json;\nconst payload = body.body || body;\nconst msg = payload.payload || payload;\n\nlet from = msg.from || '';\nif (from.endsWith('@lid')) {\n  const alt = (msg._data && msg._data.key && msg._data.key.remoteJidAlt) || '';\n  if (alt) from = alt.replace(/@.*$/, '');\n} else {\n  from = from.replace(/@.*$/, '');\n}\n\n// normalize: remove country code prefix for lookup\nconst phone = from.replace(/^\\+/, '');\n\nreturn [{\n  json: {\n    phone,\n    text: msg.body || msg.text || '',\n    originalPayload: msg\n  }\n}];\n"}},{"id":"find-store","name":"Find Store by Phone","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[500,300],"parameters":{"method":"GET","url":"={{ $env.API_BASE_URL }}/n8n/stores/by-phone","sendQuery":true,"queryParameters":{"parameters":[{"name":"phone","value":"={{ $json.phone }}"}]},"sendHeaders":true,"headerParameters":{"parameters":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"}]},"options":{"response":{"response":{"neverError":true}}}}},{"id":"if-vendor","name":"Is Vendor?","type":"n8n-nodes-base.if","typeVersion":2,"position":[750,300],"parameters":{"conditions":{"options":{"caseSensitive":true,"leftValue":"","typeValidation":"strict"},"conditions":[{"id":"cond1","leftValue":"={{ $json.id }}","rightValue":"","operator":{"type":"string","operation":"notEmpty"}}],"combinator":"and"}}},{"id":"vendor-agent-call","name":"Call Vendor Agent","type":"n8n-nodes-base.executeWorkflow","typeVersion":1.1,"position":[1000,150],"parameters":{"workflowId":{"__rl":true,"mode":"id","value":"0QrsaDYuuSgMkGFB"},"options":{"waitForSubWorkflow":false},"fields":{"values":[{"name":"phone","stringValue":"={{ $('Resolve Phone').item.json.phone }}"},{"name":"text","stringValue":"={{ $('Resolve Phone').item.json.text }}"},{"name":"storeId","stringValue":"={{ $json.id }}"},{"name":"storeName","stringValue":"={{ $json.name }}"}]}}},{"id":"find-user","name":"Find User by Phone","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[1000,450],"parameters":{"method":"GET","url":"={{ $env.API_BASE_URL }}/n8n/users/by-phone","sendQuery":true,"queryParameters":{"parameters":[{"name":"phone","value":"={{ $('Resolve Phone').item.json.phone }}"}]},"sendHeaders":true,"headerParameters":{"parameters":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"}]},"options":{"response":{"response":{"neverError":true}}}}},{"id":"if-customer","name":"Is Customer?","type":"n8n-nodes-base.if","typeVersion":2,"position":[1250,450],"parameters":{"conditions":{"options":{"caseSensitive":true,"leftValue":"","typeValidation":"strict"},"conditions":[{"id":"cond2","leftValue":"={{ $json.id }}","rightValue":"","operator":{"type":"string","operation":"notEmpty"}}],"combinator":"and"}}},{"id":"customer-agent-call","name":"Call Customer Agent","type":"n8n-nodes-base.executeWorkflow","typeVersion":1.1,"position":[1500,350],"parameters":{"workflowId":{"__rl":true,"mode":"id","value":"hXc7StQIztZYNQvX"},"options":{"waitForSubWorkflow":false},"fields":{"values":[{"name":"phone","stringValue":"={{ $('Resolve Phone').item.json.phone }}"},{"name":"text","stringValue":"={{ $('Resolve Phone').item.json.text }}"},{"name":"customerId","stringValue":"={{ $json.id }}"},{"name":"customerName","stringValue":"={{ $json.name }}"}]}}},{"id":"send-unknown","name":"Send Unknown Reply","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[1500,600],"parameters":{"method":"POST","url":"={{ $env.WAHA_API_URL }}/api/sendText","sendHeaders":true,"headerParameters":{"parameters":[{"name":"X-Api-Key","value":"={{ $env.WAHA_API_KEY }}"},{"name":"Content-Type","value":"application/json"}]},"sendBody":true,"bodyParameters":{"parameters":[{"name":"chatId","value":"={{ $('Resolve Phone').item.json.phone }}@c.us"},{"name":"text","value":"Olá! Para usar nossos serviços, faça seu primeiro pedido pelo aplicativo bcmTech Shopping. 📱"},{"name":"session","value":"default"}]}}}],"connections":{"Webhook WAHA":{"main":[[{"node":"Resolve Phone","type":"main","index":0}]]},"Resolve Phone":{"main":[[{"node":"Find Store by Phone","type":"main","index":0}]]},"Find Store by Phone":{"main":[[{"node":"Is Vendor?","type":"main","index":0}]]},"Is Vendor?":{"main":[[{"node":"Call Vendor Agent","type":"main","index":0}],[{"node":"Find User by Phone","type":"main","index":0}]]},"Find User by Phone":{"main":[[{"node":"Is Customer?","type":"main","index":0}]]},"Is Customer?":{"main":[[{"node":"Call Customer Agent","type":"main","index":0}],[{"node":"Send Unknown Reply","type":"main","index":0}]]}},"settings":{"executionOrder":"v1","callerPolicy":"workflowsFromSameOwner","availableInMCP":false},"staticData":null,"meta":null,"pinData":null,"versionId":"54089cb4-05e6-493b-b95b-9e97ddf13484","activeVersionId":"54089cb4-05e6-493b-b95b-9e97ddf13484","versionCounter":13,"triggerCount":1,"shared":[{"updatedAt":"2026-04-08T22:35:35.412Z","createdAt":"2026-04-08T22:35:35.412Z","role":"workflow:owner","workflowId":"eFwJFRlQdLTsCq1g","projectId":"NEMw0FEfxLPogrgy","project":{"updatedAt":"2026-04-08T22:20:28.972Z","createdAt":"2026-04-08T22:17:12.819Z","id":"NEMw0FEfxLPogrgy","name":"Admin BCM <admin@bcmtech.com.br>","type":"personal","icon":null,"description":null,"creatorId":"c6254477-dcc9-487d-856b-506c19b6c54b"}}],"tags":[],"activeVersion":{"updatedAt":"2026-04-08T22:41:10.463Z","createdAt":"2026-04-08T22:41:10.463Z","versionId":"54089cb4-05e6-493b-b95b-9e97ddf13484","workflowId":"eFwJFRlQdLTsCq1g","nodes":[{"id":"webhook-node","name":"Webhook WAHA","type":"n8n-nodes-base.webhook","typeVersion":2,"position":[0,300],"webhookId":"waha-message","parameters":{"httpMethod":"POST","path":"waha-message","responseMode":"onReceived","options":{}}},{"id":"code-lid","name":"Resolve Phone","type":"n8n-nodes-base.code","typeVersion":2,"position":[250,300],"parameters":{"jsCode":"\nconst body = $input.first().json;\nconst payload = body.body || body;\nconst msg = payload.payload || payload;\n\nlet from = msg.from || '';\nif (from.endsWith('@lid')) {\n  const alt = (msg._data && msg._data.key && msg._data.key.remoteJidAlt) || '';\n  if (alt) from = alt.replace(/@.*$/, '');\n} else {\n  from = from.replace(/@.*$/, '');\n}\n\n// normalize: remove country code prefix for lookup\nconst phone = from.replace(/^\\+/, '');\n\nreturn [{\n  json: {\n    phone,\n    text: msg.body || msg.text || '',\n    originalPayload: msg\n  }\n}];\n"}},{"id":"find-store","name":"Find Store by Phone","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[500,300],"parameters":{"method":"GET","url":"={{ $env.API_BASE_URL }}/n8n/stores/by-phone","sendQuery":true,"queryParameters":{"parameters":[{"name":"phone","value":"={{ $json.phone }}"}]},"sendHeaders":true,"headerParameters":{"parameters":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"}]},"options":{"response":{"response":{"neverError":true}}}}},{"id":"if-vendor","name":"Is Vendor?","type":"n8n-nodes-base.if","typeVersion":2,"position":[750,300],"parameters":{"conditions":{"options":{"caseSensitive":true,"leftValue":"","typeValidation":"strict"},"conditions":[{"id":"cond1","leftValue":"={{ $json.id }}","rightValue":"","operator":{"type":"string","operation":"notEmpty"}}],"combinator":"and"}}},{"id":"vendor-agent-call","name":"Call Vendor Agent","type":"n8n-nodes-base.executeWorkflow","typeVersion":1.1,"position":[1000,150],"parameters":{"workflowId":{"__rl":true,"mode":"id","value":"0QrsaDYuuSgMkGFB"},"options":{"waitForSubWorkflow":false},"fields":{"values":[{"name":"phone","stringValue":"={{ $('Resolve Phone').item.json.phone }}"},{"name":"text","stringValue":"={{ $('Resolve Phone').item.json.text }}"},{"name":"storeId","stringValue":"={{ $json.id }}"},{"name":"storeName","stringValue":"={{ $json.name }}"}]}}},{"id":"find-user","name":"Find User by Phone","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[1000,450],"parameters":{"method":"GET","url":"={{ $env.API_BASE_URL }}/n8n/users/by-phone","sendQuery":true,"queryParameters":{"parameters":[{"name":"phone","value":"={{ $('Resolve Phone').item.json.phone }}"}]},"sendHeaders":true,"headerParameters":{"parameters":[{"name":"X-N8N-Key","value":"={{ $env.N8N_AGENT_KEY }}"}]},"options":{"response":{"response":{"neverError":true}}}}},{"id":"if-customer","name":"Is Customer?","type":"n8n-nodes-base.if","typeVersion":2,"position":[1250,450],"parameters":{"conditions":{"options":{"caseSensitive":true,"leftValue":"","typeValidation":"strict"},"conditions":[{"id":"cond2","leftValue":"={{ $json.id }}","rightValue":"","operator":{"type":"string","operation":"notEmpty"}}],"combinator":"and"}}},{"id":"customer-agent-call","name":"Call Customer Agent","type":"n8n-nodes-base.executeWorkflow","typeVersion":1.1,"position":[1500,350],"parameters":{"workflowId":{"__rl":true,"mode":"id","value":"hXc7StQIztZYNQvX"},"options":{"waitForSubWorkflow":false},"fields":{"values":[{"name":"phone","stringValue":"={{ $('Resolve Phone').item.json.phone }}"},{"name":"text","stringValue":"={{ $('Resolve Phone').item.json.text }}"},{"name":"customerId","stringValue":"={{ $json.id }}"},{"name":"customerName","stringValue":"={{ $json.name }}"}]}}},{"id":"send-unknown","name":"Send Unknown Reply","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[1500,600],"parameters":{"method":"POST","url":"={{ $env.WAHA_API_URL }}/api/sendText","sendHeaders":true,"headerParameters":{"parameters":[{"name":"X-Api-Key","value":"={{ $env.WAHA_API_KEY }}"},{"name":"Content-Type","value":"application/json"}]},"sendBody":true,"bodyParameters":{"parameters":[{"name":"chatId","value":"={{ $('Resolve Phone').item.json.phone }}@c.us"},{"name":"text","value":"Olá! Para usar nossos serviços, faça seu primeiro pedido pelo aplicativo bcmTech Shopping. 📱"},{"name":"session","value":"default"}]}}}],"connections":{"Webhook WAHA":{"main":[[{"node":"Resolve Phone","type":"main","index":0}]]},"Resolve Phone":{"main":[[{"node":"Find Store by Phone","type":"main","index":0}]]},"Find Store by Phone":{"main":[[{"node":"Is Vendor?","type":"main","index":0}]]},"Is Vendor?":{"main":[[{"node":"Call Vendor Agent","type":"main","index":0}],[{"node":"Find User by Phone","type":"main","index":0}]]},"Find User by Phone":{"main":[[{"node":"Is Customer?","type":"main","index":0}]]},"Is Customer?":{"main":[[{"node":"Call Customer Agent","type":"main","index":0}],[{"node":"Send Unknown Reply","type":"main","index":0}]]}},"authors":"Admin BCM","name":null,"description":null,"autosaved":false,"workflowPublishHistory":[{"createdAt":"2026-04-08T22:41:10.498Z","id":5,"workflowId":"eFwJFRlQdLTsCq1g","versionId":"54089cb4-05e6-493b-b95b-9e97ddf13484","event":"activated","userId":"c6254477-dcc9-487d-856b-506c19b6c54b"},{"createdAt":"2026-04-08T22:41:10.486Z","id":4,"workflowId":"eFwJFRlQdLTsCq1g","versionId":"54089cb4-05e6-493b-b95b-9e97ddf13484","event":"deactivated","userId":"c6254477-dcc9-487d-856b-506c19b6c54b"}]}}
+{
+  "updatedAt": "2026-04-09T00:59:41.625Z",
+  "createdAt": "2026-04-08T23:12:55.074Z",
+  "id": "MxBBibeFaJN4XrUG",
+  "name": "WAHA Router",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "webhook-node",
+      "name": "Webhook WAHA",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "waha-message",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "waha-message",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "code-lid",
+      "name": "Resolve Phone",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        250,
+        300
+      ],
+      "parameters": {
+        "jsCode": "\nconst body = $input.first().json;\nconst payload = body.body || body;\nconst msg = payload.payload || payload;\n\nlet from = msg.from || '';\nif (from.endsWith('@lid')) {\n  const alt = (msg._data && msg._data.key && msg._data.key.remoteJidAlt) || '';\n  if (alt) from = alt.replace(/@.*$/, '');\n} else {\n  from = from.replace(/@.*$/, '');\n}\n\n// normalize: remove country code prefix for lookup\nconst phone = from.replace(/^\\+/, '');\n\nreturn [{\n  json: {\n    phone,\n    text: msg.body || msg.text || '',\n    originalPayload: msg\n  }\n}];\n"
+      }
+    },
+    {
+      "id": "find-store",
+      "name": "Find Store by Phone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.API_BASE_URL }}/n8n/stores/by-phone",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "phone",
+              "value": "={{ $json.phone }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Key",
+              "value": "={{ $env.N8N_AGENT_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "if-vendor",
+      "name": "Is Vendor?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        750,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond1",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "vendor-agent-call",
+      "name": "Call Vendor Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1250,
+        50
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "hfeCXL7Q821EwKij"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "find-user",
+      "name": "Find User by Phone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        450
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.API_BASE_URL }}/n8n/users/by-phone",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "phone",
+              "value": "={{ $('Resolve Phone').item.json.phone }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Key",
+              "value": "={{ $env.N8N_AGENT_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "if-customer",
+      "name": "Is Customer?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1250,
+        450
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond2",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "customer-agent-call",
+      "name": "Call Customer Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1750,
+        300
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "SacM4Z6Ow3Ms2Cda"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "send-unknown",
+      "name": "Send Unknown Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1500,
+        600
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WAHA_API_URL }}/api/sendText",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Api-Key",
+              "value": "={{ $env.WAHA_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chatId",
+              "value": "={{ $('Resolve Phone').item.json.phone }}@c.us"
+            },
+            {
+              "name": "text",
+              "value": "Ol\u00e1! Para usar nossos servi\u00e7os, fa\u00e7a seu primeiro pedido pelo aplicativo bcmTech Shopping. \ud83d\udcf1"
+            },
+            {
+              "name": "session",
+              "value": "default"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "prep-vendor-001",
+      "name": "Prep Vendor Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        50
+      ],
+      "parameters": {
+        "jsCode": "\nconst resolvePhoneData = $('Resolve Phone').first().json;\nconst storeData = $input.first().json;\nreturn [{\n  json: {\n    phone: resolvePhoneData.phone,\n    text: resolvePhoneData.text,\n    storeId: storeData.id,\n    storeName: storeData.name\n  }\n}];\n"
+      }
+    },
+    {
+      "id": "prep-customer-001",
+      "name": "Prep Customer Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        300
+      ],
+      "parameters": {
+        "jsCode": "\nconst resolvePhoneData = $('Resolve Phone').first().json;\nconst userData = $input.first().json;\nreturn [{\n  json: {\n    phone: resolvePhoneData.phone,\n    text: resolvePhoneData.text,\n    customerId: userData.id,\n    customerName: userData.name\n  }\n}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook WAHA": {
+      "main": [
+        [
+          {
+            "node": "Resolve Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Phone": {
+      "main": [
+        [
+          {
+            "node": "Find Store by Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Store by Phone": {
+      "main": [
+        [
+          {
+            "node": "Is Vendor?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Vendor?": {
+      "main": [
+        [
+          {
+            "node": "Prep Vendor Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find User by Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find User by Phone": {
+      "main": [
+        [
+          {
+            "node": "Is Customer?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Customer?": {
+      "main": [
+        [
+          {
+            "node": "Prep Customer Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Unknown Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Vendor Input": {
+      "main": [
+        [
+          {
+            "node": "Call Vendor Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Customer Input": {
+      "main": [
+        [
+          {
+            "node": "Call Customer Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "50577c66-232d-4828-acc7-34a036bbc704",
+  "activeVersionId": "50577c66-232d-4828-acc7-34a036bbc704",
+  "versionCounter": 12,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-04-08T23:12:55.079Z",
+      "createdAt": "2026-04-08T23:12:55.079Z",
+      "role": "workflow:owner",
+      "workflowId": "MxBBibeFaJN4XrUG",
+      "projectId": "e2PqzAych49mG6u0",
+      "project": {
+        "updatedAt": "2026-04-08T23:11:50.843Z",
+        "createdAt": "2026-04-08T23:11:05.345Z",
+        "id": "e2PqzAych49mG6u0",
+        "name": "Admin BCM <admin@bcmtech.com.br>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "b6c9d1f3-323c-42a2-81a5-cfaf98622b3b"
+      }
+    }
+  ],
+  "tags": [],
+  "parentFolder": null,
+  "activeVersion": {
+    "updatedAt": "2026-04-09T00:59:41.627Z",
+    "createdAt": "2026-04-09T00:59:41.627Z",
+    "versionId": "50577c66-232d-4828-acc7-34a036bbc704",
+    "workflowId": "MxBBibeFaJN4XrUG",
+    "nodes": [
+      {
+        "id": "webhook-node",
+        "name": "Webhook WAHA",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          0,
+          300
+        ],
+        "webhookId": "waha-message",
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "waha-message",
+          "responseMode": "onReceived",
+          "options": {}
+        }
+      },
+      {
+        "id": "code-lid",
+        "name": "Resolve Phone",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          250,
+          300
+        ],
+        "parameters": {
+          "jsCode": "\nconst body = $input.first().json;\nconst payload = body.body || body;\nconst msg = payload.payload || payload;\n\nlet from = msg.from || '';\nif (from.endsWith('@lid')) {\n  const alt = (msg._data && msg._data.key && msg._data.key.remoteJidAlt) || '';\n  if (alt) from = alt.replace(/@.*$/, '');\n} else {\n  from = from.replace(/@.*$/, '');\n}\n\n// normalize: remove country code prefix for lookup\nconst phone = from.replace(/^\\+/, '');\n\nreturn [{\n  json: {\n    phone,\n    text: msg.body || msg.text || '',\n    originalPayload: msg\n  }\n}];\n"
+        }
+      },
+      {
+        "id": "find-store",
+        "name": "Find Store by Phone",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          500,
+          300
+        ],
+        "parameters": {
+          "method": "GET",
+          "url": "={{ $env.API_BASE_URL }}/n8n/stores/by-phone",
+          "sendQuery": true,
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "phone",
+                "value": "={{ $json.phone }}"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-N8N-Key",
+                "value": "={{ $env.N8N_AGENT_KEY }}"
+              }
+            ]
+          },
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "if-vendor",
+        "name": "Is Vendor?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          750,
+          300
+        ],
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "cond1",
+                "leftValue": "={{ $json.id }}",
+                "rightValue": "",
+                "operator": {
+                  "type": "string",
+                  "operation": "notEmpty"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        }
+      },
+      {
+        "id": "vendor-agent-call",
+        "name": "Call Vendor Agent",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1.1,
+        "position": [
+          1250,
+          50
+        ],
+        "parameters": {
+          "workflowId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "hfeCXL7Q821EwKij"
+          },
+          "options": {
+            "waitForSubWorkflow": false
+          }
+        }
+      },
+      {
+        "id": "find-user",
+        "name": "Find User by Phone",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1000,
+          450
+        ],
+        "parameters": {
+          "method": "GET",
+          "url": "={{ $env.API_BASE_URL }}/n8n/users/by-phone",
+          "sendQuery": true,
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "phone",
+                "value": "={{ $('Resolve Phone').item.json.phone }}"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-N8N-Key",
+                "value": "={{ $env.N8N_AGENT_KEY }}"
+              }
+            ]
+          },
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "if-customer",
+        "name": "Is Customer?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1250,
+          450
+        ],
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "cond2",
+                "leftValue": "={{ $json.id }}",
+                "rightValue": "",
+                "operator": {
+                  "type": "string",
+                  "operation": "notEmpty"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        }
+      },
+      {
+        "id": "customer-agent-call",
+        "name": "Call Customer Agent",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1.1,
+        "position": [
+          1750,
+          300
+        ],
+        "parameters": {
+          "workflowId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "SacM4Z6Ow3Ms2Cda"
+          },
+          "options": {
+            "waitForSubWorkflow": false
+          }
+        }
+      },
+      {
+        "id": "send-unknown",
+        "name": "Send Unknown Reply",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1500,
+          600
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $env.WAHA_API_URL }}/api/sendText",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-Api-Key",
+                "value": "={{ $env.WAHA_API_KEY }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "chatId",
+                "value": "={{ $('Resolve Phone').item.json.phone }}@c.us"
+              },
+              {
+                "name": "text",
+                "value": "Ol\u00e1! Para usar nossos servi\u00e7os, fa\u00e7a seu primeiro pedido pelo aplicativo bcmTech Shopping. \ud83d\udcf1"
+              },
+              {
+                "name": "session",
+                "value": "default"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "prep-vendor-001",
+        "name": "Prep Vendor Input",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1000,
+          50
+        ],
+        "parameters": {
+          "jsCode": "\nconst resolvePhoneData = $('Resolve Phone').first().json;\nconst storeData = $input.first().json;\nreturn [{\n  json: {\n    phone: resolvePhoneData.phone,\n    text: resolvePhoneData.text,\n    storeId: storeData.id,\n    storeName: storeData.name\n  }\n}];\n"
+        }
+      },
+      {
+        "id": "prep-customer-001",
+        "name": "Prep Customer Input",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1500,
+          300
+        ],
+        "parameters": {
+          "jsCode": "\nconst resolvePhoneData = $('Resolve Phone').first().json;\nconst userData = $input.first().json;\nreturn [{\n  json: {\n    phone: resolvePhoneData.phone,\n    text: resolvePhoneData.text,\n    customerId: userData.id,\n    customerName: userData.name\n  }\n}];\n"
+        }
+      }
+    ],
+    "connections": {
+      "Webhook WAHA": {
+        "main": [
+          [
+            {
+              "node": "Resolve Phone",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Resolve Phone": {
+        "main": [
+          [
+            {
+              "node": "Find Store by Phone",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Find Store by Phone": {
+        "main": [
+          [
+            {
+              "node": "Is Vendor?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Vendor?": {
+        "main": [
+          [
+            {
+              "node": "Prep Vendor Input",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Find User by Phone",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Find User by Phone": {
+        "main": [
+          [
+            {
+              "node": "Is Customer?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Customer?": {
+        "main": [
+          [
+            {
+              "node": "Prep Customer Input",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Send Unknown Reply",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prep Vendor Input": {
+        "main": [
+          [
+            {
+              "node": "Call Vendor Agent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prep Customer Input": {
+        "main": [
+          [
+            {
+              "node": "Call Customer Agent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "Admin BCM",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-04-09T00:59:41.754Z",
+        "id": 34,
+        "workflowId": "MxBBibeFaJN4XrUG",
+        "versionId": "50577c66-232d-4828-acc7-34a036bbc704",
+        "event": "activated",
+        "userId": "b6c9d1f3-323c-42a2-81a5-cfaf98622b3b"
+      }
+    ]
+  },
+  "scopes": [
+    "workflow:create",
+    "workflow:delete",
+    "workflow:execute",
+    "workflow:execute-chat",
+    "workflow:list",
+    "workflow:move",
+    "workflow:publish",
+    "workflow:read",
+    "workflow:share",
+    "workflow:unpublish",
+    "workflow:unshare",
+    "workflow:update",
+    "workflow:updateRedactionSetting"
+  ],
+  "checksum": "5b0d7724f80de1defa2f0f4273c3511566f90a6296e00fe2acebd533c7f4a6c7"
+}

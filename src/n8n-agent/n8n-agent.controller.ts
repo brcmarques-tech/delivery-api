@@ -160,11 +160,15 @@ export class N8nAgentController {
   @Get('orders/number/:orderNumber')
   async orderByNumber(
     @Param('orderNumber') orderNumber: string,
+    @Query('customerId') customerId: string,
     @Headers('x-n8n-key') key: string,
   ) {
     this.checkAuth(key);
     const order = await this.ordersService.findByOrderNumber(orderNumber);
     if (!order) throw new NotFoundException('Pedido nao encontrado');
+    if (customerId && order.customer?.id !== customerId) {
+      throw new ForbiddenException('Pedido nao pertence a este cliente');
+    }
     return {
       id: order.id,
       orderNumber: order.orderNumber,
@@ -293,11 +297,15 @@ export class N8nAgentController {
   @Get('orders/:orderNumber/tracking')
   async orderTracking(
     @Param('orderNumber') orderNumber: string,
+    @Query('customerId') customerId: string,
     @Headers('x-n8n-key') key: string,
   ) {
     this.checkAuth(key);
     const order = await this.ordersService.findByOrderNumber(orderNumber);
     if (!order) throw new NotFoundException('Pedido nao encontrado');
+    if (customerId && order.customer?.id !== customerId) {
+      throw new ForbiddenException('Pedido nao pertence a este cliente');
+    }
     const delivery = order.delivery;
     return {
       orderNumber: order.orderNumber,
@@ -319,6 +327,7 @@ export class N8nAgentController {
       status: string;
       actorEmail?: string;
       storeId?: string;
+      customerId?: string;
     },
     @Headers('x-n8n-key') key: string,
   ) {
@@ -326,9 +335,17 @@ export class N8nAgentController {
     const order = await this.ordersService.findByOrderNumber(body.orderNumber);
     if (!order) throw new NotFoundException('Pedido nao encontrado');
 
-    // If storeId provided, verify ownership
+    // If storeId provided, verify vendor ownership
     if (body.storeId && order.store?.id !== body.storeId) {
       throw new ForbiddenException('Pedido nao pertence a esta loja');
+    }
+
+    // If customerId provided (customer agent), verify customer ownership
+    if (
+      (body as any).customerId &&
+      order.customer?.id !== (body as any).customerId
+    ) {
+      throw new ForbiddenException('Pedido nao pertence a este cliente');
     }
 
     const actorEmail =
