@@ -1076,10 +1076,12 @@ export class OrdersService {
         try {
           await this.paymentsService.settlePayment(order);
         } catch (err: any) {
+          // KAN-195: marca a falha em notes (detectavel) — o retry scheduler cobre.
           console.error(
-            'Settlement on dispute resolution failed:',
+            `Settlement on dispute resolution failed for order #${order.orderNumber}:`,
             err?.message,
           );
+          await this.flagSettlementFailure(order.id, err?.message);
         }
       }
       return this.updateStatus(order.id, OrderStatus.COMPLETED);
@@ -1354,6 +1356,22 @@ export class OrdersService {
   //
   // Janela de 48h: apos isso o pedido fica isSettled=false para atencao manual
   // do superadmin (evita re-tentar eternamente algo permanentemente quebrado).
+  // KAN-195: registra em notes que o settlement falhou, com timestamp e motivo.
+  // Combinado com isSettled=false (ainda nao repassado) + status COMPLETED, torna
+  // settlements travados detectaveis/consultaveis pela plataforma. Append-only,
+  // nao remove no sucesso posterior (isSettled=true ja indica recuperacao).
+  private async flagSettlementFailure(orderId: string, message?: string): Promise<void> {
+    const marker = `\n[SETTLEMENT_FAILED ${new Date().toISOString()}] ${message || 'unknown'}`;
+    try {
+      await this.ordersRepository.manager.query(
+        `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`,
+        [orderId, marker],
+      );
+    } catch (e: any) {
+      console.error(`Failed to flag settlement failure for order ${orderId}:`, e?.message);
+    }
+  }
+
   async retryFailedSettlements(): Promise<number> {
     const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const pending = await this.ordersRepository.find({
@@ -1404,7 +1422,13 @@ export class OrdersService {
       try {
         await this.paymentsService.settlePayment(order);
       } catch (err: any) {
-        console.error('Settlement failed:', err?.message);
+        // KAN-195: nao engolir a falha silenciosamente. settlePayment ja reverteu
+        // isSettled=false, e o scheduler retryFailedSettlements (KAN-205) re-tenta
+        // a cada 60s por 48h. Mas persistimos um marcador detectavel em notes para
+        // a plataforma enxergar settlements travados (ex.: pre-auth expirada,
+        // vendedor sem recipient) em vez de um "pedido finalizado" sem repasse.
+        console.error(`Settlement failed for order #${order.orderNumber}:`, err?.message);
+        await this.flagSettlementFailure(order.id, err?.message);
       }
     }
 
