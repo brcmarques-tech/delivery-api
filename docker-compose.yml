@@ -19,25 +19,26 @@ services:
       JWT_SECRET: dev-secret-change-in-production
       JWT_EXPIRATION: 7d
       PORT: 3000
-      RESEND_API_KEY: re_fLvy9LTQ_PWEdzcqWyNwajCqEXY3wiQGw
+      # KAN-222: segredos vêm do .env (gitignored) por substituição — não versionar.
+      RESEND_API_KEY: ${RESEND_API_KEY}
       MAIL_FROM: BCM TECH SHOPPING <noreply@bcmtech.com.br>
       CLOUDINARY_CLOUD_NAME: dgbavxge6
-      CLOUDINARY_API_KEY: 279355333423469
-      CLOUDINARY_API_SECRET: lILGnp653qtQQmOGV0uQVDn4Uew
-      PAGARME_SECRET_KEY: sk_test_6f0b7122384f431faa8b0c6b19463425
-      PAGARME_PUBLIC_KEY: pk_test_aMzdnWyuDCykrpN2
-      PAGARME_PLATFORM_RECIPIENT_ID: re_cmmutgjxn00d20l9tbqyidmmf
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET}
+      PAGARME_SECRET_KEY: ${PAGARME_SECRET_KEY}
+      PAGARME_PUBLIC_KEY: ${PAGARME_PUBLIC_KEY}
+      PAGARME_PLATFORM_RECIPIENT_ID: ${PAGARME_PLATFORM_RECIPIENT_ID}
       APP_URL: http://localhost:3000
       VENDOR_APP_URL: http://localhost:3001
-      SERPAPI_KEY: a0e65ca2095765511a9001e46e1eaeba5fdc0c5d40dc4c156f7097f59c3e0521
+      SERPAPI_KEY: ${SERPAPI_KEY}
       GOOGLE_CLIENT_ID: 194367338134-2svkdsl9amt5qfihsqabt438l2sj1pj8.apps.googleusercontent.com
-      GOOGLE_CLIENT_SECRET: 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
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
       WAHA_API_URL: http://18.231.9.158
-      WAHA_API_KEY: bcmtech-waha-2026-key
-      GEMINI_API_KEY: AIzaSyAGr-yytwNTUCpVUmxl1R4mTSiK_jorRFQ
-      WAHA_WEBHOOK_SECRET: bcmtech-waha-webhook-2026
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET}
       AGENT_APP_USER_EMAIL: agente@bcmtech.com.br
-      N8N_AGENT_KEY: bcmtech-n8n-agent-2026
+      N8N_AGENT_KEY: ${N8N_AGENT_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,8 +78,9 @@ services:
       - '5678:5678'
     environment:
       N8N_BASIC_AUTH_USER: admin
-      N8N_BASIC_AUTH_PASSWORD: bcmtech2026
-      N8N_ENCRYPTION_KEY: bcmtech-n8n-encryption-key-2026
+      # KAN-222: senha/chave do n8n vêm do .env por substituição — não versionar.
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
       GENERIC_TIMEZONE: America/Sao_Paulo
       TZ: America/Sao_Paulo
       WEBHOOK_URL: http://localhost:5678/
@@ -87,10 +89,10 @@ services:
       N8N_CONCURRENCY_PRODUCTION_LIMIT: "-1"
       # Variaveis para usar nos workflows
       API_BASE_URL: http://shopping-api:3000
-      N8N_AGENT_KEY: bcmtech-n8n-agent-2026
-      GEMINI_API_KEY: AIzaSyAGr-yytwNTUCpVUmxl1R4mTSiK_jorRFQ
+      N8N_AGENT_KEY: ${N8N_AGENT_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
       WAHA_API_URL: http://18.231.9.158
-      WAHA_API_KEY: bcmtech-waha-2026-key
+      WAHA_API_KEY: ${WAHA_API_KEY}
       # KAN-220: usados pelo workflow "Contato Site" (webhook do formulario).
       # RESEND_API_KEY vem do .env (gitignored) por substituicao — nao versionar
       # a chave. CONTACT_WEBHOOK_SECRET e um token nao-sensivel (default abaixo),
