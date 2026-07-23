@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -557,6 +558,19 @@ export class AppointmentsService {
       relations: RELATIONS,
     });
     if (!appointment) throw new NotFoundException('Agendamento nao encontrado');
+    return appointment;
+  }
+
+  // KAN-225: leitura escopada por dono. So o cliente do agendamento ou o dono
+  // da loja podem ler; qualquer outro usuario autenticado recebe 403 (antes a
+  // query `appointment(id)` retornava dados de terceiros por id — vazava PII).
+  async findByIdForUser(id: string, userId: string): Promise<Appointment> {
+    const appointment = await this.findById(id);
+    const isCustomer = appointment.customer?.id === userId;
+    const isStoreOwner = appointment.store?.owner?.id === userId;
+    if (!isCustomer && !isStoreOwner) {
+      throw new ForbiddenException('Voce nao tem acesso a este agendamento');
+    }
     return appointment;
   }
 
