@@ -92,6 +92,18 @@ export class ProductsService {
     return product;
   }
 
+  // Igual ao findById, mas inclui produtos soft-deleted (usado na verificacao
+  // de ownership do restore, que por definicao age sobre um produto deletado).
+  async findByIdAnyState(id: string): Promise<Product> {
+    const product = await this.productsRepository.findOne({
+      where: { id },
+      relations: ['store'],
+      withDeleted: true,
+    });
+    if (!product) throw new NotFoundException('Produto nao encontrado');
+    return product;
+  }
+
   async update(input: UpdateProductInput): Promise<Product> {
     const product = await this.findById(input.id);
     if (input.name !== undefined) product.name = input.name;
