@@ -1619,6 +1619,16 @@ export class PaymentsService implements OnModuleDestroy {
     const vendor = await this.vendorUsersService.findById(userId);
     if (!vendor) throw new NotFoundException('Vendedor não encontrado');
 
+    // KAN-209: o CPF do recipient DEVE ser o do proprio usuario logado, nunca um
+    // vindo da request. Sem isto, informar o CPF de outra pessoa fazia o
+    // findExistingRecipientByCpf achar o recipient dela e updateRecipient
+    // sobrescrever a conta bancaria alheia (desvio de repasse / account-takeover).
+    const ownCpf = (vendor.cpf || '').replace(/\D/g, '');
+    if (!ownCpf) {
+      throw new BadRequestException('Cadastre seu CPF no perfil antes de configurar o recebimento.');
+    }
+    recipientData = { ...recipientData, document: ownCpf };
+
     // Se já tem recipient, atualiza
     if (vendor.pagarmeRecipientId) {
       await this.updateRecipient(vendor.pagarmeRecipientId, recipientData);
@@ -1662,6 +1672,14 @@ export class PaymentsService implements OnModuleDestroy {
   async registerDelivererRecipient(userId: string, recipientData: any): Promise<{ recipientId: string }> {
     const deliverer = await this.appUsersService.findById(userId);
     if (!deliverer) throw new NotFoundException('Entregador não encontrado');
+
+    // KAN-209: CPF do recipient sempre o do proprio usuario (ver comentario em
+    // registerVendorRecipient). Impede sobrescrever a conta bancaria de terceiro.
+    const ownCpf = (deliverer.cpf || '').replace(/\D/g, '');
+    if (!ownCpf) {
+      throw new BadRequestException('Cadastre seu CPF no perfil antes de configurar o recebimento.');
+    }
+    recipientData = { ...recipientData, document: ownCpf };
 
     // Se já tem recipient, atualiza
     if (deliverer.pagarmeRecipientId) {
