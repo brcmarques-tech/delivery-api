@@ -325,8 +325,11 @@ export class VendorUsersService {
   }
 
   async requestPasswordReset(email: string): Promise<string> {
+    // KAN-226: mesma resposta para e-mail existente ou nao (anti-enumeracao).
+    const genericMsg =
+      'Se o e-mail estiver cadastrado, enviaremos um link de recuperacao';
     const user = await this.findByEmail(email);
-    if (!user) throw new NotFoundException('Email nao encontrado');
+    if (!user) return genericMsg;
 
     const token = crypto.randomBytes(32).toString('hex');
     user.resetPasswordToken = token;
@@ -340,7 +343,7 @@ export class VendorUsersService {
     if (user.phone) {
       this.whatsAppService.notifyPasswordReset(user.phone, user.name, resetUrl).catch(() => {});
     }
-    return 'Email de recuperacao enviado';
+    return genericMsg;
   }
 
   async resetPassword(token: string, newPassword: string): Promise<boolean> {

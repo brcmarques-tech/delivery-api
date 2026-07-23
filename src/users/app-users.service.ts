@@ -375,8 +375,12 @@ export class AppUsersService {
   }
 
   async requestPasswordReset(email: string): Promise<string> {
+    // KAN-226: mesma resposta para e-mail existente ou nao, evitando enumeracao
+    // de contas. Antes lancava NotFoundException, revelando quais e-mails existem.
+    const genericMsg =
+      'Se o e-mail estiver cadastrado, enviaremos um link de recuperacao';
     const user = await this.findByEmail(email);
-    if (!user) throw new NotFoundException('Email nao encontrado');
+    if (!user) return genericMsg;
 
     const token = crypto.randomBytes(32).toString('hex');
     user.resetPasswordToken = token;
@@ -390,7 +394,7 @@ export class AppUsersService {
     if (user.phone) {
       this.whatsAppService.notifyPasswordReset(user.phone, user.name, resetUrl).catch(() => {});
     }
-    return 'Email de recuperacao enviado';
+    return genericMsg;
   }
 
   async resetPassword(token: string, newPassword: string): Promise<boolean> {
