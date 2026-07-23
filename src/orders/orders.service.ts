@@ -6,7 +6,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThanOrEqual } from 'typeorm';
+import { Repository, LessThanOrEqual, MoreThanOrEqual, In } from 'typeorm';
 import * as crypto from 'crypto';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
@@ -1076,10 +1076,12 @@ export class OrdersService {
         try {
           await this.paymentsService.settlePayment(order);
         } catch (err: any) {
+          // KAN-195: marca a falha em notes (detectavel) — o retry scheduler cobre.
           console.error(
-            'Settlement on dispute resolution failed:',
+            `Settlement on dispute resolution failed for order #${order.orderNumber}:`,
             err?.message,
           );
+          await this.flagSettlementFailure(order.id, err?.message);
         }
       }
       return this.updateStatus(order.id, OrderStatus.COMPLETED);
@@ -1175,6 +1177,12 @@ export class OrdersService {
 
   async expirePendingOrders(): Promise<number> {
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    // KAN-210: a janela de 10 min do vendedor conta a partir de quando o pedido
+    // entrou em PENDING/PAYMENT_REVIEW, nao da criacao. So orders PAGOS chegam a
+    // esses status (AWAITING_PAYMENT nem entra no filtro), e updatedAt e bumpado
+    // exatamente na transicao de pagamento. Antes usava createdAt: um PIX pago
+    // >10 min apos a criacao (cliente demorou) nascia PENDING ja "expirado" e era
+    // cancelado/estornado antes do vendedor poder aceitar — pedido pago sumia.
     const expiredOrders = await this.ordersRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.store', 'store')
@@ -1185,7 +1193,7 @@ export class OrdersService {
       .where('order.status IN (:...statuses)', {
         statuses: [OrderStatus.PENDING, OrderStatus.PAYMENT_REVIEW],
       })
-      .andWhere('order.createdAt <= :tenMinAgo', { tenMinAgo })
+      .andWhere('order.updatedAt <= :tenMinAgo', { tenMinAgo })
       .getMany();
 
     for (const order of expiredOrders) {
@@ -1337,6 +1345,57 @@ export class OrdersService {
     });
   }
 
+  // KAN-205: Re-tenta settlements que falharam. completeOrderWithPayment marca o
+  // pedido COMPLETED e depois chama settlePayment num try/catch que so logava —
+  // sem retry, cobranca de cartao nunca era capturada (dinheiro perdido).
+  //
+  // settlePayment e idempotente (guard atomico UPDATE isSettled=true WHERE
+  // isSettled=false): reverte isSettled=false em falha de captura de cartao, e
+  // em PIX so fica isSettled=false se NENHUMA transferencia ocorreu — logo,
+  // re-chamar aqui e seguro e nao gera pagamento dobrado.
+  //
+  // Janela de 48h: apos isso o pedido fica isSettled=false para atencao manual
+  // do superadmin (evita re-tentar eternamente algo permanentemente quebrado).
+  // KAN-195: registra em notes que o settlement falhou, com timestamp e motivo.
+  // Combinado com isSettled=false (ainda nao repassado) + status COMPLETED, torna
+  // settlements travados detectaveis/consultaveis pela plataforma. Append-only,
+  // nao remove no sucesso posterior (isSettled=true ja indica recuperacao).
+  private async flagSettlementFailure(orderId: string, message?: string): Promise<void> {
+    const marker = `\n[SETTLEMENT_FAILED ${new Date().toISOString()}] ${message || 'unknown'}`;
+    try {
+      await this.ordersRepository.manager.query(
+        `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`,
+        [orderId, marker],
+      );
+    } catch (e: any) {
+      console.error(`Failed to flag settlement failure for order ${orderId}:`, e?.message);
+    }
+  }
+
+  async retryFailedSettlements(): Promise<number> {
+    const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const pending = await this.ordersRepository.find({
+      where: {
+        status: OrderStatus.COMPLETED,
+        isSettled: false,
+        paymentMethod: In(['PIX', 'CREDIT_CARD']),
+        completedAt: MoreThanOrEqual(windowStart),
+      },
+      relations: ['store', 'store.owner', 'delivery', 'delivery.deliverer'],
+    });
+
+    let settled = 0;
+    for (const order of pending) {
+      try {
+        await this.paymentsService.settlePayment(order);
+        settled++;
+      } catch {
+        // Continua isSettled=false; sera re-tentado no proximo ciclo (dentro da janela).
+      }
+    }
+    return settled;
+  }
+
   // L9: TODO — ON_DELIVERY orders have no payment guarantee; platform commission is not collected.
   // Consider implementing a post-delivery invoice/billing system for ON_DELIVERY commission collection.
   async completeOrderWithPayment(order: Order): Promise<Order> {
@@ -1363,7 +1422,13 @@ export class OrdersService {
       try {
         await this.paymentsService.settlePayment(order);
       } catch (err: any) {
-        console.error('Settlement failed:', err?.message);
+        // KAN-195: nao engolir a falha silenciosamente. settlePayment ja reverteu
+        // isSettled=false, e o scheduler retryFailedSettlements (KAN-205) re-tenta
+        // a cada 60s por 48h. Mas persistimos um marcador detectavel em notes para
+        // a plataforma enxergar settlements travados (ex.: pre-auth expirada,
+        // vendedor sem recipient) em vez de um "pedido finalizado" sem repasse.
+        console.error(`Settlement failed for order #${order.orderNumber}:`, err?.message);
+        await this.flagSettlementFailure(order.id, err?.message);
       }
     }
 

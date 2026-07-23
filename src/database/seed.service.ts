@@ -17,6 +17,14 @@ export class SeedService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    // NUNCA semear em producao. O seed cria usuarios (inclusive SUPERADMIN) com
+    // senha fixa 'teste123' — em producao isso e um backdoor de acesso total
+    // (KAN-207). So roda fora de producao, para popular o ambiente de dev.
+    // (Requer NODE_ENV=production definido no docker-compose.prod.yml.)
+    if (process.env.NODE_ENV === 'production') {
+      this.logger.log('Seed de usuarios de teste ignorado (NODE_ENV=production).');
+      return;
+    }
     await this.seedUsers();
   }
 

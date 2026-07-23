@@ -1,18 +1,26 @@
 import { InputType, Field, Float, Int } from '@nestjs/graphql';
-import { IsOptional } from 'class-validator';
+import { IsOptional, IsInt, Min, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 
 @InputType()
 export class OrderItemInput {
   @Field()
   productId: string;
 
+  // Sem @Min(1), quantidade negativa abatia o subtotal (pagar a menos) e, no
+  // decremento stock - $1, inflava o estoque burlando a guarda (KAN-211).
   @Field(() => Int)
+  @IsInt()
+  @Min(1)
   quantity: number;
 
   @Field({ nullable: true })
   notes?: string;
 
   @Field(() => Int, { nullable: true })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
   weightGrams?: number;
 }
 
@@ -21,7 +29,11 @@ export class CreateOrderInput {
   @Field()
   storeId: string;
 
+  // @ValidateNested + @Type sao obrigatorios para o ValidationPipe descer nos
+  // itens do array — sem eles, as regras de OrderItemInput acima nao rodam.
   @Field(() => [OrderItemInput])
+  @ValidateNested({ each: true })
+  @Type(() => OrderItemInput)
   items: OrderItemInput[];
 
   @Field({ nullable: true, defaultValue: false })

@@ -1,4 +1,4 @@
-import { Injectable, Inject, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
@@ -18,6 +18,8 @@ import { peppered } from '../common/utils/pepper';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private appUsersService: AppUsersService,
     private vendorUsersService: VendorUsersService,
@@ -141,16 +143,49 @@ export class AuthService {
     return this.vendorUsersService.resetPassword(token, newPassword);
   }
 
+  // Client_ids aceitos. Web (vendor panel) e o app mobile (fluxo web via backend)
+  // usam o mesmo GOOGLE_CLIENT_ID. GOOGLE_ALLOWED_AUDIENCES (CSV) permite adicionar
+  // outros (Android/iOS) no futuro sem mexer no codigo.
+  private getAllowedGoogleAudiences(): string[] {
+    const raw = process.env.GOOGLE_ALLOWED_AUDIENCES || process.env.GOOGLE_CLIENT_ID || '';
+    return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+
+  // KAN-213: valida que o token foi emitido PARA esta aplicacao. Sem isto, um token
+  // Google valido emitido para OUTRO app era aceito (confusao de audiencia ->
+  // account takeover). Checa o campo aud contra a lista permitida.
+  private assertGoogleAudience(aud: string | undefined): void {
+    const allowed = this.getAllowedGoogleAudiences();
+    if (allowed.length === 0) {
+      // Sem GOOGLE_CLIENT_ID configurado seria uma misconfig; nao trava o login,
+      // mas registra para nao passar despercebido.
+      this.logger.error('GOOGLE_CLIENT_ID/GOOGLE_ALLOWED_AUDIENCES ausente — audiencia do token Google NAO validada.');
+      return;
+    }
+    if (!aud || !allowed.includes(aud)) {
+      throw new BadRequestException('Token Google nao emitido para esta aplicacao.');
+    }
+  }
+
   private async verifyGoogleToken(token: string) {
     // Try as id_token first (JWT format, has dots)
     if (token.includes('.')) {
       const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${token}`);
       if (res.ok) {
         const payload = await res.json();
-        if (payload.email) return payload;
+        if (payload.email) {
+          this.assertGoogleAudience(payload.aud);
+          return payload;
+        }
       }
     }
-    // Try as access_token (from code flow)
+    // Access_token (code flow): userinfo nao traz aud, entao validamos a audiencia
+    // via tokeninfo?access_token antes de confiar no perfil.
+    const infoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${token}`);
+    if (!infoRes.ok) throw new BadRequestException('Token Google invalido');
+    const info = await infoRes.json();
+    this.assertGoogleAudience(info.aud || info.azp);
+
     const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${token}` },
     });

@@ -5,6 +5,7 @@ import { CategoriesService } from './categories.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from '../common/enums';
 
 @Resolver(() => Category)
@@ -18,8 +19,9 @@ export class CategoriesResolver {
     @Args('name') name: string,
     @Args('storeId') storeId: string,
     @Args('requiresAgeVerification', { nullable: true, defaultValue: false }) requiresAgeVerification: boolean,
+    @CurrentUser() user: any,
   ): Promise<Category> {
-    return this.categoriesService.create(name, storeId, requiresAgeVerification);
+    return this.categoriesService.create(name, storeId, requiresAgeVerification, user.id);
   }
 
   @Mutation(() => Category)
@@ -27,10 +29,11 @@ export class CategoriesResolver {
   @Roles(UserRole.VENDOR)
   updateCategory(
     @Args('id') id: string,
+    @CurrentUser() user: any,
     @Args('name', { nullable: true }) name?: string,
     @Args('requiresAgeVerification', { nullable: true }) requiresAgeVerification?: boolean,
   ): Promise<Category> {
-    return this.categoriesService.update(id, { name, requiresAgeVerification });
+    return this.categoriesService.update(id, { name, requiresAgeVerification }, user.id);
   }
 
   @Query(() => [Category])
@@ -41,7 +44,7 @@ export class CategoriesResolver {
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  deleteCategory(@Args('id') id: string): Promise<boolean> {
-    return this.categoriesService.delete(id);
+  deleteCategory(@Args('id') id: string, @CurrentUser() user: any): Promise<boolean> {
+    return this.categoriesService.delete(id, user.id);
   }
 }

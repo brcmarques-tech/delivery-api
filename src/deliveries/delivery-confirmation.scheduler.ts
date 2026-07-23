@@ -18,6 +18,7 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
       this.autoAdvanceVendorConfirmedPickup();
       this.autoConfirmExpiredDeliveries();
       this.alertNoDeliverer();
+      this.retryFailedSettlements();
     }, 60_000);
   }
 
@@ -82,6 +83,18 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
       }
     } catch (err) {
       this.logger.error('Failed to alert no deliverer:', err);
+    }
+  }
+
+  // KAN-205: re-tentar settlements que falharam (pedido COMPLETED mas isSettled=false)
+  private async retryFailedSettlements() {
+    try {
+      const count = await this.ordersService.retryFailedSettlements();
+      if (count > 0) {
+        this.logger.log(`Retried settlement for ${count} order(s)`);
+      }
+    } catch (err) {
+      this.logger.error('Failed to retry settlements:', err);
     }
   }
 }

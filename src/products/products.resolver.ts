@@ -32,10 +32,30 @@ export class ProductsResolver {
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
+  // --- Verificacao de ownership (mesmo padrao de productsByStoreAll) ---
+  // Sem isto, qualquer VENDOR autenticado editava/excluia/criava produtos em
+  // loja de terceiros so sabendo o ID (IDOR — KAN-206).
+  private async assertOwnsStore(storeId: string | undefined, userId: string): Promise<void> {
+    if (!storeId) throw new BadRequestException('Loja nao encontrada.');
+    const store = await this.storesService.findById(storeId);
+    if (store.owner?.id !== userId) {
+      throw new BadRequestException('Voce nao tem permissao sobre esta loja.');
+    }
+  }
+
+  private async assertOwnsProduct(productId: string, userId: string): Promise<void> {
+    const product = await this.productsService.findById(productId);
+    await this.assertOwnsStore(product.store?.id, userId);
+  }
+
   @Mutation(() => Product)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  createProduct(@Args('input') input: CreateProductInput): Promise<Product> {
+  async createProduct(
+    @Args('input') input: CreateProductInput,
+    @CurrentUser() user: any,
+  ): Promise<Product> {
+    await this.assertOwnsStore(input.storeId, user.id);
     return this.productsService.create(input);
   }
 
@@ -66,42 +86,68 @@ export class ProductsResolver {
   @Mutation(() => Product)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  updateProduct(@Args('input') input: UpdateProductInput): Promise<Product> {
+  async updateProduct(
+    @Args('input') input: UpdateProductInput,
+    @CurrentUser() user: any,
+  ): Promise<Product> {
+    await this.assertOwnsProduct(input.id, user.id);
     return this.productsService.update(input);
   }
 
   @Mutation(() => Product)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  toggleProductAvailability(@Args('id') id: string): Promise<Product> {
+  async toggleProductAvailability(
+    @Args('id') id: string,
+    @CurrentUser() user: any,
+  ): Promise<Product> {
+    await this.assertOwnsProduct(id, user.id);
     return this.productsService.toggleAvailability(id);
   }
 
   @Mutation(() => Product)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  toggleProductActive(@Args('id') id: string): Promise<Product> {
+  async toggleProductActive(
+    @Args('id') id: string,
+    @CurrentUser() user: any,
+  ): Promise<Product> {
+    await this.assertOwnsProduct(id, user.id);
     return this.productsService.toggleActive(id);
   }
 
   @Query(() => [Product])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  deletedProductsByStore(@Args('storeId') storeId: string): Promise<Product[]> {
+  async deletedProductsByStore(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: any,
+  ): Promise<Product[]> {
+    await this.assertOwnsStore(storeId, user.id);
     return this.productsService.findDeletedByStore(storeId);
   }
 
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  deleteProduct(@Args('id') id: string): Promise<boolean> {
+  async deleteProduct(
+    @Args('id') id: string,
+    @CurrentUser() user: any,
+  ): Promise<boolean> {
+    await this.assertOwnsProduct(id, user.id);
     return this.productsService.delete(id);
   }
 
   @Mutation(() => Product)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  restoreProduct(@Args('id') id: string): Promise<Product> {
+  async restoreProduct(
+    @Args('id') id: string,
+    @CurrentUser() user: any,
+  ): Promise<Product> {
+    // restore age sobre produto soft-deleted, entao a checagem usa findByIdAnyState
+    const product = await this.productsService.findByIdAnyState(id);
+    await this.assertOwnsStore(product.store?.id, user.id);
     return this.productsService.restore(id);
   }
 
@@ -115,7 +161,11 @@ export class ProductsResolver {
   @Mutation(() => BulkImportResult)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  bulkCreateProducts(@Args('input') input: BulkCreateProductsInput): Promise<BulkImportResult> {
+  async bulkCreateProducts(
+    @Args('input') input: BulkCreateProductsInput,
+    @CurrentUser() user: any,
+  ): Promise<BulkImportResult> {
+    await this.assertOwnsStore(input.storeId, user.id);
     return this.productsService.bulkCreate(input);
   }
 

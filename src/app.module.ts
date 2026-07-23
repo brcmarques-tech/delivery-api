@@ -47,6 +47,12 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => {
+        // KAN-214: synchronize:true ajusta o schema a cada boot para bater com
+        // as entities — em producao isso pode gerar DDL destrutivo (drop de
+        // coluna/tabela) e perda de dados silenciosa no deploy. Desligado em
+        // producao; mudancas de schema em prod devem ir por migrations.
+        // Continua ligado em dev para agilidade.
+        const synchronize = config.get('NODE_ENV') !== 'production';
         const databaseUrl = config.get('DATABASE_URL');
         if (databaseUrl) {
           return {
@@ -54,7 +60,7 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
             url: databaseUrl,
             ssl: { rejectUnauthorized: false },
             autoLoadEntities: true,
-            synchronize: true,
+            synchronize,
           };
         }
         return {
@@ -65,7 +71,7 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
           password: config.get('DB_PASSWORD'),
           database: config.get('DB_DATABASE'),
           autoLoadEntities: true,
-          synchronize: true,
+          synchronize,
         };
       },
       inject: [ConfigService],
