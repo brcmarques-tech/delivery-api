@@ -91,6 +91,12 @@ services:
       GEMINI_API_KEY: AIzaSyAGr-yytwNTUCpVUmxl1R4mTSiK_jorRFQ
       WAHA_API_URL: http://18.231.9.158
       WAHA_API_KEY: bcmtech-waha-2026-key
+      # KAN-220: usados pelo workflow "Contato Site" (webhook do formulario).
+      # RESEND_API_KEY vem do .env (gitignored) por substituicao — nao versionar
+      # a chave. CONTACT_WEBHOOK_SECRET e um token nao-sensivel (default abaixo),
+      # deve casar com o CONTACT_WEBHOOK_SECRET do site (.env.local).
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      CONTACT_WEBHOOK_SECRET: ${CONTACT_WEBHOOK_SECRET:-bcmtech-contato-2026}
     volumes:
       - n8n_data:/home/node/.n8n
     depends_on:

@@ -1,0 +1,63 @@
+{
+  "id": "ContatoSite00001",
+  "name": "Contato Site",
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "contato",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "b1a11111-1111-4111-8111-111111111111",
+      "name": "Webhook Contato",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 300],
+      "webhookId": "contato-site-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst b = data.body || {};\nconst headers = data.headers || {};\nconst secret = headers['x-webhook-secret'];\nif ($env.CONTACT_WEBHOOK_SECRET && secret !== $env.CONTACT_WEBHOOK_SECRET) {\n  throw new Error('invalid webhook secret');\n}\nconst esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst subject = ('[Site] ' + (b.subject || 'Novo contato') + ' - ' + (b.name || '')).trim();\nconst html = '<h2>Novo contato pelo site</h2>' +\n  '<p><b>Nome:</b> ' + esc(b.name) + '</p>' +\n  '<p><b>Email:</b> ' + esc(b.email) + '</p>' +\n  '<p><b>Assunto:</b> ' + esc(b.subject) + '</p>' +\n  '<p><b>Mensagem:</b><br>' + esc(b.message).replace(/\\n/g, '<br>') + '</p>';\nreturn [{ json: {\n  from: 'Contato Site <contato@bcmtech.com.br>',\n  to: ['contato@bcmtech.com.br'],\n  reply_to: b.email || 'contato@bcmtech.com.br',\n  subject: subject,\n  html: html\n} }];"
+      },
+      "id": "c2a22222-2222-4222-8222-222222222222",
+      "name": "Valida e monta email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.RESEND_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "response": { "response": { "neverError": true } }
+        }
+      },
+      "id": "d3a33333-3333-4333-8333-333333333333",
+      "name": "Enviar via Resend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Contato": {
+      "main": [[{ "node": "Valida e monta email", "type": "main", "index": 0 }]]
+    },
+    "Valida e monta email": {
+      "main": [[{ "node": "Enviar via Resend", "type": "main", "index": 0 }]]
+    }
+  }
+}
