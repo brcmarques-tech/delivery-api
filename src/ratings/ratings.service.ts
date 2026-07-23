@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -83,10 +84,22 @@ export class RatingsService {
     return this.ratingsRepository.count({ where: { storeId } });
   }
 
-  async ratingForAppointment(appointmentId: string): Promise<ServiceRating | null> {
-    return this.ratingsRepository.findOne({
+  // KAN-225: escopa por dono — só o cliente que avaliou ou o dono da loja
+  // avaliada podem ler a avaliação por appointmentId.
+  async ratingForAppointment(
+    appointmentId: string,
+    userId: string,
+  ): Promise<ServiceRating | null> {
+    const rating = await this.ratingsRepository.findOne({
       where: { appointmentId },
-      relations: RELATIONS,
+      relations: [...RELATIONS, 'store.owner'],
     });
+    if (!rating) return null;
+    const isCustomer = rating.customer?.id === userId;
+    const isStoreOwner = rating.store?.owner?.id === userId;
+    if (!isCustomer && !isStoreOwner) {
+      throw new ForbiddenException('Voce nao tem acesso a esta avaliacao');
+    }
+    return rating;
   }
 }

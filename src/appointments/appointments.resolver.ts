@@ -37,8 +37,12 @@ export class AppointmentsResolver {
 
   @Query(() => Appointment)
   @UseGuards(GqlAuthGuard)
-  appointment(@Args('id') id: string): Promise<Appointment> {
-    return this.appointmentsService.findById(id);
+  appointment(
+    @Args('id') id: string,
+    @CurrentUser() user: any,
+  ): Promise<Appointment> {
+    // KAN-225: escopa por dono (cliente ou dono da loja)
+    return this.appointmentsService.findByIdForUser(id, user.id);
   }
 
   // ─── Vendor Queries ─────────────────────────────────────

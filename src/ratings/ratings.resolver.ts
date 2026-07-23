@@ -41,7 +41,9 @@ export class RatingsResolver {
   @UseGuards(GqlAuthGuard)
   ratingForAppointment(
     @Args('appointmentId') appointmentId: string,
+    @CurrentUser() user: any,
   ): Promise<ServiceRating | null> {
-    return this.ratingsService.ratingForAppointment(appointmentId);
+    // KAN-225: escopa por dono (cliente que avaliou ou dono da loja)
+    return this.ratingsService.ratingForAppointment(appointmentId, user.id);
   }
 }
