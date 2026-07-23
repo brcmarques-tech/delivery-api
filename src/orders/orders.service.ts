@@ -6,7 +6,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThanOrEqual } from 'typeorm';
+import { Repository, LessThanOrEqual, MoreThanOrEqual, In } from 'typeorm';
 import * as crypto from 'crypto';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
@@ -1335,6 +1335,41 @@ export class OrdersService {
       ],
       order: { disputedAt: 'DESC' },
     });
+  }
+
+  // KAN-205: Re-tenta settlements que falharam. completeOrderWithPayment marca o
+  // pedido COMPLETED e depois chama settlePayment num try/catch que so logava —
+  // sem retry, cobranca de cartao nunca era capturada (dinheiro perdido).
+  //
+  // settlePayment e idempotente (guard atomico UPDATE isSettled=true WHERE
+  // isSettled=false): reverte isSettled=false em falha de captura de cartao, e
+  // em PIX so fica isSettled=false se NENHUMA transferencia ocorreu — logo,
+  // re-chamar aqui e seguro e nao gera pagamento dobrado.
+  //
+  // Janela de 48h: apos isso o pedido fica isSettled=false para atencao manual
+  // do superadmin (evita re-tentar eternamente algo permanentemente quebrado).
+  async retryFailedSettlements(): Promise<number> {
+    const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const pending = await this.ordersRepository.find({
+      where: {
+        status: OrderStatus.COMPLETED,
+        isSettled: false,
+        paymentMethod: In(['PIX', 'CREDIT_CARD']),
+        completedAt: MoreThanOrEqual(windowStart),
+      },
+      relations: ['store', 'store.owner', 'delivery', 'delivery.deliverer'],
+    });
+
+    let settled = 0;
+    for (const order of pending) {
+      try {
+        await this.paymentsService.settlePayment(order);
+        settled++;
+      } catch {
+        // Continua isSettled=false; sera re-tentado no proximo ciclo (dentro da janela).
+      }
+    }
+    return settled;
   }
 
   // L9: TODO — ON_DELIVERY orders have no payment guarantee; platform commission is not collected.
