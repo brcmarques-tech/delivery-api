@@ -1175,6 +1175,12 @@ export class OrdersService {
 
   async expirePendingOrders(): Promise<number> {
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    // KAN-210: a janela de 10 min do vendedor conta a partir de quando o pedido
+    // entrou em PENDING/PAYMENT_REVIEW, nao da criacao. So orders PAGOS chegam a
+    // esses status (AWAITING_PAYMENT nem entra no filtro), e updatedAt e bumpado
+    // exatamente na transicao de pagamento. Antes usava createdAt: um PIX pago
+    // >10 min apos a criacao (cliente demorou) nascia PENDING ja "expirado" e era
+    // cancelado/estornado antes do vendedor poder aceitar — pedido pago sumia.
     const expiredOrders = await this.ordersRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.store', 'store')
@@ -1185,7 +1191,7 @@ export class OrdersService {
       .where('order.status IN (:...statuses)', {
         statuses: [OrderStatus.PENDING, OrderStatus.PAYMENT_REVIEW],
       })
-      .andWhere('order.createdAt <= :tenMinAgo', { tenMinAgo })
+      .andWhere('order.updatedAt <= :tenMinAgo', { tenMinAgo })
       .getMany();
 
     for (const order of expiredOrders) {
