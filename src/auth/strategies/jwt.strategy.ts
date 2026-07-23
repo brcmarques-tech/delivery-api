@@ -12,9 +12,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     private appUsersService: AppUsersService,
     private vendorUsersService: VendorUsersService,
   ) {
+    // KAN-227: sem fallback literal 'fallback-secret' (publico neste repo).
+    // Falha o boot se JWT_SECRET nao estiver configurado, em vez de verificar
+    // tokens com um segredo conhecido — o que permitiria forjar JWTs.
+    const jwtSecret = configService.get<string>('JWT_SECRET');
+    if (!jwtSecret) {
+      throw new Error('JWT_SECRET nao configurado — defina no ambiente antes de subir a API.');
+    }
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      secretOrKey: configService.get('JWT_SECRET') || 'fallback-secret',
+      secretOrKey: jwtSecret,
     });
   }
 
