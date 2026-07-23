@@ -6,6 +6,10 @@ services:
     ports:
       - '3000:3000'
     environment:
+      # Marca o ambiente como producao. Sem isto os guards de NODE_ENV falham
+      # aberto: seed de usuarios de teste (KAN-207), simulatePayment e a tag de
+      # ambiente do Sentry. Dev (docker-compose.yml) nao seta e segue como dev.
+      NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL}
       REDIS_HOST: redis
       REDIS_PORT: 6379
