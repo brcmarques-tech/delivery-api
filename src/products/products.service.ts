@@ -141,30 +141,62 @@ export class ProductsService {
     return saved;
   }
 
+  /**
+   * KAN-260: era ler-modificar-salvar (le o estoque, subtrai em memoria,
+   * salva). Duas chamadas concorrentes liam o MESMO valor, as duas passavam na
+   * validacao e a segunda gravava por cima da primeira — vendia mais do que
+   * havia (e o `save()` da entity inteira ainda podia sobrescrever colunas que
+   * outro processo tivesse alterado no meio, tipo o preco).
+   *
+   * Agora quem valida e o proprio UPDATE: `WHERE stock >= $1` garante que duas
+   * chamadas simultaneas nao passam. Mesmo padrao ja usado na criacao de
+   * pedido (orders.service) e nos estornos (payments.service).
+   */
   async decrementStock(id: string, quantity: number): Promise<void> {
-    const product = await this.findById(id);
-    if (product.stock < quantity) {
+    const rows = await this.productsRepository.query(
+      `UPDATE products
+          SET stock = stock - $1,
+              "isAvailable" = CASE WHEN stock - $1 <= 0 THEN false ELSE "isAvailable" END
+        WHERE id = $2 AND stock >= $1
+        RETURNING id`,
+      [quantity, id],
+    );
+
+    if (!rows.length) {
+      // Nao afetou nenhuma linha: ou o produto sumiu, ou o estoque acabou
+      // entre a leitura do cliente e este UPDATE.
+      const product = await this.findById(id);
       throw new BadRequestException(
         `Estoque insuficiente para "${product.name}". Disponivel: ${product.stock}, solicitado: ${quantity}`,
       );
     }
-    product.stock -= quantity;
-    if (product.stock === 0) {
-      product.isAvailable = false;
+
+    const updated = await this.productsRepository.findOne({ where: { id } });
+    if (updated) {
+      this.pubSub.publish('productUpdated', { productUpdated: updated });
     }
-    const savedProduct = await this.productsRepository.save(product);
-    this.pubSub.publish('productUpdated', { productUpdated: savedProduct });
   }
 
+  /**
+   * KAN-260: mesma correcao. Aqui o risco era perder devolucoes de estoque —
+   * dois cancelamentos simultaneos do mesmo produto liam o mesmo valor e um
+   * dos incrementos sumia, deixando o lojista com menos estoque do que tem.
+   */
   async restoreStock(id: string, quantity: number): Promise<void> {
-    const product = await this.productsRepository.findOne({ where: { id } });
-    if (!product) return;
-    product.stock += quantity;
-    if (product.stock > 0 && !product.isAvailable) {
-      product.isAvailable = true;
+    const rows = await this.productsRepository.query(
+      `UPDATE products
+          SET stock = stock + $1,
+              "isAvailable" = CASE WHEN stock + $1 > 0 THEN true ELSE "isAvailable" END
+        WHERE id = $2
+        RETURNING id`,
+      [quantity, id],
+    );
+    if (!rows.length) return; // produto nao existe mais — mesmo comportamento de antes
+
+    const updated = await this.productsRepository.findOne({ where: { id } });
+    if (updated) {
+      this.pubSub.publish('productUpdated', { productUpdated: updated });
     }
-    const savedProduct = await this.productsRepository.save(product);
-    this.pubSub.publish('productUpdated', { productUpdated: savedProduct });
   }
 
   async findDeletedByStore(storeId: string): Promise<Product[]> {
