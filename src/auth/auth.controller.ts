@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import * as express from 'express';
 import { AuthService } from './auth.service';
 import { JwtService } from '@nestjs/jwt';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 
 @Controller('auth')
 export class AuthController {
@@ -110,7 +111,7 @@ export class AuthController {
 
     try {
       // Exchange code for tokens
-      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      const tokenRes = await fetchWithTimeout('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
@@ -127,7 +128,7 @@ export class AuthController {
       }
 
       // Get user info
-      const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      const userInfoRes = await fetchWithTimeout('https://www.googleapis.com/oauth2/v3/userinfo', {
         headers: { Authorization: `Bearer ${tokens.access_token}` },
       });
       const userInfo = await userInfoRes.json();

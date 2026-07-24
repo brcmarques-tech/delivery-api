@@ -196,7 +196,23 @@ export class DeliveriesService implements OnModuleInit {
     // Registrar valores para tracking
     if (order.paymentMethod !== 'ON_DELIVERY') {
       const deliveryFee = Number(order.deliveryFee);
-      const vendorAmount = Number(order.subtotal) - Number(order.commissionAmount);
+
+      // KAN-254: este valor e so de tracking, mas divergia do split real. Usava
+      // `subtotal - comissao`, ignorando o desconto de cupom — entao um pedido
+      // com cupom mostrava aqui um repasse maior do que o vendedor de fato
+      // recebe, confundindo relatorio e conferencia.
+      //
+      // O split real (payments.service.ts `captureWithSplit`) calcula sobre o
+      // `total` (que ja tem o desconto aplicado):
+      //   entrega externa  -> total - comissao - taxa de entrega
+      //   retirada/entrega propria -> total - comissao
+      const total = Number(order.total);
+      const commission = Number(order.commissionAmount) || 0;
+      const hasExternalDelivery =
+        !order.store?.hasOwnDelivery && !order.isPickup && deliveryFee > 0;
+      const vendorAmount = hasExternalDelivery
+        ? total - commission - deliveryFee
+        : total - commission;
 
       if (vendorAmount > 0) {
         delivery.vendorPayoutAmount = vendorAmount;

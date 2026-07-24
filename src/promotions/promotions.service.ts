@@ -27,8 +27,15 @@ export class PromotionsService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    this.clearExpiredPromotions();
-    setInterval(() => this.clearExpiredPromotions(), 5 * 60 * 1000);
+    // KAN-253: as duas chamadas descartavam a Promise. Se algo escapar do
+    // try/catch interno vira unhandled rejection — e a primeira roda no boot,
+    // onde uma falha nao tratada e ainda mais sensivel.
+    const run = () =>
+      this.clearExpiredPromotions().catch((err) =>
+        this.logger.error('clearExpiredPromotions falhou:', err),
+      );
+    run();
+    setInterval(run, 5 * 60 * 1000);
   }
 
   private async clearExpiredPromotions() {

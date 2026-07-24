@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { v2 as cloudinary } from 'cloudinary';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 
 @Injectable()
 export class UploadService {
@@ -87,7 +88,7 @@ export class UploadService {
       ijn: '0',
     });
 
-    const response = await fetch(`https://serpapi.com/search.json?${params}`);
+    const response = await fetchWithTimeout(`https://serpapi.com/search.json?${params}`);
     const data = await response.json();
 
     if (!data.images_results) return [];

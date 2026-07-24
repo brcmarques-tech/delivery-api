@@ -8,8 +8,10 @@ import {
   ResolveField,
   Parent,
   Subscription,
+  Context,
 } from '@nestjs/graphql';
 import { UseGuards, Inject } from '@nestjs/common';
+import { verify as jwtVerify } from 'jsonwebtoken'; // KAN-259
 import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
 import { StoresService } from './stores.service';
@@ -245,8 +247,13 @@ export class StoresResolver {
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  recalculateVerification(@Args('storeId') storeId: string): Promise<Store> {
-    return this.verificationService.recalculateScore(storeId);
+  recalculateVerification(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: VendorUser,
+  ): Promise<Store> {
+    // KAN-253: passa o dono para validar ownership — era IDOR, qualquer vendor
+    // recalculava a verificacao de loja alheia. Mesmo padrao do claimBadgeReward.
+    return this.verificationService.recalculateScore(storeId, user.id);
   }
 
   @Mutation(() => Store)
@@ -324,6 +331,24 @@ export class StoresResolver {
   @Query(() => Int)
   followerCount(@Args('storeId') storeId: string): Promise<number> {
     return this.storesService.getFollowerCount(storeId);
+  }
+
+  // KAN-259: so devolve o dono para requisicoes autenticadas. Anonimo recebe
+  // null em vez de email/telefone/CPF do lojista. O superadmin (unico consumidor
+  // real de `owner`) segue funcionando porque manda o Bearer token.
+  @ResolveField(() => VendorUser, { nullable: true })
+  owner(@Parent() store: Store, @Context() ctx: any): VendorUser | null {
+    const raw: string =
+      ctx?.req?.headers?.authorization || ctx?.req?.headers?.Authorization || '';
+    const token = raw.replace(/^Bearer\s+/i, '').trim();
+    const secret = process.env.JWT_SECRET;
+    if (!token || !secret) return null;
+    try {
+      jwtVerify(token, secret);
+    } catch {
+      return null;
+    }
+    return store.owner ?? null;
   }
 
   @ResolveField(() => Boolean)

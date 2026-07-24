@@ -31,6 +31,8 @@ import { peppered } from '../common/utils/pepper';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { RatingsService } from '../ratings/ratings.service';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
+import { resolvePublicUrl } from '../common/utils/public-url';
 
 @Injectable()
 export class StoresService implements OnApplicationBootstrap {
@@ -257,7 +259,7 @@ export class StoresService implements OnApplicationBootstrap {
     for (const query of queries) {
       try {
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
-        const res = await fetch(url, {
+        const res = await fetchWithTimeout(url, {
           headers: { 'User-Agent': 'bcmTech-Shopping/1.0' },
         });
         const data = await res.json();
@@ -499,7 +501,11 @@ export class StoresService implements OnApplicationBootstrap {
     store.deleteTokenExpires = new Date(Date.now() + 30 * 60 * 1000); // 30 min
     await this.storesRepository.save(store);
 
-    const apiUrl = this.configService.get('APP_URL', 'http://localhost:3000');
+    // KAN-258 (mesma classe do fallback de API_URL nos frontends): este link vai
+    // POR E-MAIL para o lojista. Se APP_URL nao estiver definida em producao, o
+    // fallback antigo mandava um link para `localhost:3000` — inutil para quem
+    // recebe. Agora avisa alto e usa o dominio publico.
+    const apiUrl = resolvePublicUrl(this.configService, 'APP_URL', 'http://localhost:3000');
     const confirmUrl = `${apiUrl}/stores/confirm-delete?token=${token}`;
 
     const emailTo = admin.notificationEmail || admin.email;
@@ -548,7 +554,11 @@ export class StoresService implements OnApplicationBootstrap {
     store.deleteTokenExpires = new Date(Date.now() + 30 * 60 * 1000);
     await this.storesRepository.save(store);
 
-    const apiUrl = this.configService.get('APP_URL', 'http://localhost:3000');
+    // KAN-258 (mesma classe do fallback de API_URL nos frontends): este link vai
+    // POR E-MAIL para o lojista. Se APP_URL nao estiver definida em producao, o
+    // fallback antigo mandava um link para `localhost:3000` — inutil para quem
+    // recebe. Agora avisa alto e usa o dominio publico.
+    const apiUrl = resolvePublicUrl(this.configService, 'APP_URL', 'http://localhost:3000');
     const confirmUrl = `${apiUrl}/stores/confirm-delete?token=${token}`;
 
     await this.mailService.sendStoreDeleteConfirmation(
@@ -644,4 +654,5 @@ export class StoresService implements OnApplicationBootstrap {
       where: { store: { id: storeId } },
     });
   }
+
 }

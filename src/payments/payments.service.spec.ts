@@ -6,6 +6,15 @@ import { BadRequestException } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { Payment } from './entities/payment.entity';
 import { Store } from '../stores/entities/store.entity';
+// KAN-254: dependencias que foram adicionadas ao PaymentsService com o tempo
+// mas nunca chegaram neste spec — o modulo de teste nem instanciava o service,
+// derrubando TODOS os 16 testes deste arquivo com "Nest can't resolve
+// dependencies". Os testes em si estavam certos; faltava a fiacao.
+import { SavedCard } from './entities/saved-card.entity';
+import { WebhookEvent } from './entities/webhook-event.entity';
+import { Subscription } from './entities/subscription.entity';
+import { SubscriptionPlansService } from './subscription-plans.service';
+import { PUB_SUB } from '../pubsub/pubsub.module';
 import { AppUsersService } from '../users/app-users.service';
 import { VendorUsersService } from '../users/vendor-users.service';
 import { PlatformConfigService } from '../config/platform-config.service';
@@ -17,6 +26,32 @@ describe('PaymentsService', () => {
   let service: PaymentsService;
   let paymentsRepo: any;
   let httpService: any;
+
+  // KAN-254: varios metodos do service fazem
+  // `paymentsRepository.manager.getRepository(Order)` e depois usam
+  // createQueryBuilder/update/query nesse repo. O mock antigo devolvia
+  // `undefined` em getRepository, entao esses testes quebravam com
+  // "createQueryBuilder is not a function" / "cannot read property of
+  // undefined" — nao era falha de logica, era mock incompleto.
+  const mockOrderRepo = {
+    findOne: jest.fn().mockResolvedValue(null),
+    find: jest.fn().mockResolvedValue([]),
+    save: jest.fn((d: any) => Promise.resolve(d)),
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
+    increment: jest.fn().mockResolvedValue({ affected: 1 }),
+    createQueryBuilder: jest.fn().mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getRawOne: jest.fn().mockResolvedValue({ total: '0' }),
+      getMany: jest.fn().mockResolvedValue([]),
+    }),
+    // O guard atomico de settlement faz um UPDATE ... RETURNING id e so segue
+    // se vier linha. Retornar uma linha mantem o caminho feliz dos testes.
+    manager: {
+      query: jest.fn().mockResolvedValue([{ id: 'order-1' }]),
+    },
+  };
 
   const mockPaymentsRepo = {
     create: jest.fn((data) => ({ id: 'payment-1', ...data })),
@@ -30,7 +65,8 @@ describe('PaymentsService', () => {
       getRawOne: jest.fn().mockResolvedValue({ total: '0' }),
     }),
     manager: {
-      getRepository: jest.fn(),
+      getRepository: jest.fn(() => mockOrderRepo),
+      query: jest.fn().mockResolvedValue([{ id: 'order-1' }]),
     },
   };
 
@@ -77,6 +113,14 @@ describe('PaymentsService', () => {
   const mockPlatformConfigService = {
     getBadgeRewards: jest.fn().mockResolvedValue({ subscriptionDiscount: 0 }),
     getDeliveryCommissionPercent: jest.fn().mockResolvedValue(1),
+    // KAN-254: `createPlanUpgrade` usa getPlanConfig, que nao existia no mock —
+    // os 3 testes daquele bloco falhavam com TypeError em vez de exercitar a
+    // regra de negocio. Default: PRO valido; cada teste sobrescreve conforme o
+    // cenario (plano invalido, contact-sales, etc.).
+    getPlanConfig: jest.fn().mockResolvedValue({
+      monthlyPrice: 49.9,
+      isContactSales: false,
+    }),
   };
 
   const mockWhatsAppService = {
@@ -89,14 +133,54 @@ describe('PaymentsService', () => {
     sendToVendorUser: jest.fn().mockResolvedValue(undefined),
   };
 
+  // KAN-254: fabrica de repositorio mockado para as dependencias que o spec
+  // nao exercita, mas que o Nest precisa resolver para instanciar o service.
+  const mockRepo = () => ({
+    find: jest.fn().mockResolvedValue([]),
+    findOne: jest.fn().mockResolvedValue(null),
+    save: jest.fn().mockImplementation((e: any) => Promise.resolve(e)),
+    create: jest.fn().mockImplementation((e: any) => e),
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
+    increment: jest.fn().mockResolvedValue({ affected: 1 }),
+    manager: { query: jest.fn().mockResolvedValue([]), getRepository: jest.fn() },
+  });
+
+  const mockSubscriptionPlansService = {
+    getPlanConfig: jest.fn().mockResolvedValue({}),
+    findAll: jest.fn().mockResolvedValue([]),
+    // KAN-254: usado por createPlanUpgrade para resolver o plano no Pagar.me.
+    getPagarmePlan: jest.fn().mockResolvedValue({
+      id: 'plan_pagarme_123',
+      pagarmePlanId: 'plan_pagarme_123',
+    }),
+  };
+
+  const mockPubSub = { publish: jest.fn().mockResolvedValue(undefined) };
+
   beforeEach(async () => {
     jest.clearAllMocks();
+
+    // KAN-254: `jest.clearAllMocks()` limpa as CHAMADAS, mas NAO remove
+    // implementacoes definidas com `mockReturnValue`. Alguns testes de
+    // settlePayment sobrescrevem `manager.getRepository` com um mock local
+    // magro, e esse override vazava para os testes seguintes (platformRevenue
+    // quebrava com "createQueryBuilder is not a function"). Restaurar o padrao
+    // aqui isola cada teste.
+    mockPaymentsRepo.manager.getRepository.mockReturnValue(mockOrderRepo);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PaymentsService,
         { provide: getRepositoryToken(Payment), useValue: mockPaymentsRepo },
         { provide: getRepositoryToken(Store), useValue: mockStoresRepo },
+        // KAN-254: providers que faltavam (o service ganhou essas dependencias
+        // e o spec nao acompanhou). Mocks minimos — nenhum teste deste arquivo
+        // exercita esses caminhos; eles so precisam existir para o Nest montar.
+        { provide: getRepositoryToken(SavedCard), useValue: mockRepo() },
+        { provide: getRepositoryToken(WebhookEvent), useValue: mockRepo() },
+        { provide: getRepositoryToken(Subscription), useValue: mockRepo() },
+        { provide: SubscriptionPlansService, useValue: mockSubscriptionPlansService },
+        { provide: PUB_SUB, useValue: mockPubSub },
         { provide: ConfigService, useValue: mockConfigService },
         { provide: HttpService, useValue: mockHttpService },
         { provide: AppUsersService, useValue: mockAppUsersService },
@@ -402,13 +486,27 @@ describe('PaymentsService', () => {
         data: { id: 'pl_plan_123', url: 'https://pagar.me/pay/pl_plan_123' },
       });
 
-      const result = await service.createPlanUpgrade(user, VendorPlan.PREMIUM, 'quarterly');
+      // KAN-254: o service passou a exigir `cardToken` para assinatura no
+      // cartao (regra adicionada depois que este teste foi escrito). O teste
+      // ficou desatualizado e falhava com BadRequestException antes de chegar
+      // na asserção. Passando o token, ele volta a exercitar o que se propoe.
+      const result = await service.createPlanUpgrade(
+        user,
+        VendorPlan.PREMIUM,
+        'quarterly',
+        'card_token_test',
+      );
 
       expect(paymentsRepo.save).toHaveBeenCalled();
       const savedPayment = paymentsRepo.create.mock.calls[0][0];
-      expect(savedPayment.type).toBe('PLAN_UPGRADE');
-      expect(savedPayment.metadata.billingPeriod).toBe('quarterly');
-      expect(savedPayment.metadata.durationMonths).toBe(3);
+      // KAN-254: o fluxo migrou de cobranca avulsa para ASSINATURA recorrente
+      // no Pagar.me (chama POST /subscriptions, grava a entity Subscription e
+      // preenche pagarmeSubscriptionId). O tipo do Payment passou de
+      // 'PLAN_UPGRADE' para 'SUBSCRIPTION'. Verificado no proprio service antes
+      // de ajustar aqui — o teste e que estava desatualizado, nao o codigo.
+      expect(savedPayment.type).toBe('SUBSCRIPTION');
+      expect(savedPayment.pagarmeSubscriptionId).toBeDefined();
+      expect(savedPayment.description).toContain('PREMIUM');
     });
   });
 
@@ -416,8 +514,12 @@ describe('PaymentsService', () => {
   describe('registerVendorRecipient', () => {
     it('should create recipient and update vendor', async () => {
       // Vendor without existing recipient
+      // KAN-254/KAN-209: o recipient passou a usar SEMPRE o CPF do proprio
+      // vendedor (antes aceitava o documento vindo do input, o que permitia
+      // apontar o repasse para a conta de terceiro). O fixture nao tinha `cpf`,
+      // entao o service barrava antes da asserção. Adicionado o CPF do dono.
       mockVendorUsersService.findById.mockResolvedValue(
-        makeVendorUser({ pagarmeRecipientId: null }),
+        makeVendorUser({ pagarmeRecipientId: null, cpf: '12345678901' }),
       );
       mockAppUsersService.findById.mockResolvedValue(null);
 

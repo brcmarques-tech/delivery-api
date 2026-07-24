@@ -17,7 +17,13 @@ export class RolesGuard implements CanActivate {
     if (!requiredRoles) return true;
 
     const ctx = GqlExecutionContext.create(context);
-    const user = ctx.getContext().req.user;
+    const user = ctx.getContext().req?.user;
+
+    // KAN-253: sem este null-check, usar o RolesGuard sem o GqlAuthGuard antes
+    // (ou fora de ordem) estourava TypeError -> 500 em vez de 403. Hoje todos
+    // os resolvers colocam o GqlAuthGuard primeiro, entao ja falha fechado;
+    // isto e defesa em profundidade para nao virar bypass num refactor futuro.
+    if (!user) return false;
 
     // SUPERADMIN tem acesso a tudo
     if (user.role === UserRole.SUPERADMIN) return true;

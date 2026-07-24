@@ -19,6 +19,11 @@ export class VisionService {
       } catch {
         this.logger.warn('Falha ao parsear GOOGLE_VISION_CREDENTIALS');
       }
+    } else if (process.env.NODE_ENV === 'production') {
+      // KAN-230: em producao isso e um defeito de configuracao, nao um aviso.
+      this.logger.error(
+        'GOOGLE_VISION_CREDENTIALS nao configurado em PRODUCAO — KYC automatico de entregador DESLIGADO',
+      );
     } else {
       this.logger.warn(
         'GOOGLE_VISION_CREDENTIALS nao configurado - validacao de fotos desabilitada',
@@ -26,11 +31,33 @@ export class VisionService {
     }
   }
 
-  async validateFacePhoto(imageUrl: string): Promise<{ valid: boolean; message: string }> {
-    if (!this.client) {
-      this.logger.warn('Vision nao configurado, aceitando foto sem validacao');
-      return { valid: true, message: 'Validacao desabilitada' };
+  /**
+   * KAN-230: quando o Vision nao esta disponivel, a validacao NAO deve se
+   * passar por uma aprovacao. Antes retornava `{ valid: true }`, indistinguivel
+   * de uma checagem real — se a credencial caisse ou expirasse, o KYC de
+   * entregador parava de existir sem nenhum alarme.
+   *
+   * Agora: continua deixando o cadastro seguir (a aprovacao final e manual do
+   * SUPERADMIN, entao bloquear aqui derrubaria o onboarding inteiro por uma
+   * falha de config), mas marca `requiresManualReview` e loga em nivel de ERRO
+   * em producao, para virar alerta em vez de silencio.
+   */
+  private unavailable(): { valid: boolean; message: string; requiresManualReview: boolean } {
+    const msg = 'Validacao automatica indisponivel — sera revisada manualmente';
+    if (process.env.NODE_ENV === 'production') {
+      this.logger.error(
+        'GOOGLE_VISION_CREDENTIALS ausente/invalido em PRODUCAO — KYC automatico DESLIGADO. Fotos seguem para revisao manual.',
+      );
+    } else {
+      this.logger.warn('Vision nao configurado — foto marcada para revisao manual');
     }
+    return { valid: true, message: msg, requiresManualReview: true };
+  }
+
+  async validateFacePhoto(
+    imageUrl: string,
+  ): Promise<{ valid: boolean; message: string; requiresManualReview?: boolean }> {
+    if (!this.client) return this.unavailable();
 
     try {
       const [result] = await this.client.faceDetection(imageUrl);
@@ -59,11 +86,10 @@ export class VisionService {
     }
   }
 
-  async validateDocumentPhoto(imageUrl: string): Promise<{ valid: boolean; message: string }> {
-    if (!this.client) {
-      this.logger.warn('Vision nao configurado, aceitando foto sem validacao');
-      return { valid: true, message: 'Validacao desabilitada' };
-    }
+  async validateDocumentPhoto(
+    imageUrl: string,
+  ): Promise<{ valid: boolean; message: string; requiresManualReview?: boolean }> {
+    if (!this.client) return this.unavailable();
 
     try {
       const [result] = await this.client.textDetection(imageUrl);

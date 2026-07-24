@@ -8,6 +8,12 @@ import { VisionService } from './vision.service';
 class PhotoValidation {
   @Field() valid: boolean;
   @Field() message: string;
+  // KAN-230: sinaliza que a validacao automatica NAO rodou (Vision
+  // indisponivel/sem credencial). Antes esse caso retornava apenas
+  // `valid: true`, indistinguivel de uma aprovacao real — o KYC caia em modo
+  // aberto silenciosamente. Com a flag, a aprovacao manual do SUPERADMIN sabe
+  // que precisa olhar com mais atencao.
+  @Field({ defaultValue: false }) requiresManualReview: boolean;
 }
 
 @Resolver()
@@ -48,7 +54,9 @@ export class UploadResolver {
   async validateFacePhoto(
     @Args('imageUrl') imageUrl: string,
   ): Promise<PhotoValidation> {
-    return this.visionService.validateFacePhoto(imageUrl);
+    const result = await this.visionService.validateFacePhoto(imageUrl);
+    // KAN-230: normaliza a flag para o contrato nao-nulo do GraphQL.
+    return { ...result, requiresManualReview: result.requiresManualReview ?? false };
   }
 
   @Mutation(() => PhotoValidation)
@@ -56,6 +64,8 @@ export class UploadResolver {
   async validateDocumentPhoto(
     @Args('imageUrl') imageUrl: string,
   ): Promise<PhotoValidation> {
-    return this.visionService.validateDocumentPhoto(imageUrl);
+    const result = await this.visionService.validateDocumentPhoto(imageUrl);
+    // KAN-230: normaliza a flag para o contrato nao-nulo do GraphQL.
+    return { ...result, requiresManualReview: result.requiresManualReview ?? false };
   }
 }

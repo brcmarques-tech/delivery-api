@@ -24,7 +24,15 @@ export class SubscriptionExpiryScheduler implements OnModuleInit, OnModuleDestro
   ) {}
 
   onModuleInit() {
-    this.intervalRef = setInterval(() => this.checkExpiredPlans(), CHECK_INTERVAL_MS);
+    // KAN-253: a Promise de `checkExpiredPlans()` era descartada. Se algo
+    // escapar do try/catch interno, vira unhandled rejection (que pode derrubar
+    // o processo dependendo da config do Node). Com o `.catch`, uma rodada com
+    // problema apenas loga e o scheduler continua vivo.
+    this.intervalRef = setInterval(() => {
+      this.checkExpiredPlans().catch((err) =>
+        this.logger.error('checkExpiredPlans falhou:', err),
+      );
+    }, CHECK_INTERVAL_MS);
     this.logger.log('Subscription expiry scheduler started (60s interval)');
   }
 

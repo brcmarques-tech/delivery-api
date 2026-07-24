@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { SentryGlobalFilter } from '@sentry/nestjs/setup';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
+import { verify as jwtVerify } from 'jsonwebtoken'; // KAN-253
 import { join } from 'path';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
@@ -31,7 +32,9 @@ import { CartModule } from './cart/cart.module';
 import { AppointmentsModule } from './appointments/appointments.module';
 import { RatingsModule } from './ratings/ratings.module';
 import { SiteConfigModule } from './site-config/site-config.module';
-// import { WhatsAppAgentModule } from './whatsapp-agent/whatsapp-agent.module'; // migrated to n8n
+// KAN-253: WhatsAppAgentModule foi migrado para o n8n e a pasta
+// src/whatsapp-agent/ (5 arquivos) foi removida — ficava so confundindo sobre
+// qual agente esta ativo. O agente em uso e o N8nAgentModule abaixo.
 import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
 
 @Module({
@@ -81,11 +84,56 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
       driver: ApolloDriver,
       autoSchemaFile: true,
       sortSchema: true,
-      playground: true,
+      // KAN-228: playground e introspection ficavam ligados incondicionalmente,
+      // inclusive em producao — qualquer um baixava o schema inteiro da API
+      // (todo o modelo de dados e mutations) e tinha uma IDE pronta pra
+      // explorar. Agora so fora de producao.
+      playground: process.env.NODE_ENV !== 'production',
+      introspection: process.env.NODE_ENV !== 'production',
+      // KAN-253: a conexao WebSocket nao era autenticada de forma alguma — o
+      // filtro das subscriptions era so por argumento. Um cliente anonimo podia
+      // assinar `sessionKicked` de um userId conhecido e inferir eventos de
+      // login/expulsao daquela conta.
+      //
+      // Agora o token do handshake e validado e o usuario fica disponivel no
+      // contexto (`extra.user`), abrindo caminho para guards por subscription.
+      //
+      // A REJEICAO de conexoes sem token fica atras de `REQUIRE_WS_AUTH=true`.
+      // Default desligado de proposito: derrubar o WS quebra o tempo real do
+      // app (pedidos e entregas). Ligue depois de validar com o app mobile.
       subscriptions: {
-        'graphql-ws': true,
+        'graphql-ws': {
+          onConnect: (context: any) => {
+            const params = context.connectionParams || {};
+            const raw: string =
+              params.authorization || params.Authorization || '';
+            const token = raw.replace(/^Bearer\s+/i, '').trim();
+            const secret = process.env.JWT_SECRET;
+
+            let user: any = null;
+            if (token && secret) {
+              try {
+                user = jwtVerify(token, secret);
+              } catch {
+                user = null; // token invalido/expirado
+              }
+            }
+
+            if (!user && process.env.REQUIRE_WS_AUTH === 'true') {
+              throw new Error('Unauthorized: token ausente ou invalido');
+            }
+
+            // Disponibiliza para os resolvers de subscription.
+            context.extra = { ...(context.extra || {}), user };
+            return true;
+          },
+        },
       },
-      context: ({ req, extra }) => ({ req: req || extra?.request }),
+      context: ({ req, extra }) => ({
+        req: req || extra?.request,
+        // KAN-253: usuario autenticado do WebSocket, quando houver.
+        wsUser: extra?.user ?? null,
+      }),
     }),
 
     PubSubModule,
@@ -113,7 +161,6 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
     AppointmentsModule,
     RatingsModule,
     SiteConfigModule,
-    // WhatsAppAgentModule, // migrated to n8n
     N8nAgentModule,
   ],
 })

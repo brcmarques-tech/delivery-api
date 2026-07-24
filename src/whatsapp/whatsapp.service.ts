@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 
 @Injectable()
 export class WhatsAppService {
@@ -40,7 +41,7 @@ export class WhatsAppService {
     this.logger.log(`WhatsApp tentando enviar para ${phone} via ${url}`);
 
     try {
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

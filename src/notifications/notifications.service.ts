@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 
 interface ExpoPushMessage {
   to: string;
@@ -105,7 +106,7 @@ export class NotificationsService {
 
   private async sendPushNotifications(messages: ExpoPushMessage[]): Promise<void> {
     try {
-      const response = await fetch('https://exp.host/--/api/v2/push/send', {
+      const response = await fetchWithTimeout('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

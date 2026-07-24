@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Store } from './entities/store.entity';
@@ -244,9 +244,19 @@ export class VerificationService {
     return saved;
   }
 
-  async recalculateScore(storeId: string): Promise<Store> {
+  /**
+   * KAN-253: `userId` opcional para validar ownership. Quando chamado por um
+   * VENDOR (via resolver), qualquer um podia passar o storeId de outra loja e
+   * forcar o recalculo da verificacao alheia (IDOR). Chamadas internas/
+   * SUPERADMIN seguem passando so o storeId.
+   */
+  async recalculateScore(storeId: string, userId?: string): Promise<Store> {
     const store = await this.storesRepository.findOne({ where: { id: storeId }, relations: ['owner'] });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+
+    if (userId && store.owner?.id !== userId) {
+      throw new ForbiddenException('Esta loja nao pertence a voce');
+    }
 
     const oldLevel = store.verificationLevel;
     const points = await this.getPointsConfig();

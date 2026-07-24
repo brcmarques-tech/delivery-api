@@ -174,7 +174,11 @@ export class Store {
   @Column({ type: 'timestamp', nullable: true })
   deleteTokenExpires: Date;
 
-  @Field(() => VendorUser)
+  // KAN-259: `owner` era exposto sem restricao nas queries publicas `stores` e
+  // `store(id)`. Como VendorUser publica email, telefone e CPF, qualquer um sem
+  // token baixava os dados pessoais de todos os lojistas. Agora e nullable e o
+  // conteudo passa pelo ResolveField protegido em StoresResolver.
+  @Field(() => VendorUser, { nullable: true })
   @ManyToOne(() => VendorUser, (user) => user.stores)
   owner: VendorUser;
 

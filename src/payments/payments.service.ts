@@ -1449,14 +1449,31 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Subscription Management ──────────────────────────────────────────
 
+  /**
+   * BUG (encontrado via lint `no-misused-promises`): este metodo usava
+   *
+   *   return findOne({ status: 'active' }) || findOne({ cancelAtPeriodEnd: true })
+   *
+   * sem `await`. `findOne()` devolve uma **Promise**, que e SEMPRE truthy —
+   * entao o `||` nunca avaliava o lado direito e a segunda consulta era codigo
+   * morto. Na pratica: o vendedor que cancelou a assinatura mas ainda esta
+   * dentro do periodo pago (`cancelAtPeriodEnd: true`) NAO era encontrado como
+   * tendo assinatura, e perdia os beneficios do plano antes da hora.
+   *
+   * Agora aguarda a primeira consulta e so cai para a segunda se nao houver
+   * assinatura ativa — que era a intencao original.
+   */
   async getActiveSubscription(vendorId: string): Promise<Subscription | null> {
-    return this.subscriptionsRepository.findOne({
+    const active = await this.subscriptionsRepository.findOne({
       where: {
         vendorUser: { id: vendorId },
         status: 'active',
       },
       relations: ['vendorUser'],
-    }) || this.subscriptionsRepository.findOne({
+    });
+    if (active) return active;
+
+    return this.subscriptionsRepository.findOne({
       where: {
         vendorUser: { id: vendorId },
         cancelAtPeriodEnd: true,
@@ -2101,6 +2118,12 @@ export class PaymentsService implements OnModuleDestroy {
     // Act if order is AWAITING_PAYMENT or PAYMENT_REVIEW (antifraud reprocessed)
     const wasPaymentReview = order?.status === OrderStatus.PAYMENT_REVIEW;
     if (order && (order.status === OrderStatus.AWAITING_PAYMENT || order.status === OrderStatus.PAYMENT_REVIEW)) {
+      // KAN-235: captura o estado ANTES de marcar a flag. O incremento de cupom
+      // mais abaixo e guardado por `!order.couponCredited`, mas a flag ja era
+      // setada aqui — a guarda nunca passava e aquele bloco era codigo morto:
+      // pedidos confirmados apenas por este fallback (charge.paid, quando o
+      // webhook order.paid nao chega) nunca contabilizavam o uso do cupom.
+      const couponAlreadyCredited = order.couponCredited;
       order.status = OrderStatus.PENDING;
       order.couponCredited = true;
       // Antifraud reprocessing auto-captures the charge (no longer pre-auth)
@@ -2139,7 +2162,8 @@ export class PaymentsService implements OnModuleDestroy {
       }
 
       // Only increment coupon if handleOrderPaid didn't already do it
-      if (order.couponCode && !order.couponCredited) {
+      // KAN-235: usa o snapshot tirado antes de marcar a flag (ver acima).
+      if (order.couponCode && !couponAlreadyCredited) {
         try {
           const couponRepo = this.paymentsRepository.manager.getRepository('Coupon');
           await couponRepo.increment({ code: order.couponCode }, 'usesCount', 1);
@@ -2272,7 +2296,25 @@ export class PaymentsService implements OnModuleDestroy {
       try {
         await this.reverseSettlementTransfers(order);
       } catch (err: any) {
+        // KAN-233: a reversao falhar (ex.: saldo insuficiente no recebedor do
+        // vendedor) e um prejuizo direto: o cliente sera estornado abaixo, mas
+        // o dinheiro ja repassado nao volta. Antes isso so gerava um log e a
+        // plataforma absorvia a perda em SILENCIO.
+        //
+        // O estorno segue de proposito — travar aqui puniria o cliente por um
+        // problema entre plataforma e recebedor. Mas agora fica registrado no
+        // proprio pedido, para reconciliacao manual:
+        //   SELECT * FROM orders WHERE notes LIKE '%REVERSAL_FAILED%';
         this.logger.error(`Transfer reversal failed before refund for order #${order.orderNumber}: ${err.message}`);
+        const marker = `\n[REVERSAL_FAILED_BEFORE_REFUND ${new Date().toISOString()}] ${err?.message || 'unknown'} — cliente sera estornado; valor repassado NAO retornou. Requer reconciliacao manual.`;
+        await orderRepo.manager
+          .query(`UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`, [
+            order.id,
+            marker,
+          ])
+          .catch((e: any) =>
+            this.logger.error(`Failed to flag reversal failure for order ${order.id}: ${e?.message}`),
+          );
       }
     }
 

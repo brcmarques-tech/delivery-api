@@ -106,17 +106,20 @@ export class VendorUser {
   expoPushToken: string;
 
   // Pagar.me recipient ID (for split payments)
-  @Field({ nullable: true })
+  // KAN-259: fora do schema GraphQL — id interno do Pagar.me nao precisa
+  // sair da API. Quem consome o painel usa `paymentConnected`.
   @Column({ nullable: true })
   pagarmeRecipientId: string;
 
   // Pagar.me subscription (recurring billing)
-  @Field({ nullable: true })
+  // KAN-259: fora do schema GraphQL — id interno do Pagar.me nao precisa
+  // sair da API. Quem consome o painel usa `paymentConnected`.
   @Column({ nullable: true })
   pagarmeSubscriptionId: string;
 
   // Pagar.me customer ID
-  @Field({ nullable: true })
+  // KAN-259: fora do schema GraphQL — id interno do Pagar.me nao precisa
+  // sair da API. Quem consome o painel usa `paymentConnected`.
   @Column({ nullable: true })
   pagarmeCustomerId: string;
 

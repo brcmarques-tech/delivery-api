@@ -8,11 +8,33 @@ interface OtpEntry {
   attempts: number;
 }
 
+/**
+ * KAN-231: janela em que uma verificacao bem-sucedida continua valendo como
+ * prova para concluir o cadastro. O usuario verifica o codigo e tem esse tempo
+ * para finalizar o registro.
+ */
+const VERIFIED_PROOF_TTL_MS = 15 * 60 * 1000;
+
 @Injectable()
 export class OtpService {
   private readonly logger = new Logger(OtpService.name);
   // key = "phone:5599999999" or "email:user@mail.com"
   private readonly store = new Map<string, OtpEntry>();
+
+  /**
+   * KAN-231: prova de que o contato FOI verificado.
+   *
+   * Antes, `verifyCode` apenas apagava a entrada e devolvia `true` — nao
+   * sobrava nenhum estado, entao o `registerApp` (mutation publica) nao tinha
+   * como saber se houve verificacao. Resultado: dava para chamar o registro
+   * direto e pular o OTP inteiro, enquanto `create()` gravava
+   * `phoneVerified: true` fixo. A "verificacao de contato" nao era garantida
+   * por nada no backend.
+   *
+   * Agora a verificacao deixa um registro de curta duracao, consumido no
+   * cadastro (uso unico).
+   */
+  private readonly verified = new Map<string, number>();
 
   // Limpa entradas expiradas a cada 5 min
   constructor(
@@ -24,7 +46,38 @@ export class OtpService {
       for (const [key, entry] of this.store) {
         if (entry.expiresAt < now) this.store.delete(key);
       }
+      for (const [key, expiresAt] of this.verified) {
+        if (expiresAt < now) this.verified.delete(key);
+      }
     }, 5 * 60 * 1000);
+  }
+
+  private phoneKey(phone: string): string {
+    return `phone:${phone.replace(/\D/g, '')}`;
+  }
+
+  private emailKey(email: string): string {
+    return `email:${email.toLowerCase()}`;
+  }
+
+  /**
+   * Consome a prova de verificacao de telefone (uso unico).
+   * Retorna `true` se o telefone foi verificado ha pouco.
+   */
+  consumePhoneVerification(phone: string): boolean {
+    return this.consumeVerification(this.phoneKey(phone));
+  }
+
+  /** Idem para e-mail. */
+  consumeEmailVerification(email: string): boolean {
+    return this.consumeVerification(this.emailKey(email));
+  }
+
+  private consumeVerification(key: string): boolean {
+    const expiresAt = this.verified.get(key);
+    if (!expiresAt) return false;
+    this.verified.delete(key);
+    return expiresAt >= Date.now();
   }
 
   private generateCode(): string {
@@ -106,13 +159,11 @@ export class OtpService {
   }
 
   verifyPhoneCode(phone: string, code: string): boolean {
-    const key = `phone:${phone.replace(/\D/g, '')}`;
-    return this.verifyCode(key, code);
+    return this.verifyCode(this.phoneKey(phone), code);
   }
 
   verifyEmailCode(email: string, code: string): boolean {
-    const key = `email:${email.toLowerCase()}`;
-    return this.verifyCode(key, code);
+    return this.verifyCode(this.emailKey(email), code);
   }
 
   private verifyCode(key: string, code: string): boolean {
@@ -138,6 +189,8 @@ export class OtpService {
     }
 
     this.store.delete(key);
+    // KAN-231: deixa a prova de verificacao para o cadastro consumir.
+    this.verified.set(key, Date.now() + VERIFIED_PROOF_TTL_MS);
     return true;
   }
 }

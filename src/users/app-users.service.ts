@@ -13,6 +13,8 @@ import { MailService } from '../mail/mail.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { peppered } from '../common/utils/pepper';
 
+import { isValidCpf } from '../common/utils/cpf'; // KAN-253
+import { resolvePublicUrl } from '../common/utils/public-url';
 @Injectable()
 export class AppUsersService {
   constructor(
@@ -25,31 +27,12 @@ export class AppUsersService {
     private whatsAppService: WhatsAppService,
   ) {}
 
-  private validateCpf(cpf: string): boolean {
-    const digits = cpf.replace(/\D/g, '');
-    if (digits.length !== 11) return false;
-    if (/^(\d)\1{10}$/.test(digits)) return false;
-
-    let sum = 0;
-    for (let i = 0; i < 9; i++) sum += parseInt(digits[i]) * (10 - i);
-    let check = 11 - (sum % 11);
-    if (check >= 10) check = 0;
-    if (parseInt(digits[9]) !== check) return false;
-
-    sum = 0;
-    for (let i = 0; i < 10; i++) sum += parseInt(digits[i]) * (11 - i);
-    check = 11 - (sum % 11);
-    if (check >= 10) check = 0;
-    if (parseInt(digits[10]) !== check) return false;
-
-    return true;
-  }
 
   async validateRegistration(email: string, cpf: string, phone: string): Promise<{ valid: boolean; emailError?: string; cpfError?: string; phoneError?: string }> {
     const result: { valid: boolean; emailError?: string; cpfError?: string; phoneError?: string } = { valid: true };
 
     if (cpf) {
-      if (!this.validateCpf(cpf)) {
+      if (!isValidCpf(cpf)) {
         result.cpfError = 'CPF invalido';
         result.valid = false;
       } else {
@@ -79,9 +62,18 @@ export class AppUsersService {
     return result;
   }
 
-  async create(input: RegisterAppInput): Promise<AppUser> {
+  /**
+   * KAN-231: `phoneVerified` deixou de ser um literal `true`.
+   *
+   * Antes, todo cadastro nascia com o telefone marcado como verificado,
+   * independentemente de o OTP ter sido feito ou nao — o campo mentia. Agora
+   * quem chama informa se houve verificacao de fato (o AuthService consome a
+   * prova deixada pelo OtpService). O default `false` e o honesto: sem prova,
+   * nao esta verificado.
+   */
+  async create(input: RegisterAppInput, phoneVerified = false): Promise<AppUser> {
     if (input.cpf) {
-      if (!this.validateCpf(input.cpf)) {
+      if (!isValidCpf(input.cpf)) {
         throw new BadRequestException('CPF invalido');
       }
     }
@@ -108,7 +100,7 @@ export class AppUsersService {
       ...input,
       password: hashedPassword,
       role: UserRole.CUSTOMER,
-      phoneVerified: true,
+      phoneVerified,
       acceptedTermsAt: new Date(),
     });
     return this.appUsersRepository.save(user);
@@ -387,7 +379,9 @@ export class AppUsersService {
     user.resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000);
     await this.appUsersRepository.save(user);
 
-    const apiUrl = this.configService.get('APP_URL', 'http://localhost:3000');
+    // KAN-258: link vai por e-mail E WhatsApp — localhost silencioso aqui
+    // significaria reset de senha impossivel de concluir em producao.
+    const apiUrl = resolvePublicUrl(this.configService, 'APP_URL', 'http://localhost:3000');
     const resetUrl = `${apiUrl}/auth/reset-password?token=${token}&type=app`;
 
     await this.mailService.sendPasswordResetEmail(user.email, user.name, token, resetUrl);

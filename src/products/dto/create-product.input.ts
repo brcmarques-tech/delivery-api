@@ -1,5 +1,5 @@
 import { InputType, Field, Float } from '@nestjs/graphql';
-import { IsNotEmpty, IsOptional } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsNumber, Min } from 'class-validator';
 
 @InputType()
 export class CreateProductInput {
@@ -11,7 +11,11 @@ export class CreateProductInput {
   @IsOptional()
   description?: string;
 
+  // KAN-253: sem validacao de faixa, dava pra cadastrar produto com preco
+  // negativo — o que distorce subtotal/comissao e relatorios.
   @Field(() => Float)
+  @IsNumber()
+  @Min(0, { message: 'O preco nao pode ser negativo' })
   price: number;
 
   @Field({ nullable: true })
@@ -29,8 +33,11 @@ export class CreateProductInput {
   @IsOptional()
   categoryId?: string;
 
+  // KAN-253: estoque negativo tambem nao faz sentido.
   @Field({ nullable: true, defaultValue: 0 })
   @IsOptional()
+  @IsNumber()
+  @Min(0, { message: 'O estoque nao pode ser negativo' })
   stock?: number;
 
   @Field({ nullable: true })

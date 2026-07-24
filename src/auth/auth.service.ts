@@ -15,6 +15,8 @@ import { AppAuthResponse } from './dto/app-auth-response';
 import { VendorAuthResponse } from './dto/vendor-auth-response';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { peppered } from '../common/utils/pepper';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
+import { OtpService } from './otp.service'; // KAN-231
 
 @Injectable()
 export class AuthService {
@@ -29,6 +31,8 @@ export class AuthService {
     @InjectRepository(VendorUser)
     private vendorUserRepo: Repository<VendorUser>,
     @Inject(PUB_SUB) private pubSub: PubSub,
+    // KAN-231: para consumir a prova de verificacao do OTP no registro.
+    private otpService: OtpService,
   ) {}
 
   private generateSessionToken(): string {
@@ -69,8 +73,30 @@ export class AuthService {
     }
   }
 
+  /**
+   * KAN-231: o OTP era contornavel. `registerApp` e uma mutation publica e nao
+   * consumia nenhum estado da verificacao, entao dava para cadastrar pulando o
+   * codigo — e `create()` ainda gravava `phoneVerified: true` fixo, ou seja, o
+   * campo mentia para todo mundo.
+   *
+   * Agora o registro consome a prova deixada pelo OtpService e grava
+   * `phoneVerified` conforme a realidade.
+   *
+   * A EXIGENCIA (bloquear quem nao verificou) fica atras de
+   * `REQUIRE_OTP_ON_REGISTER=true`. Default DESLIGADO de proposito: ligar isso
+   * muda o fluxo de cadastro e precisa ser feito junto com o app mobile, senao
+   * quebra o registro de quem ja esta em produção.
+   */
   async registerApp(input: RegisterAppInput): Promise<AppAuthResponse> {
-    const user = await this.appUsersService.create(input);
+    const phoneVerified = this.otpService.consumePhoneVerification(input.phone);
+
+    if (process.env.REQUIRE_OTP_ON_REGISTER === 'true' && !phoneVerified) {
+      throw new BadRequestException(
+        'Verifique seu telefone antes de concluir o cadastro.',
+      );
+    }
+
+    const user = await this.appUsersService.create(input, phoneVerified);
     const accessToken = await this.signWithSession(user.id, user.role, 'app');
     return { accessToken, user };
   }
@@ -98,8 +124,17 @@ export class AuthService {
     return { accessToken, user };
   }
 
+  /** KAN-231: mesmo tratamento do registerApp (ver comentario acima). */
   async registerVendor(input: RegisterVendorInput): Promise<VendorAuthResponse> {
-    const user = await this.vendorUsersService.create(input);
+    const phoneVerified = this.otpService.consumePhoneVerification(input.phone);
+
+    if (process.env.REQUIRE_OTP_ON_REGISTER === 'true' && !phoneVerified) {
+      throw new BadRequestException(
+        'Verifique seu telefone antes de concluir o cadastro.',
+      );
+    }
+
+    const user = await this.vendorUsersService.create(input, phoneVerified);
     const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
   }
@@ -170,7 +205,7 @@ export class AuthService {
   private async verifyGoogleToken(token: string) {
     // Try as id_token first (JWT format, has dots)
     if (token.includes('.')) {
-      const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${token}`);
+      const res = await fetchWithTimeout(`https://oauth2.googleapis.com/tokeninfo?id_token=${token}`);
       if (res.ok) {
         const payload = await res.json();
         if (payload.email) {
@@ -181,12 +216,12 @@ export class AuthService {
     }
     // Access_token (code flow): userinfo nao traz aud, entao validamos a audiencia
     // via tokeninfo?access_token antes de confiar no perfil.
-    const infoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${token}`);
+    const infoRes = await fetchWithTimeout(`https://oauth2.googleapis.com/tokeninfo?access_token=${token}`);
     if (!infoRes.ok) throw new BadRequestException('Token Google invalido');
     const info = await infoRes.json();
     this.assertGoogleAudience(info.aud || info.azp);
 
-    const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    const res = await fetchWithTimeout('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) throw new BadRequestException('Token Google invalido');

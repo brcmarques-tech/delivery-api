@@ -324,6 +324,12 @@ export class OrdersService {
           couponCode,
           discount,
           coupon: couponEntity,
+          // KAN-234: `couponCredited` passa a significar "o uso deste cupom ja
+          // foi contabilizado para ESTE pedido". Em ON_DELIVERY o incremento
+          // acontece logo abaixo, na criacao; em pagamento online so depois do
+          // webhook de confirmacao (que ja seta a flag). Sem isso, o decremento
+          // no cancelamento nao tinha como saber se houve incremento.
+          couponCredited: !!couponEntity && !needsPayment,
           status: needsPayment
             ? OrderStatus.AWAITING_PAYMENT
             : OrderStatus.PENDING,
@@ -1543,9 +1549,15 @@ export class OrdersService {
         }
       }
       // H2: Decrement coupon usage when order is cancelled/rejected/expired
-      if (order.coupon?.id) {
+      // KAN-234: so decrementa se o uso foi REALMENTE contabilizado para este
+      // pedido. Antes decrementava sempre que houvesse cupom — entao cancelar
+      // um pedido de pagamento online que nunca foi pago (e portanto nunca
+      // incrementou) liberava um uso extra do cupom, furando o limite. A flag
+      // e zerada em seguida para o decremento ser idempotente.
+      if (order.coupon?.id && order.couponCredited) {
         try {
           await this.couponsService.decrementUsage(order.coupon.id);
+          await this.ordersRepository.update(order.id, { couponCredited: false });
         } catch (err: any) {
           console.error(
             `Failed to decrement coupon usage for order ${order.id}:`,
