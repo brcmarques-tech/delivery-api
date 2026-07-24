@@ -84,6 +84,38 @@ export class RatingsService {
     return this.ratingsRepository.count({ where: { storeId } });
   }
 
+  /**
+   * KAN-262: media e total de avaliacoes de VARIAS lojas em UMA query.
+   *
+   * `getPublicStores` chamava `averageStoreRating` + `totalStoreRatings` por
+   * loja dentro de um `Promise.all` — 2 queries por loja (N+1). Com 3 lojas
+   * são 6 idas ao banco; com 300 lojas, 600. Este metodo faz um unico
+   * GROUP BY e devolve um mapa por storeId.
+   */
+  async statsForStores(
+    storeIds: string[],
+  ): Promise<Map<string, { average: number; total: number }>> {
+    const result = new Map<string, { average: number; total: number }>();
+    if (storeIds.length === 0) return result;
+
+    const rows = await this.ratingsRepository
+      .createQueryBuilder('r')
+      .select('r.storeId', 'storeId')
+      .addSelect('AVG(r.rating)', 'avg')
+      .addSelect('COUNT(r.id)', 'total')
+      .where('r.storeId IN (:...storeIds)', { storeIds })
+      .groupBy('r.storeId')
+      .getRawMany();
+
+    for (const row of rows) {
+      result.set(row.storeId, {
+        average: row.avg ? parseFloat(row.avg) : 0,
+        total: row.total ? parseInt(row.total, 10) : 0,
+      });
+    }
+    return result;
+  }
+
   // KAN-225: escopa por dono — só o cliente que avaliou ou o dono da loja
   // avaliada podem ler a avaliação por appointmentId.
   async ratingForAppointment(

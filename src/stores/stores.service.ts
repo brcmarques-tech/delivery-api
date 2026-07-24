@@ -206,35 +206,34 @@ export class StoresService implements OnApplicationBootstrap {
       order: { name: 'ASC' },
     });
 
-    const results = await Promise.all(
-      stores.map(async (store) => {
-        const [avgRating, totalRatings] = await Promise.all([
-          this.ratingsService.averageStoreRating(store.id),
-          this.ratingsService.totalStoreRatings(store.id),
-        ]);
-        return {
-          id: store.id,
-          slug: store.slug,
-          name: store.name,
-          description: store.description,
-          logoUrl: store.logoUrl,
-          bannerUrl: store.bannerUrl,
-          city: store.city,
-          state: store.state,
-          isOpen: store.isOpen,
-          storeType: store.storeType,
-          deliveryFee: Number(store.deliveryFee),
-          freeDelivery: store.freeDelivery,
-          estimatedDeliveryMinutes: store.estimatedDeliveryMinutes,
-          minimumOrder: Number(store.minimumOrder),
-          verificationLevel: store.verificationLevel,
-          averageRating: avgRating,
-          totalRatings,
-        };
-      }),
+    // KAN-262: era 2 queries de rating POR loja dentro do Promise.all (N+1).
+    // Agora sao 2 queries agregadas no total, independente do numero de lojas.
+    const stats = await this.ratingsService.statsForStores(
+      stores.map((s) => s.id),
     );
 
-    return results;
+    return stores.map((store) => {
+      const s = stats.get(store.id);
+      return {
+        id: store.id,
+        slug: store.slug,
+        name: store.name,
+        description: store.description,
+        logoUrl: store.logoUrl,
+        bannerUrl: store.bannerUrl,
+        city: store.city,
+        state: store.state,
+        isOpen: store.isOpen,
+        storeType: store.storeType,
+        deliveryFee: Number(store.deliveryFee),
+        freeDelivery: store.freeDelivery,
+        estimatedDeliveryMinutes: store.estimatedDeliveryMinutes,
+        minimumOrder: Number(store.minimumOrder),
+        verificationLevel: store.verificationLevel,
+        averageRating: s?.average ?? 0,
+        totalRatings: s?.total ?? 0,
+      };
+    });
   }
 
   private isInBrazil(lat: number, lng: number): boolean {
