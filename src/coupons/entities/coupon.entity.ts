@@ -6,6 +6,7 @@ import {
   ManyToOne,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 
@@ -52,6 +53,7 @@ export class Coupon {
   @Column({ nullable: true })
   expiresAt: Date;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store)
   store: Store;

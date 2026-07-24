@@ -7,6 +7,7 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { AppUser } from '../../users/entities/app-user.entity';
 import { Store } from '../../stores/entities/store.entity';
@@ -24,6 +25,7 @@ export class Appointment {
   @Column()
   appointmentNumber: string;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => AppUser)
   @ManyToOne(() => AppUser, { eager: false })
   @JoinColumn({ name: 'customerId' })
@@ -32,6 +34,7 @@ export class Appointment {
   @Column()
   customerId: string;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store)
   @JoinColumn({ name: 'storeId' })
@@ -40,6 +43,7 @@ export class Appointment {
   @Column()
   storeId: string;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Service)
   @ManyToOne(() => Service)
   @JoinColumn({ name: 'serviceId' })

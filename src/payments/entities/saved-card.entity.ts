@@ -6,6 +6,7 @@ import {
   ManyToOne,
   CreateDateColumn,
   JoinColumn,
+  Index,
 } from 'typeorm';
 import { AppUser } from '../../users/entities/app-user.entity';
 
@@ -16,6 +17,7 @@ export class SavedCard {
   @PrimaryColumn()
   id: string; // Pagar.me card ID (card_xxx)
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @ManyToOne(() => AppUser, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'userId' })
   user: AppUser;

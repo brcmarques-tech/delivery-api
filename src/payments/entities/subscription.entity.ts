@@ -18,6 +18,7 @@ export class Subscription {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => VendorUser)
   @ManyToOne(() => VendorUser, { eager: true })
   vendorUser: VendorUser;

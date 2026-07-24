@@ -5,6 +5,7 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 import { AppUser } from '../../users/entities/app-user.entity';
 
@@ -55,6 +56,7 @@ export class Address {
   @Column({ default: false })
   isDefault: boolean;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => AppUser)
   @ManyToOne(() => AppUser, (user) => user.addresses)
   user: AppUser;

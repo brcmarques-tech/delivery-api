@@ -6,6 +6,7 @@ import {
   ManyToOne,
   OneToMany,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { Product } from '../../products/entities/product.entity';
@@ -37,6 +38,7 @@ export class Category {
   @Column({ default: false })
   requiresAgeVerification: boolean;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store, (store) => store.categories)
   store: Store;

@@ -5,6 +5,7 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 import { AppUser } from '../../users/entities/app-user.entity';
 import { VendorUser } from '../../users/entities/vendor-user.entity';
@@ -61,10 +62,12 @@ export class Payment {
   @Column({ type: 'jsonb', nullable: true })
   metadata: any;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => AppUser, { nullable: true })
   @ManyToOne(() => AppUser, { nullable: true })
   appUser: AppUser;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => VendorUser, { nullable: true })
   @ManyToOne(() => VendorUser, { nullable: true })
   vendorUser: VendorUser;

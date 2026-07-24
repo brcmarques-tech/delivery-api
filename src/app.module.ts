@@ -55,26 +55,44 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
         // coluna/tabela) e perda de dados silenciosa no deploy. Desligado em
         // producao; mudancas de schema em prod devem ir por migrations.
         // Continua ligado em dev para agilidade.
-        const synchronize = config.get('NODE_ENV') !== 'production';
+        const isProduction = config.get('NODE_ENV') === 'production';
+        const synchronize = !isProduction;
+
+        // KAN-261: o KAN-214 desligou o `synchronize` em producao — certo, ele
+        // podia gerar DDL destrutivo no deploy —, mas o projeto nao tinha
+        // NENHUMA migration. Na pratica isso significava que nenhuma mudanca de
+        // schema chegava a producao: nem coluna nova, nem indice.
+        //
+        // Agora as migrations de `src/migrations/` sao aplicadas no boot em
+        // producao. Da para desligar com `RUN_MIGRATIONS=false` se algum dia
+        // voce preferir aplicar manualmente antes de subir a aplicacao.
+        const migrationsRun =
+          isProduction && config.get('RUN_MIGRATIONS') !== 'false';
+
+        const common = {
+          autoLoadEntities: true,
+          synchronize,
+          migrations: [join(__dirname, 'migrations', '*{.ts,.js}')],
+          migrationsRun,
+        };
+
         const databaseUrl = config.get('DATABASE_URL');
         if (databaseUrl) {
           return {
-            type: 'postgres',
+            type: 'postgres' as const,
             url: databaseUrl,
             ssl: { rejectUnauthorized: false },
-            autoLoadEntities: true,
-            synchronize,
+            ...common,
           };
         }
         return {
-          type: 'postgres',
-          host: config.get('DB_HOST'),
+          type: 'postgres' as const,
+          host: config.get<string>('DB_HOST'),
           port: config.get<number>('DB_PORT'),
-          username: config.get('DB_USERNAME'),
-          password: config.get('DB_PASSWORD'),
-          database: config.get('DB_DATABASE'),
-          autoLoadEntities: true,
-          synchronize,
+          username: config.get<string>('DB_USERNAME'),
+          password: config.get<string>('DB_PASSWORD'),
+          database: config.get<string>('DB_DATABASE'),
+          ...common,
         };
       },
       inject: [ConfigService],

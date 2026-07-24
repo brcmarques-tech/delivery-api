@@ -7,6 +7,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   DeleteDateColumn,
+  Index,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { Category } from '../../categories/entities/category.entity';
@@ -62,10 +63,12 @@ export class Product {
   @Column({ default: false })
   isVariableWeight: boolean;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store, (store) => store.products)
   store: Store;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Category, { nullable: true })
   @ManyToOne(() => Category, (category) => category.products, { nullable: true })
   category: Category;

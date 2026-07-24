@@ -1,5 +1,7 @@
 import { ObjectType, Field, ID, Int } from '@nestjs/graphql';
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Unique } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Unique,
+  Index,
+} from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 
 @ObjectType()
@@ -10,6 +12,7 @@ export class Schedule {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'storeId' })

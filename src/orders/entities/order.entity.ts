@@ -8,6 +8,7 @@ import {
   OneToOne,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { OrderStatus } from '../../common/enums';
 import { AppUser } from '../../users/entities/app-user.entity';
@@ -93,10 +94,12 @@ export class Order {
   @Column('decimal', { precision: 10, scale: 7, nullable: true })
   deliveryLongitude: number;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => AppUser)
   @ManyToOne(() => AppUser, (user) => user.orders)
   customer: AppUser;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store)
   store: Store;
@@ -117,6 +120,7 @@ export class Order {
   @Column('decimal', { precision: 10, scale: 2, nullable: true })
   discount: number;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Coupon, { nullable: true })
   @ManyToOne(() => Coupon, { nullable: true })
   coupon: Coupon;

@@ -8,6 +8,7 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { AppUser } from '../../users/entities/app-user.entity';
 import { Order } from '../../orders/entities/order.entity';
@@ -35,6 +36,7 @@ export class Delivery {
   @Column({ nullable: true })
   deliveredAt: Date;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => AppUser, { nullable: true })
   @ManyToOne(() => AppUser, { nullable: true })
   deliverer: AppUser;
