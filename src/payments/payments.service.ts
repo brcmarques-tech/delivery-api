@@ -1262,12 +1262,18 @@ export class PaymentsService implements OnModuleDestroy {
       throw new BadRequestException('Plano personalizado requer contato com a equipe de vendas.');
     }
 
-    // Validate plan hierarchy: cannot downgrade
+    // Validate plan hierarchy: cannot downgrade.
+    // PIX é cobrança avulsa por ciclo, então RENOVAR o mesmo plano por PIX é
+    // esperado (targetLevel === currentLevel). Só bloqueamos downgrade real; e
+    // "mesmo plano" só é bloqueado no cartão (que já renova sozinho).
     const planHierarchy: Record<string, number> = { FREE: 0, PRO: 1, PREMIUM: 2, ENTERPRISE: 3 };
     const currentLevel = planHierarchy[user.vendorPlan || 'FREE'] ?? 0;
     const targetLevel = planHierarchy[plan] ?? 0;
-    if (targetLevel <= currentLevel) {
-      throw new BadRequestException('Você já possui um plano igual ou superior.');
+    if (targetLevel < currentLevel) {
+      throw new BadRequestException('Nao e possivel fazer downgrade de plano.');
+    }
+    if (targetLevel === currentLevel && paymentMethod !== 'pix') {
+      throw new BadRequestException('Você já possui este plano.');
     }
 
     if (!user.acceptedSubscriptionTermsAt) {
@@ -1279,6 +1285,11 @@ export class PaymentsService implements OnModuleDestroy {
     }
     if (!['credit_card', 'pix'].includes(paymentMethod)) {
       throw new BadRequestException('Método de pagamento inválido. Use credit_card ou pix.');
+    }
+    // PIX exige CPF do cliente (o Pagar.me recusa a cobrança sem documento). Sem
+    // isso, o app falhava com um 422 genérico ("Erro ao criar assinatura").
+    if (paymentMethod === 'pix' && !user.cpf) {
+      throw new BadRequestException('Cadastre seu CPF no perfil para pagar o plano com PIX.');
     }
 
     const billingMap: Record<string, { price: number; months: number; label: string }> = {
@@ -1325,6 +1336,85 @@ export class PaymentsService implements OnModuleDestroy {
 
     // Ensure Pagar.me customer exists
     const customerId = await this.ensurePagarmeCustomer(user);
+
+    // ─── PIX: cobrança AVULSA por ciclo (não é assinatura recorrente) ───
+    // O Pagar.me NÃO suporta assinatura recorrente via PIX. O modelo correto (e o
+    // que o Bruno confirmou como normal) é: a cada ciclo o vendedor paga um QR PIX
+    // novo. Criamos uma cobrança PIX avulsa; ao pagar, o webhook order.paid (ramo
+    // metadata.type==='plan_upgrade') concede o plano por `duration_months`. Como
+    // não há assinatura no Pagar.me, `pagarmeSubscriptionId` fica null — é assim
+    // que o painel sabe que é um plano MANUAL (mostra o aviso de vencimento + botão
+    // de gerar PIX de renovação perto do fim).
+    if (paymentMethod === 'pix') {
+      // code do Pagar.me tem limite (~52 chars). UUID completo + prefixo estoura
+      // e dá 422 — encurtamos.
+      const uniqueCode = `plan-${user.id.replace(/-/g, '').substring(0, 12)}-${Date.now().toString(36)}`;
+      const orderBody: any = {
+        code: uniqueCode,
+        items: [
+          {
+            amount: totalCents,
+            description: `Plano ${plan} (${billing.label})`.substring(0, 256),
+            quantity: 1,
+            code: uniqueCode,
+          },
+        ],
+        customer_id: customerId,
+        payments: [
+          {
+            payment_method: 'pix',
+            pix: {
+              expires_in: 3600, // 1h para pagar
+              additional_information: [{ name: 'Plano', value: `${plan} ${billing.label}` }],
+            },
+          },
+        ],
+        metadata: {
+          type: 'plan_upgrade',
+          user_id: user.id,
+          plan,
+          billing_period: billingPeriod,
+          duration_months: String(billing.months),
+        },
+        closed: true,
+      };
+
+      const result = await this.pagarmePost('/orders', orderBody);
+      const charge = result.charges?.[0];
+      const lastTransaction = charge?.last_transaction;
+      const qrCode = lastTransaction?.qr_code || '';
+      const qrCodeUrl = lastTransaction?.qr_code_url || '';
+
+      // registra o vínculo do customer (o plano só é concedido no webhook do pagamento)
+      await this.paymentsRepository.manager.getRepository(VendorUser).update(user.id, {
+        pagarmeCustomerId: customerId,
+      });
+
+      const payment = this.paymentsRepository.create({
+        type: 'SUBSCRIPTION',
+        description: `Plano ${plan} (${billing.label}) via PIX`,
+        amount: billing.price,
+        status: 'pending',
+        pagarmeOrderId: result.id,
+        metadata: {
+          plan,
+          billingPeriod,
+          paymentMethod: 'pix',
+          durationMonths: billing.months,
+          qrCode,
+          qrCodeUrl,
+          pixExpiresAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+        },
+        vendorUser: user,
+      });
+      const saved = await this.paymentsRepository.save(payment);
+      // campos transientes p/ o painel exibir o QR
+      saved.qrCode = qrCode;
+      saved.qrCodeUrl = qrCodeUrl;
+      saved.pixExpiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
+      this.logger.log(`Plano PIX avulso criado p/ vendor ${user.id}: order ${result.id} (${plan} ${billingPeriod}) | qr ${qrCode ? 'OK' : 'VAZIO'}`);
+      return saved;
+    }
 
     // Get the Pagar.me plan ID
     const pagarmePlan = await this.subscriptionPlansService.getPagarmePlan(plan, billingPeriod);
@@ -2189,6 +2279,12 @@ export class PaymentsService implements OnModuleDestroy {
     // Fallback: if order.paid webhook doesn't fire, charge.paid confirms the payment
     const metadata = data.metadata || data.order?.metadata || {};
     const code = data.code || data.order?.code || '';
+    // Cobrança de PLANO (PIX avulso) é tratada pelo order.paid (ramo
+    // plan_upgrade); aqui só geraria erro (o "orderId" viria do code tipo
+    // "plan-xxx", que não é UUID de pedido → erro de UUID no findOne).
+    if (metadata.type === 'plan_upgrade' || metadata.type === 'promotion' || metadata.type === 'appointment') {
+      return;
+    }
     const orderId = metadata.order_id || (code ? code.replace(/^([a-f0-9-]{36}).*$/, '$1') : null);
 
     this.logger.log(`Charge paid: ${data.id} | orderId: ${orderId}`);

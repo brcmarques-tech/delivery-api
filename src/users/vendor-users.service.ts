@@ -285,11 +285,23 @@ export class VendorUsersService {
     await this.vendorUsersRepository.update(id, { expoPushToken: token });
   }
 
-  async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string, email?: string): Promise<VendorUser> {
+  async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string, email?: string, cpf?: string): Promise<VendorUser> {
     const user = await this.vendorUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     if (name) user.name = name;
     if (phone) user.phone = phone;
+    // CPF: só pode ser PREENCHIDO quando está vazio (não permite trocar um CPF já
+    // cadastrado, por integridade/anti-fraude). Necessário para pagar plano/pedido
+    // com PIX. Valida formato e unicidade.
+    if (cpf && !user.cpf) {
+      const clean = cpf.replace(/\D/g, '');
+      if (!isValidCpf(clean)) throw new BadRequestException('CPF invalido');
+      const existing = await this.vendorUsersRepository.findOne({ where: { cpf: clean } });
+      if (existing) throw new BadRequestException('CPF ja cadastrado');
+      user.cpf = clean;
+    } else if (cpf && user.cpf && cpf.replace(/\D/g, '') !== user.cpf) {
+      throw new BadRequestException('O CPF ja esta cadastrado e nao pode ser alterado. Fale com o suporte.');
+    }
     if (email && email !== user.email) {
       const existing = await this.vendorUsersRepository.findOne({ where: { email } });
       if (existing) throw new BadRequestException('Este email ja esta em uso');

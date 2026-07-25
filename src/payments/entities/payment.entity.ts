@@ -62,6 +62,18 @@ export class Payment {
   @Column({ type: 'jsonb', nullable: true })
   metadata: any;
 
+  // Campos TRANSIENTES (sem @Column) — usados só na resposta do createPlanUpgrade
+  // via PIX, para o painel exibir o QR Code. Preenchidos em memória antes de
+  // retornar; não são persistidos.
+  @Field({ nullable: true })
+  qrCode?: string;
+
+  @Field({ nullable: true })
+  qrCodeUrl?: string;
+
+  @Field({ nullable: true })
+  pixExpiresAt?: string;
+
   @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => AppUser, { nullable: true })
   @ManyToOne(() => AppUser, { nullable: true })

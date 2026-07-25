@@ -108,7 +108,11 @@ export class SubscriptionPlansService implements OnModuleInit {
       interval: 'month',
       interval_count: opts.intervalCount,
       billing_type: 'prepaid',
-      payment_methods: ['credit_card', 'pix'],
+      // O Pagar.me NÃO aceita 'pix' em payment_methods de um PLANO (só
+      // credit_card/debit_card/cash/boleto) → com 'pix' aqui, TODOS os planos
+      // falhavam ao criar ("payment_methods field is invalid") e ninguém conseguia
+      // assinar. PIX recorrente não é suportado via plano no Pagar.me.
+      payment_methods: ['credit_card', 'boleto'],
       installments: opts.installments,
       items: [
         {
