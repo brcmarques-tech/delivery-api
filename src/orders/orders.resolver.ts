@@ -13,6 +13,21 @@ import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole, OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
+// KAN: escopo de ownership das subscriptions de pedido. O usuário autenticado do
+// WebSocket chega no `context.wsUser` (validado no onConnect do GraphQLModule).
+// Quem pode ver um pedido: superadmin, o dono da loja, o cliente ou o entregador
+// atribuído. Fail-closed: sem wsUser ou sem a relation necessária → não emite.
+function wsUserIsOrderParty(order: any, user: any): boolean {
+  if (!user || !order) return false;
+  if (user.role === 'SUPERADMIN') return true;
+  const uid = user.sub;
+  return (
+    order?.customer?.id === uid ||
+    order?.store?.owner?.id === uid ||
+    order?.delivery?.deliverer?.id === uid
+  );
+}
+
 @ObjectType()
 class PopularProduct {
   @Field(() => ID) id: string;
@@ -294,6 +309,22 @@ export class OrdersResolver {
     if (order.store?.owner?.id !== user.id) {
       throw new BadRequestException('Você não tem permissão para alterar este pedido');
     }
+    // BL#1 (CRÍTICO): o vendedor só pode AVANÇAR o pedido no preparo. Antes esta
+    // mutation aceitava qualquer transição da tabela de estados — inclusive
+    // READY→DELIVERING→DELIVERER_CONFIRMED_DELIVERY. O vendedor conseguia se
+    // auto-conduzir até o ponto em que o scheduler de auto-confirmação (10min)
+    // captura o cartão e paga o vendedor, SEM entregador e SEM o cliente
+    // confirmar o recebimento → cobrava o cliente por mercadoria nunca entregue.
+    // Estados de entregador/cliente/sistema têm mutations próprias (confirmPickup,
+    // confirmReceipt, etc.) e ficam de fora daqui.
+    const VENDOR_ALLOWED: OrderStatus[] = [
+      OrderStatus.ACCEPTED,
+      OrderStatus.PREPARING,
+      OrderStatus.READY,
+    ];
+    if (!VENDOR_ALLOWED.includes(status)) {
+      throw new BadRequestException('O lojista não pode definir este status do pedido.');
+    }
     return this.ordersService.updateStatus(id, status, user);
   }
 
@@ -340,17 +371,20 @@ export class OrdersResolver {
     return this.ordersService.simulatePayment(orderId);
   }
 
-  // H3: LIMITATION — These subscriptions filter by storeId but don't verify the subscriber
-  // actually owns the store (IDOR risk). GraphQL subscriptions in NestJS don't easily support
-  // guards in the filter function. The storeId filter prevents cross-store data leakage, but
-  // any authenticated user who knows a storeId could subscribe to its events.
-  // TODO: Implement WebSocket auth middleware to verify store ownership on subscription init.
-  // This requires custom ConnectionParams handling in the GraphQL gateway configuration.
+  // KAN: ownership real por subscription. O `onConnect` do GraphQLModule valida o
+  // JWT do handshake e coloca o usuário em `context.wsUser`; os filtros abaixo
+  // usam isso + as relations do payload (o pedido é publicado via findById, que
+  // carrega store.owner/customer/delivery.deliverer) para só entregar o evento a
+  // quem é parte do pedido. Fail-closed.
   @Subscription(() => Order, {
-    filter: (payload, variables) => {
-      // Require storeId to prevent unauthorized data access
+    filter: (payload, variables, context) => {
+      const order = payload.orderCreated;
+      const user = context?.wsUser;
       if (!variables.storeId) return false;
-      return payload.orderCreated.store?.id === variables.storeId;
+      if (order?.store?.id !== variables.storeId) return false;
+      // Só o dono da loja (ou superadmin) recebe os novos pedidos dela.
+      if (!user) return false;
+      return user.role === 'SUPERADMIN' || order?.store?.owner?.id === user.sub;
     },
   })
   orderCreated(@Args('storeId', { nullable: true }) storeId?: string) {
@@ -359,14 +393,22 @@ export class OrdersResolver {
   }
 
   @Subscription(() => Order, {
-    filter: (payload, variables) => {
+    filter: (payload, variables, context) => {
       const order = payload.orderUpdated;
-      // If storeId provided, filter by store (vendor panel)
-      if (variables.storeId && order.store?.id !== variables.storeId) return false;
-      // If orderId provided, filter by order (customer/deliverer tracking)
-      if (variables.orderId && order.id !== variables.orderId) return false;
-      // If neither provided, receive all updates (deliverer available list)
-      return true;
+      const user = context?.wsUser;
+      if (!user) return false; // fail-closed: WS sem autenticação não recebe pedidos
+      if (user.role === 'SUPERADMIN') return true;
+      // storeId (painel do vendedor): tem que ser dono da loja
+      if (variables.storeId) {
+        return order?.store?.id === variables.storeId && order?.store?.owner?.id === user.sub;
+      }
+      // orderId (rastreio de cliente/entregador): tem que ser parte do pedido
+      if (variables.orderId) {
+        return order?.id === variables.orderId && wsUserIsOrderParty(order, user);
+      }
+      // Sem args (ex.: ping do app mobile): recebe SÓ updates de pedidos dos quais
+      // é parte — antes emitia TODOS os pedidos da plataforma p/ qualquer cliente.
+      return wsUserIsOrderParty(order, user);
     },
   })
   orderUpdated(

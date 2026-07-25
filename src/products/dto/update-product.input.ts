@@ -1,5 +1,5 @@
 import { InputType, Field, Float } from '@nestjs/graphql';
-import { IsOptional } from 'class-validator';
+import { IsOptional, IsNumber, IsInt, Min } from 'class-validator';
 
 @InputType()
 export class UpdateProductInput {
@@ -16,6 +16,10 @@ export class UpdateProductInput {
 
   @Field(() => Float, { nullable: true })
   @IsOptional()
+  // Input#2: o update não tinha guarda de faixa (o create tem @Min(0)); um preço
+  // negativo zerava/invertia o subtotal e a comissão dos pedidos.
+  @IsNumber()
+  @Min(0)
   price?: number;
 
   @Field({ nullable: true })
@@ -32,6 +36,8 @@ export class UpdateProductInput {
 
   @Field({ nullable: true })
   @IsOptional()
+  @IsInt()
+  @Min(0)
   stock?: number;
 
   @Field({ nullable: true })

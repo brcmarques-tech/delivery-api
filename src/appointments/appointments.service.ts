@@ -65,6 +65,13 @@ export class AppointmentsService {
     today.setHours(0, 0, 0, 0);
     if (dateObj < today) return [];
 
+    // BL#2: se a data é HOJE, não oferecer horários que já passaram. Antes só a
+    // data era comparada (à meia-noite), então marcar hoje às 09:00 às 15:00 era
+    // aceito.
+    const now = new Date();
+    const isToday = dateObj.getTime() === today.getTime();
+    const nowMinutes = isToday ? now.getHours() * 60 + now.getMinutes() : -1;
+
     const dayOfWeek = dateObj.getDay();
 
     const schedule = await this.schedulesRepository.findOne({
@@ -108,6 +115,8 @@ export class AppointmentsService {
     return slots.filter((slot) => {
       const [slotH, slotM] = slot.split(':').map(Number);
       const slotStart = slotH * 60 + slotM;
+      // BL#2: descarta horários já passados quando a data é hoje.
+      if (isToday && slotStart < nowMinutes) return false;
       const slotEnd = slotStart + duration;
 
       return !existing.some((apt) => {
@@ -178,7 +187,10 @@ export class AppointmentsService {
     let commissionAmount = 0;
     if (isOnlinePayment) {
       const planConfig = await this.platformConfigService.getPlanConfig(store.owner?.vendorPlan as any);
-      const commissionPercent = planConfig?.commissionPercent || 5;
+      // `?? 5` (não `|| 5`): PREMIUM/ENTERPRISE/CUSTOM têm commissionPercent 0 —
+      // com `||`, o 0 (falsy) virava 5, cobrando 5% de comissão de quem tem 0%
+      // contratado. Só usa o default 5 quando o valor é realmente ausente.
+      const commissionPercent = planConfig?.commissionPercent ?? 5;
       commissionAmount = Math.round(Number(service.price) * commissionPercent) / 100;
     }
 
@@ -193,20 +205,29 @@ export class AppointmentsService {
 
       if (!lockedStore) throw new NotFoundException('Loja nao encontrada');
 
-      // Re-check availability inside transaction
-      const conflict = await manager.getRepository(Appointment).count({
-        where: {
-          storeId: input.storeId,
-          scheduledDate: input.scheduledDate,
-          scheduledTime: input.scheduledTime,
-          status: Not(In([
+      // BL#3: re-checagem de conflito dentro da transação por SOBREPOSIÇÃO, não
+      // só por horário idêntico. A checagem anterior contava apenas
+      // `scheduledTime = X`; serviços de durações diferentes colidiam (ex.: um de
+      // 60min às 10:00 [10:00–11:00] e um de 30min às 10:30 [10:30–11:00]) e ambos
+      // passavam. `scheduledTime`/`endTime` são 'HH:MM' → comparação lexicográfica
+      // equivale à cronológica. Sobrepõe se: existente.início < novo.fim E
+      // existente.fim > novo.início.
+      const conflict = await manager
+        .getRepository(Appointment)
+        .createQueryBuilder('apt')
+        .where('apt.storeId = :storeId', { storeId: input.storeId })
+        .andWhere('apt.scheduledDate = :date', { date: input.scheduledDate })
+        .andWhere('apt.deletedAt IS NULL')
+        .andWhere('apt.status NOT IN (:...excluded)', {
+          excluded: [
             AppointmentStatus.CANCELLED,
             AppointmentStatus.NO_SHOW,
             AppointmentStatus.QUOTE_REJECTED,
-          ])),
-          deletedAt: IsNull(),
-        },
-      });
+          ],
+        })
+        .andWhere('apt.scheduledTime < :endTime', { endTime })
+        .andWhere('apt.endTime > :startTime', { startTime: input.scheduledTime })
+        .getCount();
       if (conflict > 0) {
         throw new BadRequestException('Horario ja foi reservado. Escolha outro.');
       }

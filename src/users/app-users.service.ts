@@ -406,6 +406,10 @@ export class AppUsersService {
     user.password = await bcrypt.hash(peppered(newPassword), 10);
     user.resetPasswordToken = null as any;
     user.resetPasswordExpires = null as any;
+    // A#2: trocar a senha deve derrubar todas as sessões existentes. Rotaciona o
+    // sessionToken para um novo valor — nenhum JWT emitido antes casa mais, então
+    // um atacante com um token pré-reset perde o acesso.
+    user.sessionToken = crypto.randomBytes(32).toString('hex');
     await this.appUsersRepository.save(user);
     return true;
   }

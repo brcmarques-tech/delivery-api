@@ -49,7 +49,10 @@ export class AppUser {
   @Column({ nullable: true })
   avatarUrl: string;
 
-  @Field({ nullable: true })
+  // PII#1-3: cpf sai do @Field direto e passa a ser resolvido com gate (só o
+  // próprio dono ou superadmin recebem). Antes qualquer parte de um pedido
+  // (entregador via availableDeliveries, vendedor via storeOrders, cliente via
+  // order.delivery.deliverer) colhia o CPF alheio. A coluna continua.
   @Column({ nullable: true })
   cpf: string;
 
@@ -66,19 +69,18 @@ export class AppUser {
   @Column({ nullable: true })
   profilePhotoUrl: string;
 
-  @Field({ nullable: true })
+  // PII#2: dossiê de identidade do entregador (fotos de documento, CNH, data de
+  // nascimento) — só o próprio ou superadmin. Antes o cliente lia tudo via
+  // order.delivery.deliverer.
   @Column({ nullable: true })
   identityPhotoUrl: string;
 
-  @Field({ nullable: true })
   @Column({ nullable: true })
   identityPhotoBackUrl: string;
 
-  @Field({ nullable: true })
   @Column({ nullable: true })
   birthDate: string;
 
-  @Field({ nullable: true })
   @Column({ nullable: true })
   cnhNumber: string;
 
@@ -126,7 +128,9 @@ export class AppUser {
   expoPushToken: string;
 
   // Pagar.me recipient ID (for deliverer split payments)
-  @Field({ nullable: true })
+  // PII#4: sem @Field (mesma correção do KAN-259 no VendorUser). É um handle
+  // interno de conta de repasse; consumidores usam `paymentConnected`. Antes
+  // vazava para qualquer parte de um pedido.
   @Column({ nullable: true })
   pagarmeRecipientId: string;
 

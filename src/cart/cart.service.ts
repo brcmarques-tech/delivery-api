@@ -59,8 +59,37 @@ export class CartService {
       weightGrams: input.weightGrams,
     });
 
-    const saved = await this.cartItemRepo.save(cartItem);
-    return this.findById(saved.id);
+    try {
+      const saved = await this.cartItemRepo.save(cartItem);
+      return this.findById(saved.id);
+    } catch (err: any) {
+      // Race de double-tap: outra request criou a mesma linha (unique
+      // customer+product) entre o findOne acima e este save. Em vez de estourar
+      // 500, recupera o item recém-criado e soma a quantidade, como no caminho
+      // "ja existe".
+      const code = err?.code || err?.driverError?.code;
+      if (code === '23505') {
+        const concurrent = await this.cartItemRepo.findOne({
+          where: {
+            customer: { id: customerId },
+            product: { id: input.productId },
+          },
+          relations: ['customer', 'product', 'store'],
+        });
+        if (concurrent) {
+          if (input.weightGrams !== undefined) {
+            concurrent.weightGrams = input.weightGrams;
+          } else {
+            concurrent.quantity += input.quantity;
+          }
+          if (input.notes !== undefined) {
+            concurrent.notes = input.notes;
+          }
+          return this.cartItemRepo.save(concurrent);
+        }
+      }
+      throw err;
+    }
   }
 
   async updateCartItem(input: UpdateCartItemInput, customerId: string): Promise<CartItem> {
@@ -71,6 +100,15 @@ export class CartService {
 
     if (!item) {
       throw new NotFoundException('Item do carrinho nao encontrado');
+    }
+
+    // N4: se o produto foi soft-deletado enquanto estava no carrinho, a relation
+    // vem null. `CartItem.product` é não-nulável no schema — retornar assim daria
+    // 500. Dá um erro claro (o cliente deve remover o item) em vez de quebrar.
+    if (!item.product) {
+      throw new NotFoundException(
+        'Este produto nao esta mais disponivel. Remova-o do carrinho.',
+      );
     }
 
     if (input.quantity !== undefined) {
@@ -113,15 +151,21 @@ export class CartService {
   }
 
   async getMyCart(customerId: string): Promise<CartItem[]> {
-    return this.cartItemRepo.find({
+    const items = await this.cartItemRepo.find({
       where: { customer: { id: customerId } },
       relations: ['product', 'product.store', 'store'],
       order: { createdAt: 'ASC' },
     });
+    // Produto soft-deletado deixa o cart_item órfão (o CASCADE do FK não dispara
+    // em soft-delete) e a relação volta null. Como CartItem.product é não-nullable
+    // no schema GraphQL, a query inteira do carrinho quebrava com 500 assim que o
+    // cliente pedia `product` — bastava um vendedor apagar um produto que estava
+    // no carrinho de alguém. Filtra os órfãos para a tela do carrinho voltar a abrir.
+    return items.filter((i) => i.product);
   }
 
   async getMyCartByStore(customerId: string, storeId: string): Promise<CartItem[]> {
-    return this.cartItemRepo.find({
+    const items = await this.cartItemRepo.find({
       where: {
         customer: { id: customerId },
         store: { id: storeId },
@@ -129,6 +173,7 @@ export class CartService {
       relations: ['product', 'product.store', 'store'],
       order: { createdAt: 'ASC' },
     });
+    return items.filter((i) => i.product);
   }
 
   async getStoreCartSummary(storeId: string): Promise<{ productId: string; productName: string; productImageUrl: string | null; totalPeople: number; totalQuantity: number }[]> {

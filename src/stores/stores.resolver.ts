@@ -343,11 +343,21 @@ export class StoresResolver {
     const token = raw.replace(/^Bearer\s+/i, '').trim();
     const secret = process.env.JWT_SECRET;
     if (!token || !secret) return null;
+    let payload: any;
     try {
-      jwtVerify(token, secret);
+      payload = jwtVerify(token, secret);
     } catch {
       return null;
     }
+    // `owner` expõe PII do lojista (email, CPF, telefone, googleId). Antes bastava
+    // um token VÁLIDO — qualquer cliente comum logado colhia os dados pessoais de
+    // todos os donos de loja (as queries públicas stores/store/storeBySlug já
+    // carregam a relação owner). Agora só o superadmin ou o próprio dono recebem;
+    // os demais recebem null. (ownerPaymentConnected cobre o dado não-sensível.)
+    const isSuperadmin = payload?.role === 'SUPERADMIN';
+    const isOwner =
+      payload?.sub && store.owner?.id && payload.sub === store.owner.id;
+    if (!isSuperadmin && !isOwner) return null;
     return store.owner ?? null;
   }
 
@@ -356,6 +366,9 @@ export class StoresResolver {
     return store.owner?.paymentConnected ?? false;
   }
 
+  // I4: exige autenticação para assinar (dado público, mas antes era firehose
+  // anônimo de todas as lojas). Clientes reais já assinam só logados.
+  @UseGuards(GqlAuthGuard)
   @Subscription(() => Store, {
     filter: (payload, variables) =>
       !variables.storeId || payload.storeUpdated.id === variables.storeId,

@@ -155,6 +155,14 @@ describe('DeliveriesService', () => {
       // entrega. Depois o service recarrega o registro com `findOneOrFail`.
       // O teste ainda checava `create`, que nao e mais chamado.
       deliveriesRepo.findOneOrFail.mockResolvedValue({ id: 'delivery-1', order, deliverer });
+      // findOne é usado em dois momentos: (1) o pré-check de "entrega ativa" (deve
+      // dar null) e (2) o reload por id do publishDeliveryUpdate, que recarrega o
+      // delivery completo para o payload da subscription. Ramifica pelo `where`.
+      deliveriesRepo.findOne.mockImplementation((opts: any) =>
+        opts?.where?.id === 'delivery-1'
+          ? Promise.resolve({ id: 'delivery-1', order, deliverer })
+          : Promise.resolve(null),
+      );
 
       const result = await service.acceptDelivery('order-1', deliverer as any);
 

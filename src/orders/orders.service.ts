@@ -117,10 +117,16 @@ export class OrdersService {
     if (store.deliveryStartTime && store.deliveryEndTime) {
       const now = new Date();
       const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      if (
-        currentTime < store.deliveryStartTime ||
-        currentTime > store.deliveryEndTime
-      ) {
+      // Trata janelas que cruzam a meia-noite (ex.: 18:00 as 02:00). Antes a
+      // comparação simples rejeitava o dia inteiro nesse caso, e a loja nunca
+      // recebia pedido.
+      const start = store.deliveryStartTime;
+      const end = store.deliveryEndTime;
+      const withinWindow =
+        start <= end
+          ? currentTime >= start && currentTime <= end
+          : currentTime >= start || currentTime <= end;
+      if (!withinWindow) {
         throw new BadRequestException(
           `Esta loja so aceita pedidos das ${store.deliveryStartTime} as ${store.deliveryEndTime}`,
         );
@@ -136,6 +142,19 @@ export class OrdersService {
 
     for (const itemInput of input.items) {
       const product = await this.productsService.findById(itemInput.productId);
+      // C3: o produto TEM que ser da loja do pedido e estar disponível. Antes o
+      // pedido aceitava produto de outra loja (preço/comissão calculados contra a
+      // loja errada, corrompendo settlement) ou produto oculto/inativo.
+      if (product.store?.id !== input.storeId) {
+        throw new BadRequestException(
+          `O produto "${product.name}" nao pertence a esta loja.`,
+        );
+      }
+      if (!product.isActive || !product.isAvailable) {
+        throw new BadRequestException(
+          `O produto "${product.name}" nao esta disponivel no momento.`,
+        );
+      }
       const unitPrice = Number(product.promotionalPrice || product.price);
 
       let totalPrice: number;
@@ -192,7 +211,7 @@ export class OrdersService {
 
     let deliveryFee = 0;
 
-    if (!isPickup && input.deliveryLatitude && input.deliveryLongitude) {
+    if (!isPickup) {
       const storeFreeDelivery = store.freeDelivery;
       const freeAbove = store.freeDeliveryAbove
         ? Number(store.freeDeliveryAbove)
@@ -200,7 +219,7 @@ export class OrdersService {
 
       if (storeFreeDelivery || (freeAbove && subtotal >= freeAbove)) {
         deliveryFee = 0;
-      } else {
+      } else if (input.deliveryLatitude && input.deliveryLongitude) {
         const pricePerKm =
           await this.platformConfigService.getDeliveryPricePerKm();
         const basePrice =
@@ -220,6 +239,13 @@ export class OrdersService {
         const distanceKm = R * c;
         deliveryFee =
           Math.round((basePrice + distanceKm * pricePerKm) * 100) / 100;
+      } else {
+        // C2: pedido de entrega SEM coordenadas (ex.: o checkout do storefront
+        // não envia lat/long) não conseguia calcular a distância e caía em frete
+        // 0 — entrega grátis por omissão, com o entregador do app trabalhando de
+        // graça. Cai no frete FIXO configurado pela própria loja (store.deliveryFee)
+        // como piso, em vez de zerar silenciosamente.
+        deliveryFee = Number(store.deliveryFee) || 0;
       }
     }
 
@@ -337,22 +363,28 @@ export class OrdersService {
 
         const saved = await manager.getRepository(Order).save(order);
 
-        // Atomic stock decrement with DB-level check to prevent overselling
+        // Atomic stock decrement with DB-level check to prevent overselling.
+        // ANTES: o decremento só rodava quando a leitura em memória mostrava
+        // `stock > 0`. Um produto que já tinha chegado a 0 (leitura obsoleta ou
+        // esgotado por outra compra) caía FORA do if e o pedido passava sem
+        // decrementar → oversell ilimitado a partir do zero. `stock` é sempre
+        // número (coluna default 0, não-nulável), então o gate agora é só o
+        // `WHERE stock >= $1` do próprio UPDATE — mesma semântica do
+        // productsService.decrementStock, inclusive marcando isAvailable=false
+        // ao zerar.
         for (const item of items) {
-          if (
-            item.product.stock !== null &&
-            item.product.stock !== undefined &&
-            item.product.stock > 0
-          ) {
-            const result = await manager.query(
-              `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING stock`,
-              [item.quantity, item.product.id],
+          const result = await manager.query(
+            `UPDATE products
+                SET stock = stock - $1,
+                    "isAvailable" = CASE WHEN stock - $1 <= 0 THEN false ELSE "isAvailable" END
+              WHERE id = $2 AND stock >= $1
+              RETURNING stock`,
+            [item.quantity, item.product.id],
+          );
+          if (!result || result.length === 0) {
+            throw new BadRequestException(
+              `Estoque insuficiente para "${item.product.name}". Tente novamente.`,
             );
-            if (!result || result.length === 0) {
-              throw new BadRequestException(
-                `Estoque insuficiente para "${item.product.name}". Tente novamente.`,
-              );
-            }
           }
         }
 
@@ -503,8 +535,12 @@ export class OrdersService {
       this.whatsAppService.sendText(savedOrder.customer.phone, msg).catch(() => {});
     }
 
-    this.pubSub.publish('orderCreated', { orderCreated: savedOrder });
-    this.pubSub.publish('orderUpdated', { orderUpdated: savedOrder });
+    // Publica o pedido COMPLETO (store.owner/customer/delivery.deliverer) para o
+    // filtro de ownership das subscriptions decidir quem é parte, e para os
+    // clientes selecionarem campos aninhados sem 500.
+    const fullNew = await this.findById(savedOrder.id);
+    this.pubSub.publish('orderCreated', { orderCreated: fullNew });
+    this.pubSub.publish('orderUpdated', { orderUpdated: fullNew });
 
     return savedOrder;
   }
@@ -541,8 +577,12 @@ export class OrdersService {
   async findByCustomer(customerId: string): Promise<Order[]> {
     return this.ordersRepository.find({
       where: { customer: { id: customerId } },
-      relations: ['store', 'items', 'items.product', 'delivery'],
+      // 'customer' é @Field(() => AppUser) NÃO-nulável; sem a relation, um
+      // `myOrders { customer { ... } }` 500a a lista toda.
+      relations: ['store', 'items', 'items.product', 'delivery', 'customer'],
       order: { createdAt: 'DESC' },
+      // Error#3: cap de segurança contra carga ilimitada (ver findByStore).
+      take: 500,
     });
   }
 
@@ -558,6 +598,11 @@ export class OrdersService {
         'delivery.deliverer',
       ],
       order: { createdAt: 'DESC' },
+      // Error#3: cap de segurança. Sem limite, uma loja com histórico grande
+      // carregava TODOS os pedidos com relações profundas a cada abertura do painel
+      // (e a cada mensagem no agente n8n) → pico de memória e query lenta. 500 mais
+      // recentes cobre os painéis reais (que filtram por status/data).
+      take: 500,
     });
   }
 
@@ -685,6 +730,10 @@ export class OrdersService {
       .leftJoin('order.delivery', 'delivery')
       .where('order.status = :status', { status: OrderStatus.READY })
       .andWhere('(delivery.id IS NULL OR delivery.delivererId IS NULL)')
+      // Pedidos de retirada (pickup) não precisam de entregador — não devem
+      // aparecer na lista de entregas disponíveis (senão um entregador aceita
+      // e ganha um payout de taxa que nunca foi cobrada do cliente).
+      .andWhere('order.isPickup = false')
       .orderBy('order.createdAt', 'ASC')
       .getMany();
     return orders;
@@ -822,8 +871,20 @@ export class OrdersService {
       throw new BadRequestException('Recebimento ja confirmado');
     }
 
+    // R#7: claim atômico. ANTES o check de `customerConfirmedAt` e o set eram
+    // passos separados; a confirmação do cliente podia rodar junto com a
+    // auto-confirmação do scheduler (10min) e ambas passavam, chamando
+    // completeOrderWithPayment 2x (o dinheiro é seguro — aquele método tem guard
+    // atômico de status — mas gerava "Pedido finalizado" duplicado e trabalho
+    // redundante). Só segue quem gravar a data.
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "customerConfirmedAt" = NOW() WHERE id = $1 AND "customerConfirmedAt" IS NULL RETURNING id`,
+      [order.id],
+    );
+    if (!claim || claim.length === 0) {
+      throw new BadRequestException('Recebimento ja confirmado');
+    }
     order.customerConfirmedAt = new Date();
-    await this.ordersRepository.save(order);
     return this.completeOrderWithPayment(order);
   }
 
@@ -1068,6 +1129,19 @@ export class OrdersService {
           await this.productsService.restoreStock(
             item.product.id,
             item.quantity,
+          );
+        }
+      }
+      // Devolve o uso do cupom (mesmo motivo do refundOrder: o refund seta
+      // CANCELLED direto, pulando o updateStatus que decrementa). Idempotente.
+      if (order.coupon?.id && order.couponCredited) {
+        try {
+          await this.couponsService.decrementUsage(order.coupon.id);
+          await this.ordersRepository.update(order.id, { couponCredited: false });
+        } catch (err: any) {
+          console.error(
+            `Failed to decrement coupon usage for order ${order.id}:`,
+            err?.message,
           );
         }
       }
@@ -1493,6 +1567,23 @@ export class OrdersService {
       }
     }
 
+    // Devolve o uso do cupom. refundOrder cancela via paymentsService, que seta
+    // CANCELLED direto no banco — pulando updateStatus, onde o decremento de
+    // cupom vive. Sem isto, um pedido pago com cupom de uso limitado, ao ser
+    // estornado, mantinha o uso consumido para sempre (furava o limite). Mesmo
+    // guard idempotente do updateStatus (couponCredited).
+    if (order.coupon?.id && order.couponCredited) {
+      try {
+        await this.couponsService.decrementUsage(order.coupon.id);
+        await this.ordersRepository.update(order.id, { couponCredited: false });
+      } catch (err: any) {
+        console.error(
+          `Failed to decrement coupon usage for order ${order.id}:`,
+          err?.message,
+        );
+      }
+    }
+
     const updated = await this.findById(orderId);
     this.pubSub.publish('orderUpdated', { orderUpdated: updated });
     return updated;
@@ -1509,6 +1600,24 @@ export class OrdersService {
     if (!allowed.includes(status)) {
       throw new BadRequestException(
         `Nao pode mudar de ${order.status} para ${status}`,
+      );
+    }
+
+    // R#5: claim ATÔMICO da transição. ANTES a validade era checada contra
+    // STATUS_TRANSITIONS[order.status] em memória e o novo status só era gravado
+    // no fim — dois cancelamentos concorrentes (ex.: cliente cancela + scheduler
+    // expira o mesmo pedido) viam o mesmo `fromStatus`, ambos passavam e cada um
+    // restaurava estoque / decrementava cupom (estoque inflado, cupom decrementado
+    // 2x). Este UPDATE condicional garante que só UM caller efetua a transição —
+    // e portanto os efeitos colaterais abaixo rodam uma única vez.
+    const claimFrom = order.status;
+    const transitionClaim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET status = $2 WHERE id = $1 AND status = $3 RETURNING id`,
+      [id, status, claimFrom],
+    );
+    if (!transitionClaim || transitionClaim.length === 0) {
+      throw new BadRequestException(
+        `Nao pode mudar de ${claimFrom} para ${status}`,
       );
     }
 

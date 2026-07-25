@@ -1378,6 +1378,11 @@
   dependencies:
     tslib "2.8.1"
 
+"@nestjs/throttler@^6.5.0":
+  version "6.5.0"
+  resolved "https://registry.yarnpkg.com/@nestjs/throttler/-/throttler-6.5.0.tgz#1ee550a258c4ae697d3978f2c8932adff927439e"
+  integrity sha512-9j0ZRfH0QE1qyrj9JjIRDz5gQLPqq9yVC2nHsrosDVAfI5HHw08/aUAWx9DZLSdQf4HDkmhTTEGLrRFHENvchQ==
+
 "@nestjs/typeorm@^11.0.0":
   version "11.0.0"
   resolved "https://registry.npmjs.org/@nestjs/typeorm/-/typeorm-11.0.0.tgz"
@@ -2794,6 +2799,11 @@ array-timsort@^1.0.3:
   version "1.0.3"
   resolved "https://registry.npmjs.org/array-timsort/-/array-timsort-1.0.3.tgz"
   integrity sha512-/+3GRL7dDAGEfM6TseQk/U+mi18TU2Ms9I3UlLdUMhz2hbvGNTKdj9xniwXfUqgYhHxRx0+8UnKkvlNwVU+cWQ==
+
+arrify@^1.0.1:
+  version "1.0.1"
+  resolved "https://registry.yarnpkg.com/arrify/-/arrify-1.0.1.tgz#898508da2226f380df904728456849c1501a4b0d"
+  integrity sha512-3CYzex9M9FGQjCGMGyi6/31c8GJbgb0qGyrx5HWxPd0aCwh4cB2YjMb2Xf9UuoogrMrlO9cTqnB5rI5GHZTcUA==
 
 asap@^2.0.0:
   version "2.0.6"
@@ -4271,6 +4281,13 @@ graceful-fs@^4.1.2, graceful-fs@^4.1.6, graceful-fs@^4.2.0, graceful-fs@^4.2.11,
   version "4.2.11"
   resolved "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz"
   integrity sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==
+
+graphql-depth-limit@^1.1.0:
+  version "1.1.0"
+  resolved "https://registry.yarnpkg.com/graphql-depth-limit/-/graphql-depth-limit-1.1.0.tgz#59fe6b2acea0ab30ee7344f4c75df39cc18244e8"
+  integrity sha512-+3B2BaG8qQ8E18kzk9yiSdAa75i/hnnOwgSeAxVJctGQPvmeiLtqKOYF6HETCyRjiF7Xfsyal0HbLlxCQkgkrw==
+  dependencies:
+    arrify "^1.0.1"
 
 graphql-subscriptions@^3.0.0:
   version "3.0.0"

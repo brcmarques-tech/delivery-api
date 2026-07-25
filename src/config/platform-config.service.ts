@@ -107,7 +107,10 @@ export class PlatformConfigService {
       },
     };
     const def = defaults[plan] || defaults.FREE;
-    const p = plan.toLowerCase();
+    // Blindagem: um vendedor sem plano definido (vendorPlan null) chegava aqui e
+    // quebrava em plan.toLowerCase(), derrubando o fluxo do chamador (ex.: criar
+    // agendamento com pagamento online falhava por completo). Sem plano => FREE.
+    const p = (plan || 'FREE').toLowerCase();
 
     const maxStores = parseInt(await this.get(`plan_${p}_max_stores`, String(def.maxStores)));
     const commissionPercent = parseFloat(await this.get(`plan_${p}_commission_percent`, String(def.commissionPercent)));

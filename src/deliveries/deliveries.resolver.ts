@@ -82,9 +82,26 @@ export class DeliveriesResolver {
     return this.delivererTracker.getOnlineCount();
   }
 
+  // KAN: ownership da subscription de entrega. ANTES: sem `orderId` emitia TODAS
+  // as entregas (GPS do entregador em tempo real + status) pra qualquer cliente,
+  // e com `orderId` não checava se o assinante era parte do pedido. Agora exige
+  // autenticação (context.wsUser), exige orderId (fim do firehose) e só entrega a
+  // quem é o entregador atribuído, o cliente ou o dono da loja do pedido.
   @Subscription(() => Delivery, {
-    filter: (payload, variables) =>
-      !variables.orderId || payload.deliveryUpdated.order?.id === variables.orderId,
+    filter: (payload, variables, context) => {
+      const delivery = payload.deliveryUpdated;
+      const user = context?.wsUser;
+      if (!user) return false;
+      if (!variables.orderId) return false;
+      if (delivery?.order?.id !== variables.orderId) return false;
+      if (user.role === 'SUPERADMIN') return true;
+      const uid = user.sub;
+      return (
+        delivery?.deliverer?.id === uid ||
+        delivery?.order?.customer?.id === uid ||
+        delivery?.order?.store?.owner?.id === uid
+      );
+    },
   })
   deliveryUpdated(@Args('orderId', { nullable: true }) orderId?: string) {
     return this.pubSub.asyncIterableIterator('deliveryUpdated');

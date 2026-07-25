@@ -393,6 +393,9 @@ describe('PaymentsService', () => {
       const mockOrderRepo = {
         findOne: jest.fn().mockResolvedValue(mockOrder),
         save: jest.fn().mockResolvedValue(mockOrder),
+        // R#4: a confirmação virou um UPDATE ... RETURNING atômico (dedup entre
+        // order.paid e charge.paid). Retornar uma linha = este webhook venceu o claim.
+        manager: { query: jest.fn().mockResolvedValue([{ id: 'order-1' }]) },
       };
       paymentsRepo.manager.getRepository.mockReturnValue(mockOrderRepo);
 
@@ -405,8 +408,10 @@ describe('PaymentsService', () => {
         },
       });
 
-      expect(mockOrderRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ status: OrderStatus.PENDING }),
+      // A transição para PENDING agora é feita pelo UPDATE condicional atômico.
+      expect(mockOrderRepo.manager.query).toHaveBeenCalledWith(
+        expect.stringContaining("status = 'PENDING'"),
+        expect.arrayContaining(['order-1']),
       );
     });
 

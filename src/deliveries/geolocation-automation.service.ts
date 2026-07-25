@@ -24,6 +24,11 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
     private notificationsService: NotificationsService,
   ) {}
 
+  // Guard de reentrância: o ciclo faz chamadas de rede/settlement; se um ciclo
+  // demora mais que 30s, o próximo não deve rodar concorrente e reprocessar as
+  // mesmas entregas (notificação/auto-confirm duplicados).
+  private isRunning = false;
+
   onModuleInit() {
     // Check every 30 seconds
     this.intervalId = setInterval(() => {
@@ -49,6 +54,8 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
   }
 
   private async checkActiveDeliveries() {
+    if (this.isRunning) return;
+    this.isRunning = true;
     try {
       // Find active deliveries
       const activeDeliveries = await this.deliveriesRepository
@@ -70,8 +77,19 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
       for (const delivery of activeDeliveries) {
         await this.processDelivery(delivery);
       }
+
+      // Purga o mapa previousDistances. Uma entrega concluída/cancelada nunca
+      // reaparece na query acima, então a limpeza baseada em status (mais abaixo)
+      // era código morto e cada entrega deixava um array de pontos preso na
+      // memória para sempre. Remove tudo que não está mais no conjunto ativo.
+      const activeIds = new Set(activeDeliveries.map((d) => d.id));
+      for (const id of this.previousDistances.keys()) {
+        if (!activeIds.has(id)) this.previousDistances.delete(id);
+      }
     } catch (err) {
       this.logger.error('Geolocation check failed:', err);
+    } finally {
+      this.isRunning = false;
     }
   }
 

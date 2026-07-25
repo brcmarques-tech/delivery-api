@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, OnModuleDestroy } from '@nestjs/common';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { MailService } from '../mail/mail.service';
 
@@ -16,8 +16,10 @@ interface OtpEntry {
 const VERIFIED_PROOF_TTL_MS = 15 * 60 * 1000;
 
 @Injectable()
-export class OtpService {
+export class OtpService implements OnModuleDestroy {
   private readonly logger = new Logger(OtpService.name);
+  // Error#5: guarda o handle do interval para poder limpar no teardown.
+  private cleanupInterval?: ReturnType<typeof setInterval>;
   // key = "phone:5599999999" or "email:user@mail.com"
   private readonly store = new Map<string, OtpEntry>();
 
@@ -41,7 +43,7 @@ export class OtpService {
     private whatsAppService: WhatsAppService,
     private mailService: MailService,
   ) {
-    setInterval(() => {
+    this.cleanupInterval = setInterval(() => {
       const now = Date.now();
       for (const [key, entry] of this.store) {
         if (entry.expiresAt < now) this.store.delete(key);
@@ -50,6 +52,10 @@ export class OtpService {
         if (expiresAt < now) this.verified.delete(key);
       }
     }, 5 * 60 * 1000);
+  }
+
+  onModuleDestroy() {
+    if (this.cleanupInterval) clearInterval(this.cleanupInterval);
   }
 
   private phoneKey(phone: string): string {

@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { timingSafeEqual } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { StoresService } from '../stores/stores.service';
 import { OrdersService } from '../orders/orders.service';
@@ -39,7 +40,14 @@ export class N8nAgentController {
 
   private checkAuth(key: string) {
     const expected = this.configService.get<string>('N8N_AGENT_KEY');
-    if (!expected || key !== expected) throw new UnauthorizedException();
+    if (!expected) throw new UnauthorizedException();
+    // #6: comparação em tempo constante (igual ao webhook do Pagar.me), evitando
+    // o vazamento de timing do `!==` que permitiria descobrir a chave byte a byte.
+    const a = Buffer.from(String(key || ''));
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new UnauthorizedException();
+    }
   }
 
   @Get('stores/by-phone')
@@ -117,8 +125,11 @@ export class N8nAgentController {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const todayOrders = orders.filter((o) => new Date(o.createdAt) >= today);
-    const delivered = todayOrders.filter(
-      (o) => o.status === OrderStatus.DELIVERED,
+    // O caminho feliz termina em COMPLETED (DELIVERING -> DELIVERER_CONFIRMED_DELIVERY
+    // -> COMPLETED); DELIVERED é um estado alternativo. Filtrar só DELIVERED fazia
+    // o agente reportar ~R$0 de receita mesmo em dias cheios de pedidos concluídos.
+    const delivered = todayOrders.filter((o) =>
+      [OrderStatus.DELIVERED, OrderStatus.COMPLETED].includes(o.status),
     );
     const inProgress = todayOrders.filter((o) =>
       [
@@ -127,6 +138,9 @@ export class N8nAgentController {
         OrderStatus.PREPARING,
         OrderStatus.READY,
         OrderStatus.DELIVERING,
+        OrderStatus.PICKED_UP,
+        OrderStatus.VENDOR_CONFIRMED_PICKUP,
+        OrderStatus.DELIVERER_CONFIRMED_DELIVERY,
       ].includes(o.status),
     );
     const revenue = delivered.reduce((sum, o) => sum + Number(o.total), 0);
@@ -332,6 +346,23 @@ export class N8nAgentController {
     @Headers('x-n8n-key') key: string,
   ) {
     this.checkAuth(key);
+
+    // #4: exige um identificador de POSSE. ANTES, um corpo só com
+    // {orderNumber,status} pulava as duas checagens abaixo e transicionava
+    // QUALQUER pedido para QUALQUER status — inclusive COMPLETED, que dispara o
+    // repasse (settlePayment). Agora é obrigatório storeId OU customerId.
+    if (!body.storeId && !body.customerId) {
+      throw new ForbiddenException('Informe storeId ou customerId para atualizar o pedido.');
+    }
+
+    // #4: o agente não pode dirigir estados de entrega/liquidação (que movem
+    // dinheiro): PICKED_UP/DELIVERING/DELIVERED/DELIVERER_CONFIRMED_DELIVERY/
+    // COMPLETED/VENDOR_CONFIRMED_PICKUP ficam de fora.
+    const AGENT_ALLOWED_STATUSES = ['ACCEPTED', 'PREPARING', 'READY', 'CANCELLED', 'REJECTED'];
+    if (!AGENT_ALLOWED_STATUSES.includes(body.status)) {
+      throw new ForbiddenException('O agente nao pode definir este status do pedido.');
+    }
+
     const order = await this.ordersService.findByOrderNumber(body.orderNumber);
     if (!order) throw new NotFoundException('Pedido nao encontrado');
 

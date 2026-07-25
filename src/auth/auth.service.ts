@@ -154,12 +154,18 @@ export class AuthService {
     return { accessToken, user };
   }
 
+  // A#1: ANTES o logout zerava o sessionToken (null). Mas o `validate()` só
+  // rejeita quando o token armazenado EXISTE e difere — com null, a checagem era
+  // pulada e QUALQUER JWT ainda não expirado continuava válido após o logout (até
+  // 7 dias). Agora rotacionamos para um novo valor aleatório: nenhum JWT emitido
+  // antes casa mais, então todos são invalidados de fato. Um novo login gera um
+  // novo sessionToken e um JWT que casa.
   async logoutApp(userId: string): Promise<void> {
-    await this.appUserRepo.update(userId, { sessionToken: null as any });
+    await this.appUserRepo.update(userId, { sessionToken: this.generateSessionToken() });
   }
 
   async logoutVendor(userId: string): Promise<void> {
-    await this.vendorUserRepo.update(userId, { sessionToken: null as any });
+    await this.vendorUserRepo.update(userId, { sessionToken: this.generateSessionToken() });
   }
 
   async requestPasswordResetApp(email: string): Promise<string> {
@@ -276,8 +282,15 @@ export class AuthService {
     if (!user) {
       user = await this.vendorUserRepo.findOne({ where: { email } });
       if (user) {
+        // A#3: só vincula uma conta existente (por email) se o email do Google
+        // for verificado. Sem isso, um token Google com email não-verificado
+        // igual ao da vítima (viável em domínio Google Workspace do atacante)
+        // vincularia o googleId dele à conta da vítima → takeover.
+        if (!email_verified) {
+          throw new BadRequestException('Email Google nao verificado. Nao e possivel vincular a conta.');
+        }
         user.googleId = googleId;
-        if (email_verified) user.emailVerified = true;
+        user.emailVerified = true;
         await this.vendorUserRepo.save(user);
       }
     }
@@ -289,14 +302,21 @@ export class AuthService {
 
   async googleAuthMobile(userInfo: { sub: string; email: string; name?: string; email_verified?: boolean }, userType: string) {
     const { sub: googleId, email, email_verified } = userInfo;
+    // A#6: este método NÃO está ligado a nenhum resolver hoje (dead code) e ainda
+    // confia num userInfo cru sem verificar o token Google. Se um dia for exposto,
+    // precisa verificar o token (verifyGoogleToken + assertGoogleAudience) antes.
+    // Por ora, ao menos exige email verificado para vincular por email (A#3).
 
     if (userType === 'vendor') {
       let user = await this.vendorUserRepo.findOne({ where: { googleId } });
       if (!user) {
         user = await this.vendorUserRepo.findOne({ where: { email } });
         if (user) {
+          if (!email_verified) {
+            throw new BadRequestException('Email Google nao verificado. Nao e possivel vincular a conta.');
+          }
           user.googleId = googleId;
-          if (email_verified) user.emailVerified = true;
+          user.emailVerified = true;
           await this.vendorUserRepo.save(user);
         }
       }
@@ -310,8 +330,11 @@ export class AuthService {
     if (!user) {
       user = await this.appUserRepo.findOne({ where: { email } });
       if (user) {
+        if (!email_verified) {
+          throw new BadRequestException('Email Google nao verificado. Nao e possivel vincular a conta.');
+        }
         user.googleId = googleId;
-        if (email_verified) user.emailVerified = true;
+        user.emailVerified = true;
         await this.appUserRepo.save(user);
       }
     }
@@ -333,8 +356,13 @@ export class AuthService {
     if (!user) {
       user = await this.appUserRepo.findOne({ where: { email } });
       if (user) {
+        // A#3: só vincula por email se o email do Google for verificado (evita
+        // account takeover via email não-verificado).
+        if (!email_verified) {
+          throw new BadRequestException('Email Google nao verificado. Nao e possivel vincular a conta.');
+        }
         user.googleId = googleId;
-        if (email_verified) user.emailVerified = true;
+        user.emailVerified = true;
         await this.appUserRepo.save(user);
       }
     }

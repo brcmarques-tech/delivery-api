@@ -73,6 +73,16 @@ export class DeliveriesService implements OnModuleInit {
         throw new BadRequestException('Pedido não encontrado.');
       }
 
+      // O pedido precisa estar READY para ser aceito para entrega. Sem isto, um
+      // entregador podia aceitar pedido PENDING/CANCELLED/COMPLETED: travava o
+      // cancelamento pelo vendedor, emperrava o pickup (transição inválida) e a
+      // delivery com deliveredAt nulo o prendia como "entrega ativa" para sempre.
+      if (lockedOrder[0].status !== OrderStatus.READY) {
+        throw new BadRequestException(
+          'Pedido não está disponível para entrega.',
+        );
+      }
+
       // Check if delivery already exists for this order
       const existing = await manager.query(
         `SELECT d.id, d."delivererId" FROM deliveries d WHERE d."orderId" = $1`,
@@ -107,7 +117,7 @@ export class DeliveriesService implements OnModuleInit {
     // Stop the offer cascade — delivery was accepted
     this.offerService.cancelOffer(orderId);
 
-    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+    await this.publishDeliveryUpdate(saved.id);
     // Publish orderUpdated so vendor panel sees the deliverer info
     const updatedOrder = await this.ordersService.findById(orderId);
     this.pubSub.publish('orderUpdated', { orderUpdated: updatedOrder });
@@ -115,6 +125,20 @@ export class DeliveriesService implements OnModuleInit {
     // The order disappears from "Disponíveis" because it now has a delivery record
     this.notifyVendorDeliveryAccepted(order, deliverer);
     return saved;
+  }
+
+  // KAN: publica deliveryUpdated sempre com o delivery COMPLETO (order.customer,
+  // order.store.owner e deliverer). Necessário para (1) o filtro de ownership da
+  // subscription conseguir decidir quem é parte do pedido e (2) clientes poderem
+  // selecionar os campos aninhados do pedido sem 500 (campos não-nuláveis).
+  private async publishDeliveryUpdate(deliveryId: string): Promise<void> {
+    const full = await this.deliveriesRepository.findOne({
+      where: { id: deliveryId },
+      relations: ['order', 'order.store', 'order.store.owner', 'order.customer', 'deliverer'],
+    });
+    if (full) {
+      this.pubSub.publish('deliveryUpdated', { deliveryUpdated: full });
+    }
   }
 
   private notifyVendorDeliveryAccepted(order: any, deliverer: AppUser) {
@@ -143,7 +167,7 @@ export class DeliveriesService implements OnModuleInit {
     delivery.currentLatitude = latitude;
     delivery.currentLongitude = longitude;
     const saved = await this.deliveriesRepository.save(delivery);
-    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+    await this.publishDeliveryUpdate(saved.id);
 
     // First location: notify vendor panel so GPS button appears without F5
     if (wasFirstLocation) {
@@ -174,7 +198,7 @@ export class DeliveriesService implements OnModuleInit {
     // Pre-auth stays active — capture happens with split on customer confirmation
     await this.ordersService.updateStatus(order.id, OrderStatus.PICKED_UP);
     const savedDelivery = await this.deliveriesRepository.save(delivery);
-    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
+    await this.publishDeliveryUpdate(savedDelivery.id);
     return savedDelivery;
   }
 
@@ -231,7 +255,7 @@ export class DeliveriesService implements OnModuleInit {
     await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERER_CONFIRMED_DELIVERY);
 
     const savedDelivery = await this.deliveriesRepository.save(delivery);
-    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
+    await this.publishDeliveryUpdate(savedDelivery.id);
     return savedDelivery;
   }
 

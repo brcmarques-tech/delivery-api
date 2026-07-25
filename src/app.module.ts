@@ -5,6 +5,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { SentryGlobalFilter } from '@sentry/nestjs/setup';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
+import { ThrottlerModule } from '@nestjs/throttler';
+import depthLimit from 'graphql-depth-limit';
 import { verify as jwtVerify } from 'jsonwebtoken'; // KAN-253
 import { join } from 'path';
 import { AuthModule } from './auth/auth.module';
@@ -46,6 +48,11 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
   ],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+
+    // Input#1 / A#4: base do rate limiting. O guard só é aplicado (escopado) nas
+    // mutations de auth (login/registro/OTP) — ver auth.resolver — para não
+    // contar cada field resolver do GraphQL contra o limite.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
 
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -102,6 +109,10 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
       driver: ApolloDriver,
       autoSchemaFile: true,
       sortSchema: true,
+      // Input#1: limite de profundidade contra DoS por query aninhada nas relações
+      // cíclicas (store → products → store → owner → ...). 12 níveis cobrem as
+      // queries reais do app com folga.
+      validationRules: [depthLimit(12)],
       // KAN-228: playground e introspection ficavam ligados incondicionalmente,
       // inclusive em producao — qualquer um baixava o schema inteiro da API
       // (todo o modelo de dados e mutations) e tinha uma IDE pronta pra

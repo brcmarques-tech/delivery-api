@@ -160,15 +160,35 @@ export class VerificationService {
       );
     }
 
-    const rewards = await this.configService.getBadgeRewards(level);
-    const isFirstEver = store.badgeClaimCount === 0;
-
-    store.freePromoDaysCredit = rewards.freePromoDays || 0;
-
-    if (rewards.commissionReduction > 0) {
-      store.commissionReductionPercent = rewards.commissionReduction;
-      store.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    // R#2: claim ATÔMICO dos pontos + contador. ANTES o check acima e o
+    // incremento de `lastClaimedScore`/`badgeClaimCount` eram um read-modify-write
+    // sem lock → dois `claimBadgeReward` concorrentes liam o mesmo
+    // `lastClaimedScore`, ambos passavam, e resgatavam os MESMOS pontos duas vezes
+    // (trial/cupom/redução de comissão em dobro; o incremento sofria lost update).
+    // O UPDATE condicional garante que só um claim consome os pontos.
+    const claim = await this.storesRepository.manager.query(
+      `UPDATE stores
+          SET "lastClaimedScore" = "lastClaimedScore" + $2,
+              "badgeClaimCount" = "badgeClaimCount" + 1
+        WHERE id = $1 AND ("verificationScore" - "lastClaimedScore") >= $2
+        RETURNING "badgeClaimCount"`,
+      [storeId, threshold],
+    );
+    if (!claim || claim.length === 0) {
+      throw new BadRequestException('Recompensa já resgatada ou pontos insuficientes.');
     }
+    const isFirstEver = Number(claim[0].badgeClaimCount) === 1;
+
+    const rewards = await this.configService.getBadgeRewards(level);
+
+    // Recompensas que ficam na própria loja — aplicadas via update direto para
+    // NÃO sobrescrever `lastClaimedScore`/`badgeClaimCount` já gravados no claim.
+    const storeUpdates: any = { freePromoDaysCredit: rewards.freePromoDays || 0 };
+    if (rewards.commissionReduction > 0) {
+      storeUpdates.commissionReductionPercent = rewards.commissionReduction;
+      storeUpdates.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    }
+    await this.storesRepository.update(storeId, storeUpdates);
 
     if (isFirstEver) {
       if (rewards.freeTrialDays > 0 && store.owner?.id) {
@@ -180,16 +200,15 @@ export class VerificationService {
       }
     }
 
-    store.lastClaimedScore += threshold;
-    store.badgeClaimCount += 1;
-
-    const saved = await this.storesRepository.save(store);
-
     if (store.owner?.phone) {
       this.whatsAppService.notifyBadgeReward(store.owner.phone, store.name, level).catch(() => {});
     }
 
-    return saved;
+    const saved = await this.storesRepository.findOne({
+      where: { id: storeId },
+      relations: ['owner'],
+    });
+    return saved as Store;
   }
 
   async getClaimableInfo(store: Store): Promise<{

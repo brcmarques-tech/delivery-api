@@ -118,16 +118,18 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Pagar.me HTTP helpers ────────────────────────────────────────────
 
-  private async pagarmePost<T = any>(path: string, body: any): Promise<T> {
+  private async pagarmePost<T = any>(path: string, body: any, idempotencyKey?: string): Promise<T> {
+    const headers: Record<string, string> = {
+      'Authorization': this.pagarmeAuthHeader,
+      'Content-Type': 'application/json',
+    };
+    // Error#2: chave de idempotência opcional. O Pagar.me deduplica POSTs com a
+    // mesma chave, então re-tentar uma transferência de repasse não paga em dobro.
+    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
     const response = await this.httpService.axiosRef.post(
       `${this.pagarmeBaseUrl}${path}`,
       body,
-      {
-        headers: {
-          'Authorization': this.pagarmeAuthHeader,
-          'Content-Type': 'application/json',
-        },
-      },
+      { headers },
     );
     return response.data;
   }
@@ -1013,7 +1015,7 @@ export class PaymentsService implements OnModuleDestroy {
                 order_number: order.orderNumber,
                 type: 'chargeback_reversal_deliverer',
               },
-            });
+            }, `reverse-${order.id}-deliverer`);
             this.logger.log(`Reversed deliverer transfer for order #${order.orderNumber} | amount: ${delivererAmount} cents`);
           } catch (err: any) {
             this.logger.error(`CRITICAL: Failed to reverse deliverer transfer for order #${order.orderNumber}: ${JSON.stringify(err.response?.data || err.message)}`);
@@ -1039,7 +1041,7 @@ export class PaymentsService implements OnModuleDestroy {
               order_number: order.orderNumber,
               type: 'chargeback_reversal_vendor',
             },
-          });
+          }, `reverse-${order.id}-vendor`);
           this.logger.log(`Reversed vendor transfer for order #${order.orderNumber} | amount: ${vendorAmount} cents`);
         } catch (err: any) {
           this.logger.error(`CRITICAL: Failed to reverse vendor transfer for order #${order.orderNumber}: ${JSON.stringify(err.response?.data || err.message)}`);
@@ -1118,7 +1120,7 @@ export class PaymentsService implements OnModuleDestroy {
                 order_number: order.orderNumber,
                 type: 'delivery_fee',
               },
-            });
+            }, `settle-${order.id}-deliverer`);
             this.logger.log(`Transfer to deliverer for order #${order.orderNumber} | amount: ${delivererAmount} cents | transfer: ${result.id}`);
           } catch (err: any) {
             const errorDetail = JSON.stringify(err.response?.data || err.message);
@@ -1152,7 +1154,7 @@ export class PaymentsService implements OnModuleDestroy {
               order_number: order.orderNumber,
               type: 'vendor_payment',
             },
-          });
+          }, `settle-${order.id}-vendor`);
           this.logger.log(`Transfer to vendor for order #${order.orderNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
         } catch (err: any) {
           const errorDetail = JSON.stringify(err.response?.data || err.message);
@@ -1187,8 +1189,15 @@ export class PaymentsService implements OnModuleDestroy {
 
     // Track failed settlements in order notes for superadmin visibility
     if (settlementErrors.length > 0) {
+      // Error#2: reabre o settlement (isSettled=false) para o
+      // retryFailedSettlements (KAN-205) re-tentar. ANTES o PIX marcava
+      // isSettled=true e engolia a falha da transferência → vendedor nunca pago e
+      // nunca re-tentado. Agora é seguro re-tentar porque as transferências usam
+      // Idempotency-Key (`settle-<order>-vendor/deliverer`): o Pagar.me deduplica,
+      // então a que já deu certo NÃO é paga de novo, só a que falhou é re-tentada.
       await orderRepo.update(order.id, {
         notes: `${order.notes || ''}\n[SETTLEMENT_ERRORS] ${settlementErrors.join(' | ')}`.trim(),
+        isSettled: false,
       });
     }
 
@@ -1294,9 +1303,22 @@ export class PaymentsService implements OnModuleDestroy {
         }
       }
     }
+    // O plano no Pagar.me é criado pelo preço CHEIO do período; o desconto de
+    // selo é aplicado por assinante via `discounts[].value` (flat, em centavos).
+    // Por isso o valor do desconto tem que ser calculado sobre o preço cheio.
+    // ANTES: `billing.price` era mutado para o valor já descontado ANTES de
+    // calcular o `discounts[].value` (linha do discountCents), que então usava o
+    // preço já descontado como base → desconto sub-dimensionado, vendor cobrado a
+    // mais TODO ciclo, e o `Payment.amount`/`Subscription.amount` gravado (preço
+    // descontado) divergia da cobrança real do Pagar.me.
+    const fullPriceCents = Math.round(billing.price * 100);
+    const badgeDiscountCents = badgeDiscount > 0
+      ? Math.round(fullPriceCents * badgeDiscount / 100)
+      : 0;
     if (badgeDiscount > 0) {
-      billing.price = Math.round(billing.price * (1 - badgeDiscount / 100) * 100) / 100;
-      this.logger.log(`Applied ${badgeDiscount}% badge subscription discount for vendor ${user.id}`);
+      // Preço líquido efetivamente cobrado (cheio − desconto), para os registros locais.
+      billing.price = (fullPriceCents - badgeDiscountCents) / 100;
+      this.logger.log(`Applied ${badgeDiscount}% badge subscription discount for vendor ${user.id} (full: ${fullPriceCents}c, desconto: ${badgeDiscountCents}c)`);
     }
 
     const totalCents = Math.round(billing.price * 100);
@@ -1336,11 +1358,12 @@ export class PaymentsService implements OnModuleDestroy {
       subscriptionBody.installments = installmentsCount;
     }
 
-    // Apply badge discount as flat discount on the subscription
-    if (badgeDiscount > 0) {
-      const discountCents = Math.round(totalCents * badgeDiscount / 100);
+    // Apply badge discount as flat discount on the subscription.
+    // Usa o desconto calculado sobre o preço CHEIO (badgeDiscountCents), não
+    // sobre o preço já descontado — senão o vendor era cobrado a mais.
+    if (badgeDiscountCents > 0) {
       subscriptionBody.discounts = [{
-        value: discountCents,
+        value: badgeDiscountCents,
         discount_type: 'flat',
         cycles: 0, // permanent
       }];
@@ -1366,8 +1389,11 @@ export class PaymentsService implements OnModuleDestroy {
       });
       await this.subscriptionsRepository.save(subscription);
 
-      // Update vendor user with subscription ID
-      await this.vendorUsersService.updateVendorPlan(user.id, plan, billing.months);
+      // NÃO concede o plano aqui. Criar a assinatura NÃO é pagamento: em PIX/boleto
+      // a primeira fatura nasce pendente, então conceder o plano na criação dava
+      // plano premium DE GRAÇA a quem nunca pagava (e não era rebaixado). O plano
+      // agora é concedido só no webhook invoice.paid (handleInvoicePaid), o único
+      // sinal real de pagamento confirmado — vale igual para cartão, PIX e boleto.
       await this.paymentsRepository.manager.getRepository(VendorUser).update(user.id, {
         pagarmeSubscriptionId: result.id,
         pagarmeCustomerId: customerId,
@@ -1850,6 +1876,56 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
+  // #1/#2/#3: verificação OUT-OF-BAND da cobrança. O corpo do webhook é forjável
+  // (endpoint protegido só por Basic Auth, sem assinatura HMAC — o Pagar.me v5 não
+  // envia uma). Antes de mover dinheiro (confirmar pagamento, reverter repasse),
+  // re-consultamos o Pagar.me, que é a autoridade, e conferimos status (e valor,
+  // para os eventos de pagamento).
+  //
+  // Gated por `VERIFY_WEBHOOK_CHARGE` (default OFF): ligar às cegas poderia
+  // rejeitar webhooks legítimos se a semântica de status do Pagar.me divergir do
+  // esperado (ex.: pré-autorização de cartão). Ligue em produção depois de validar
+  // com cobranças reais do sandbox — mesmo padrão de rollout do REQUIRE_WS_AUTH.
+  // Fail-safe: qualquer incerteza (cobrança não encontrada / erro de rede) NÃO
+  // confirma → o Pagar.me re-tenta o webhook.
+  private async webhookChargeConfirms(
+    chargeId: string | null,
+    pagarmeOrderId: string | null,
+    order: Order,
+    acceptableStatuses: string[],
+    checkAmount: boolean,
+  ): Promise<boolean> {
+    if (this.configService.get('VERIFY_WEBHOOK_CHARGE') !== 'true') return true;
+    try {
+      let charge: any = null;
+      if (chargeId) {
+        charge = await this.pagarmeGet(`/charges/${chargeId}`);
+      } else if (pagarmeOrderId) {
+        const pOrder = await this.pagarmeGet(`/orders/${pagarmeOrderId}`);
+        charge = pOrder?.charges?.[0];
+      }
+      if (!charge) {
+        this.logger.error(`[VERIFY] cobranca nao encontrada no Pagar.me p/ pedido #${order.orderNumber} — webhook REJEITADO`);
+        return false;
+      }
+      if (!acceptableStatuses.includes(charge.status)) {
+        this.logger.error(`[VERIFY] charge status=${charge.status} nao aceito (esperado: ${acceptableStatuses.join('/')}) p/ #${order.orderNumber} — REJEITADO`);
+        return false;
+      }
+      if (checkAmount) {
+        const expectedCents = Math.round(Number(order.total) * 100);
+        if (Number(charge.amount) !== expectedCents) {
+          this.logger.error(`[VERIFY] charge amount ${charge.amount} != total ${expectedCents} p/ #${order.orderNumber} — POSSIVEL FORJA, REJEITADO`);
+          return false;
+        }
+      }
+      return true;
+    } catch (err: any) {
+      this.logger.error(`[VERIFY] falha ao consultar Pagar.me p/ #${order.orderNumber}: ${err.message} — nao confirma (Pagar.me re-tenta)`);
+      return false;
+    }
+  }
+
   private async handleOrderPaid(data: any): Promise<void> {
     const pagarmeOrderId = data.id;
     const metadata = data.metadata || {};
@@ -1923,20 +1999,35 @@ export class PaymentsService implements OnModuleDestroy {
       });
 
       if (order && (order.status === OrderStatus.AWAITING_PAYMENT || order.status === OrderStatus.PAYMENT_REVIEW)) {
-        // Update mpPreferenceId with real Pagar.me order ID (replaces placeholder from payment link flow)
-        if (order.mpPreferenceId?.startsWith('link-') && pagarmeOrderId) {
-          order.mpPreferenceId = pagarmeOrderId;
-        }
-
+        // #1: verifica a cobrança no Pagar.me antes de confirmar (gated).
+        if (!(await this.webhookChargeConfirms(data.charges?.[0]?.id || null, pagarmeOrderId, order, ['paid', 'captured', 'authorized', 'pending_capture'], true))) return;
+        // R#4: confirmação ATÔMICA do pagamento. Os webhooks order.paid e
+        // charge.paid chegam quase juntos e o dedup é por (evento:id), então NÃO
+        // se anulam entre si. ANTES ambos passavam por este ponto (read-check-save)
+        // e cada um incrementava o cupom + disparava "Pagamento confirmado". O
+        // UPDATE condicional garante que só UM webhook confirma; o outro retorna.
+        const newMpPref = (order.mpPreferenceId?.startsWith('link-') && pagarmeOrderId)
+          ? pagarmeOrderId
+          : order.mpPreferenceId;
+        const paidClaim = await orderRepo.manager.query(
+          `UPDATE orders
+              SET status = 'PENDING', "couponCredited" = true, "mpPreferenceId" = $2
+            WHERE id = $1 AND status IN ('AWAITING_PAYMENT','PAYMENT_REVIEW')
+            RETURNING id`,
+          [order.id, newMpPref],
+        );
+        if (!paidClaim || paidClaim.length === 0) return;
         order.status = OrderStatus.PENDING;
-        order.couponCredited = true; // Mark so handleChargePaid won't double-increment
-        await orderRepo.save(order);
+        order.couponCredited = true;
+        order.mpPreferenceId = newMpPref;
         this.logger.log(`Pagamento aprovado para pedido #${order.orderNumber}`);
 
         // Re-fetch with full relations so subscription filters can access store.id
         const freshOrder = await orderRepo.findOne({
           where: { id: order.id },
-          relations: ['customer', 'store', 'items', 'items.product'],
+          // store.owner e delivery.deliverer são necessários para o filtro de
+          // ownership das subscriptions decidir quem é parte do pedido.
+          relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
         });
 
         // Publish real-time update so app/vendor panel refresh
@@ -1945,11 +2036,15 @@ export class PaymentsService implements OnModuleDestroy {
           this.pubSub.publish('orderCreated', { orderCreated: freshOrder });
         }
 
-        // Increment coupon usage now that payment is confirmed
+        // Increment coupon usage now that payment is confirmed (roda uma única vez
+        // por conta do claim atômico acima). Incremento condicional para nunca
+        // ultrapassar maxUses (mesma proteção do C4).
         if (order.couponCode) {
           try {
-            const couponRepo = this.paymentsRepository.manager.getRepository('Coupon');
-            await couponRepo.increment({ code: order.couponCode }, 'usesCount', 1);
+            await this.paymentsRepository.manager.query(
+              `UPDATE coupon SET "usesCount" = "usesCount" + 1 WHERE code = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
+              [order.couponCode],
+            );
           } catch (err: any) {
             this.logger.warn(`Failed to increment coupon usage for ${order.couponCode}: ${err.message}`);
           }
@@ -2118,26 +2213,34 @@ export class PaymentsService implements OnModuleDestroy {
     // Act if order is AWAITING_PAYMENT or PAYMENT_REVIEW (antifraud reprocessed)
     const wasPaymentReview = order?.status === OrderStatus.PAYMENT_REVIEW;
     if (order && (order.status === OrderStatus.AWAITING_PAYMENT || order.status === OrderStatus.PAYMENT_REVIEW)) {
-      // KAN-235: captura o estado ANTES de marcar a flag. O incremento de cupom
-      // mais abaixo e guardado por `!order.couponCredited`, mas a flag ja era
-      // setada aqui — a guarda nunca passava e aquele bloco era codigo morto:
-      // pedidos confirmados apenas por este fallback (charge.paid, quando o
-      // webhook order.paid nao chega) nunca contabilizavam o uso do cupom.
-      const couponAlreadyCredited = order.couponCredited;
+      // #2: verifica a cobrança no Pagar.me antes de confirmar (gated). data.id é
+      // o id da própria cobrança neste evento.
+      if (!(await this.webhookChargeConfirms(data.id, null, order, ['paid', 'captured', 'authorized', 'pending_capture'], true))) return;
+      // R#4: transição ATÔMICA (ver handleOrderPaid). O próprio claim já dedup
+      // entre order.paid e charge.paid: quem transiciona AWAITING/PAYMENT_REVIEW →
+      // PENDING credita o cupom uma vez; o outro webhook acha o pedido já PENDING,
+      // recebe 0 linhas e retorna. Dispensa o antigo snapshot `couponAlreadyCredited`.
+      const setCaptured = wasPaymentReview && !!order.preAuthChargeId && !order.capturedAt;
+      const chargeClaim = await orderRepo.manager.query(
+        `UPDATE orders SET status = 'PENDING', "couponCredited" = true${setCaptured ? ', "capturedAt" = NOW()' : ''}
+           WHERE id = $1 AND status IN ('AWAITING_PAYMENT','PAYMENT_REVIEW') RETURNING id`,
+        [order.id],
+      );
+      if (!chargeClaim || chargeClaim.length === 0) return;
       order.status = OrderStatus.PENDING;
       order.couponCredited = true;
-      // Antifraud reprocessing auto-captures the charge (no longer pre-auth)
-      if (wasPaymentReview && order.preAuthChargeId && !order.capturedAt) {
+      if (setCaptured) {
         order.capturedAt = new Date();
         this.logger.log(`Charge.paid (antifraud reprocessed): marking capturedAt for order #${order.orderNumber} — charge was auto-captured by Pagar.me`);
       }
-      await orderRepo.save(order);
       this.logger.log(`Charge.paid ${wasPaymentReview ? '(antifraud reprocessed)' : 'fallback'}: pedido #${order.orderNumber} confirmado via charge webhook`);
 
       // Re-fetch with full relations so subscription filters can access store.id
+      // (store.owner e delivery.deliverer são necessários para o filtro decidir
+      // quem é parte do pedido).
       const freshOrder = await orderRepo.findOne({
         where: { id: order.id },
-        relations: ['customer', 'store', 'items', 'items.product'],
+        relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
       });
 
       // Publish real-time update so app/vendor panel refresh
@@ -2161,12 +2264,14 @@ export class PaymentsService implements OnModuleDestroy {
         ).catch(() => {});
       }
 
-      // Only increment coupon if handleOrderPaid didn't already do it
-      // KAN-235: usa o snapshot tirado antes de marcar a flag (ver acima).
-      if (order.couponCode && !couponAlreadyCredited) {
+      // Incrementa o cupom (só chega aqui quem venceu o claim atômico acima →
+      // uma única vez). Condicional para nunca ultrapassar maxUses (C4).
+      if (order.couponCode) {
         try {
-          const couponRepo = this.paymentsRepository.manager.getRepository('Coupon');
-          await couponRepo.increment({ code: order.couponCode }, 'usesCount', 1);
+          await this.paymentsRepository.manager.query(
+            `UPDATE coupon SET "usesCount" = "usesCount" + 1 WHERE code = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
+            [order.couponCode],
+          );
         } catch (err: any) {
           this.logger.warn(`Failed to increment coupon usage (charge.paid) for ${order.couponCode}: ${err.message}`);
         }
@@ -2185,16 +2290,37 @@ export class PaymentsService implements OnModuleDestroy {
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
       where: { id: orderId },
-      relations: ['customer', 'store', 'store.owner', 'items', 'items.product'],
+      relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
     });
 
     if (order && order.status !== OrderStatus.CANCELLED) {
+      // #3: confirma no Pagar.me que a cobrança foi mesmo estornada antes de
+      // cancelar + reverter repasse (gated). Impede um `charge.refunded` forjado
+      // de puxar dinheiro de volta do vendedor/entregador.
+      if (!(await this.webhookChargeConfirms(data.id, null, order, ['refunded', 'partially_refunded', 'chargedback'], false))) return;
+      const wasCompleted = order.status === OrderStatus.COMPLETED;
       order.status = OrderStatus.CANCELLED;
       await orderRepo.save(order);
-      this.logger.log(`Pedido #${order.orderNumber} cancelado por estorno`);
+      this.logger.log(`Pedido #${order.orderNumber} cancelado por estorno | wasCompleted: ${wasCompleted}`);
 
-      // Restaurar estoque
-      if (order.items) {
+      // Se o pedido ja estava COMPLETED e liquidado, reverter os repasses ao
+      // vendedor/entregador antes que a plataforma absorva o prejuizo. O guard
+      // `status !== CANCELLED` acima ja evita reversao dupla quando o nosso
+      // proprio refundOrder rodou primeiro (ele seta CANCELLED). Esse caminho
+      // cobre o estorno iniciado direto no painel do Pagar.me, que dispara
+      // charge.refunded sem passar pelo refundOrder.
+      if (wasCompleted && order.isSettled) {
+        this.logger.error(`CRITICAL: Estorno em pedido COMPLETED #${order.orderNumber} — revertendo repasses`);
+        try {
+          await this.reverseSettlementTransfers(order);
+        } catch (err: any) {
+          this.logger.error(`CRITICAL: Reversao de repasse falhou no estorno do pedido #${order.orderNumber}: ${err.message}`);
+        }
+      }
+
+      // Restaurar estoque apenas se o pedido NAO foi entregue/concluido
+      // (produto ja entregue nao volta pro estoque).
+      if (!wasCompleted && order.items) {
         const productRepo = this.paymentsRepository.manager.getRepository('Product');
         for (const item of order.items) {
           if (item.product?.id) {
@@ -2235,6 +2361,9 @@ export class PaymentsService implements OnModuleDestroy {
     });
 
     if (order) {
+      // #3: confirma no Pagar.me que houve mesmo chargeback antes de cancelar +
+      // reverter repasse (gated). Impede um `charge.chargedback` forjado.
+      if (!(await this.webhookChargeConfirms(data.id, null, order, ['chargedback', 'refunded'], false))) return;
       const wasCompleted = order.status === OrderStatus.COMPLETED;
       order.status = OrderStatus.CANCELLED;
       await orderRepo.save(order);
@@ -2290,8 +2419,28 @@ export class PaymentsService implements OnModuleDestroy {
       throw new BadRequestException('Este pedido já foi cancelado/rejeitado');
     }
 
-    // C3: If order was COMPLETED and settled, reverse transfers before refunding
-    if (order.status === OrderStatus.COMPLETED && order.isSettled) {
+    // R#1: claim atômico do estorno. ANTES o CANCELLED só era gravado DEPOIS do
+    // estorno externo, então duas chamadas concorrentes (ex.: cliente cancela +
+    // scheduler expira o mesmo pedido) passavam ambas pela checagem acima e
+    // estornavam / revertiam repasse em DOBRO. Agora marcamos CANCELLED de forma
+    // condicional e atômica ANTES de qualquer chamada ao Pagar.me; se 0 linhas,
+    // outro fluxo já assumiu o cancelamento e abortamos.
+    const wasCompleted = order.status === OrderStatus.COMPLETED;
+    const wasSettled = order.isSettled;
+    const claim = await orderRepo.manager.query(
+      `UPDATE orders SET status = 'CANCELLED' WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+      [order.id],
+    );
+    if (!claim || claim.length === 0) {
+      throw new BadRequestException('Este pedido já está sendo cancelado/estornado.');
+    }
+    order.status = OrderStatus.CANCELLED; // reflete o claim no objeto em memória
+
+    // C3: If order was COMPLETED and settled, reverse transfers before refunding.
+    // A partir daqui o pedido JÁ está CANCELLED no banco: se o estorno externo
+    // falhar, ele permanece cancelado e sinalizado p/ reconciliação manual — o
+    // que é preferível a um estorno em dobro.
+    if (wasCompleted && wasSettled) {
       this.logger.warn(`Refund requested for completed+settled order #${order.orderNumber} — reversing transfers first`);
       try {
         await this.reverseSettlementTransfers(order);
@@ -2350,9 +2499,7 @@ export class PaymentsService implements OnModuleDestroy {
         amount: chargeAmount,
       });
 
-      order.status = OrderStatus.CANCELLED;
-      await orderRepo.save(order);
-
+      // status CANCELLED já foi gravado no claim atômico acima (R#1).
       this.logger.log(`Refund requested for order #${order.orderNumber} | charge: ${chargeId}`);
 
       // Notify customer
@@ -2528,7 +2675,13 @@ export class PaymentsService implements OnModuleDestroy {
       .createQueryBuilder('payment')
       .select('COALESCE(SUM(payment.amount), 0)', 'total')
       .where('payment.status = :status', { status: 'approved' })
-      .andWhere('payment.type IN (:...types)', { types: ['PLAN_UPGRADE', 'PROMOTION'] })
+      // O tipo de pagamento de assinatura foi renomeado PLAN_UPGRADE -> SUBSCRIPTION
+      // (+ SUBSCRIPTION_RENEWAL), mas esta query ficou pra trás e passou a somar
+      // ZERO de assinaturas na receita. Inclui os tipos novos e mantém PLAN_UPGRADE
+      // por causa das linhas históricas gravadas antes do rename.
+      .andWhere('payment.type IN (:...types)', {
+        types: ['SUBSCRIPTION', 'SUBSCRIPTION_RENEWAL', 'PLAN_UPGRADE', 'PROMOTION'],
+      })
       .getRawOne();
     const paymentRevenue = parseFloat(paymentResult.total);
 
@@ -2806,18 +2959,27 @@ export class PaymentsService implements OnModuleDestroy {
         const vendorRecipientId = appointment.store?.owner?.pagarmeRecipientId;
         const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
+        // P2: a soma do split TEM que fechar com o total, senão o Pagar.me rejeita
+        // a captura e ela re-tenta pra sempre (isSettled é resetado no catch).
+        // ANTES: se o vendedor não tinha recipient mas havia comissão, o split
+        // saía só com a parte da plataforma (< total) → captura travava. Agora a
+        // plataforma absorve o RESTANTE (total − o que foi pro vendedor), igual ao
+        // fluxo de pedidos.
         const splitRules: any[] = [];
+        let vendorSplit = 0;
         if (vendorRecipientId && vendorAmount > 0) {
+          vendorSplit = vendorAmount;
           splitRules.push({
-            amount: vendorAmount,
+            amount: vendorSplit,
             recipient_id: vendorRecipientId,
             type: 'flat',
             options: { charge_processing_fee: false, liable: false },
           });
         }
-        if (platformRecipientId && commissionCents > 0) {
+        const platformAmount = totalCents - vendorSplit;
+        if (platformRecipientId && platformAmount > 0) {
           splitRules.push({
-            amount: commissionCents,
+            amount: platformAmount,
             recipient_id: platformRecipientId,
             type: 'flat',
             options: { charge_processing_fee: true, liable: true },
@@ -2898,20 +3060,11 @@ export class PaymentsService implements OnModuleDestroy {
     }
     await this.subscriptionsRepository.save(local);
 
-    // Set plan and expiry
-    if (local.vendorUser && local.currentPeriodEnd) {
-      await this.vendorUsersService.updateVendorPlan(
-        local.vendorUser.id,
-        local.plan,
-        Math.ceil((local.currentPeriodEnd.getTime() - Date.now()) / (1000 * 60 * 60 * 24 * 30)),
-      );
-    }
-
-    // Update payment record
-    await this.paymentsRepository.update(
-      { pagarmeSubscriptionId: subscriptionId, status: 'pending' },
-      { status: 'approved' },
-    );
+    // NÃO concede o plano aqui. subscription.created dispara na CRIAÇÃO da
+    // assinatura (mesmo antes do 1º pagamento em PIX/boleto), então conceder
+    // aqui reabriria o mesmo furo do plano de graça. A concessão fica só no
+    // invoice.paid (pagamento confirmado). Idem para não marcar o pagamento como
+    // 'approved' antes da hora (a receita da plataforma soma pagamentos aprovados).
 
     // Notify vendor
     if (local.vendorUser?.phone) {
@@ -3017,12 +3170,16 @@ export class PaymentsService implements OnModuleDestroy {
     local.status = 'active';
     await this.subscriptionsRepository.save(local);
 
-    // Extend plan expiry
+    // Estende a validade do plano EXATAMENTE até o fim do ciclo pago (data que
+    // o Pagar.me devolve). Antes convertia para meses via ceil(dias/30) e reaplicava
+    // com setMonth, super-concedendo ~1 mês por ciclo em planos trimestral/anual.
     if (local.vendorUser && local.currentPeriodEnd) {
-      const monthsRemaining = Math.max(1, Math.ceil(
-        (local.currentPeriodEnd.getTime() - Date.now()) / (1000 * 60 * 60 * 24 * 30),
-      ));
-      await this.vendorUsersService.updateVendorPlan(local.vendorUser.id, local.plan, monthsRemaining);
+      await this.vendorUsersService.updateVendorPlan(
+        local.vendorUser.id,
+        local.plan,
+        1,
+        local.currentPeriodEnd,
+      );
     }
 
     // Create renewal payment record

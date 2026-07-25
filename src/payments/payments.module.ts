@@ -21,7 +21,11 @@ import { NotificationsModule } from '../notifications/notifications.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([Payment, SavedCard, Store, WebhookEvent, Appointment, Subscription, PagarmePlan, VendorUser]),
-    HttpModule,
+    // Error#1: sem timeout, axios usa `timeout: 0` (infinito). Uma chamada ao
+    // Pagar.me (captura/transferência/estorno num checkout ou no webhook) que
+    // travasse pinava a request pra sempre e esgotava o pool → cascata. 15s é
+    // folgado para o Pagar.me e ainda evita o hang.
+    HttpModule.register({ timeout: 15000 }),
     forwardRef(() => UsersModule),
     PlatformConfigModule,
     NotificationsModule,

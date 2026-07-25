@@ -233,7 +233,12 @@ export class VendorUsersService {
     });
   }
 
-  async updateVendorPlan(id: string, plan: VendorPlan, durationMonths: number): Promise<VendorUser> {
+  async updateVendorPlan(
+    id: string,
+    plan: VendorPlan,
+    durationMonths: number,
+    expiresAt?: Date,
+  ): Promise<VendorUser> {
     const user = await this.vendorUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     if (user.role !== UserRole.VENDOR) {
@@ -242,9 +247,17 @@ export class VendorUsersService {
 
     user.vendorPlan = plan;
     if (plan !== VendorPlan.FREE) {
-      const expiresAt = new Date();
-      expiresAt.setMonth(expiresAt.getMonth() + durationMonths);
-      user.planExpiresAt = expiresAt;
+      // Se veio uma data exata (fim do ciclo pago), usa ela. Antes, o webhook
+      // convertia o período em meses via ceil(dias/30) e reaplicava com setMonth,
+      // arredondando pra cima — um ciclo trimestral (~91d) virava +4 meses (~120d),
+      // dando ~1 mês a mais de plano por ciclo do que foi pago.
+      if (expiresAt) {
+        user.planExpiresAt = expiresAt;
+      } else {
+        const e = new Date();
+        e.setMonth(e.getMonth() + durationMonths);
+        user.planExpiresAt = e;
+      }
     } else {
       user.planExpiresAt = null;
     }
@@ -349,6 +362,9 @@ export class VendorUsersService {
     user.password = await bcrypt.hash(peppered(newPassword), 10);
     user.resetPasswordToken = null as any;
     user.resetPasswordExpires = null as any;
+    // A#2: trocar a senha derruba todas as sessões existentes (rotaciona o
+    // sessionToken → JWTs pré-reset deixam de casar).
+    user.sessionToken = crypto.randomBytes(32).toString('hex');
     await this.vendorUsersRepository.save(user);
     return true;
   }

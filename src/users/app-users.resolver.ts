@@ -1,5 +1,6 @@
-import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, ResolveField, Parent, Context } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
+import { verify as jwtVerify } from 'jsonwebtoken';
 import { AppUser } from './entities/app-user.entity';
 import { ApprovalLog } from './entities/approval-log.entity';
 import { AppUsersService } from './app-users.service';
@@ -22,6 +23,50 @@ export class AppUsersResolver {
   @UseGuards(GqlAuthGuard)
   meApp(@CurrentUser() user: AppUser): AppUser {
     return user;
+  }
+
+  // ─── PII: campos sensíveis só para o próprio usuário ou superadmin ───
+  // Antes eram @Field diretos e vazavam via order.customer / order.delivery.deliverer
+  // / storeOrders / availableStore para qualquer parte de um pedido. Padrão do
+  // Store.owner (KAN-259). Vale para HTTP (JWT no header) e WS (ctx.wsUser).
+  private canSeePII(user: AppUser, ctx: any): boolean {
+    let payload: any = ctx?.wsUser || null;
+    if (!payload) {
+      const raw: string =
+        ctx?.req?.headers?.authorization || ctx?.req?.headers?.Authorization || '';
+      const token = raw.replace(/^Bearer\s+/i, '').trim();
+      const secret = process.env.JWT_SECRET;
+      if (token && secret) {
+        try { payload = jwtVerify(token, secret); } catch { payload = null; }
+      }
+    }
+    if (!payload) return false;
+    return payload.role === 'SUPERADMIN' || (!!payload.sub && payload.sub === user.id);
+  }
+
+  @ResolveField(() => String, { nullable: true })
+  cpf(@Parent() user: AppUser, @Context() ctx: any): string | null {
+    return this.canSeePII(user, ctx) ? (user.cpf ?? null) : null;
+  }
+
+  @ResolveField(() => String, { nullable: true })
+  identityPhotoUrl(@Parent() user: AppUser, @Context() ctx: any): string | null {
+    return this.canSeePII(user, ctx) ? (user.identityPhotoUrl ?? null) : null;
+  }
+
+  @ResolveField(() => String, { nullable: true })
+  identityPhotoBackUrl(@Parent() user: AppUser, @Context() ctx: any): string | null {
+    return this.canSeePII(user, ctx) ? (user.identityPhotoBackUrl ?? null) : null;
+  }
+
+  @ResolveField(() => String, { nullable: true })
+  birthDate(@Parent() user: AppUser, @Context() ctx: any): string | null {
+    return this.canSeePII(user, ctx) ? (user.birthDate ?? null) : null;
+  }
+
+  @ResolveField(() => String, { nullable: true })
+  cnhNumber(@Parent() user: AppUser, @Context() ctx: any): string | null {
+    return this.canSeePII(user, ctx) ? (user.cnhNumber ?? null) : null;
   }
 
   @Mutation(() => AppUser)

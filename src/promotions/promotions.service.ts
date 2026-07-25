@@ -38,6 +38,19 @@ export class PromotionsService implements OnModuleInit {
     setInterval(run, 5 * 60 * 1000);
   }
 
+  /**
+   * Broadcast de promoção SEM dados sensíveis do vendedor. O canal público
+   * promotionUpdated era assinado por qualquer um e carregava checkoutUrl (link
+   * de pagamento Pagar.me) e adCost (gasto com anúncio). O vendedor recebe o
+   * checkoutUrl na resposta da própria mutation; o feed de clientes não precisa.
+   * checkoutUrl é nullable; adCost é não-nullable, então vai zerado (não null).
+   */
+  private publishPromotionUpdate(saved: Promotion) {
+    this.pubSub.publish('promotionUpdated', {
+      promotionUpdated: { ...saved, checkoutUrl: null, adCost: 0 },
+    });
+  }
+
   private async clearExpiredPromotions() {
     try {
       await this.productsRepository.manager.query(`
@@ -132,11 +145,20 @@ export class PromotionsService implements OnModuleInit {
     promotion.store = store;
     if (product) promotion.product = product;
     const saved = await this.promotionsRepository.save(promotion);
-    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+    this.publishPromotionUpdate(saved);
 
     if (usedFreeDays > 0) {
-      store.freePromoDaysCredit = Math.max(0, store.freePromoDaysCredit - usedFreeDays);
-      await this.storesService.saveStore(store);
+      // R#6: decremento ATÔMICO do crédito de dias grátis. ANTES era um
+      // read-modify-write (`saveStore`) sem lock: duas promoções simultâneas liam
+      // o mesmo saldo e o last-write-wins descontava o crédito uma única vez para
+      // as duas. Agora o UPDATE aplica os dois decrementos de fato (clampando em 0).
+      // (Resíduo: se ambas quiserem MAIS dias grátis do que o saldo total no mesmo
+      // instante, ainda pode haver leve sobre-concessão; travar 100% exige um claim
+      // do saldo antes de calcular `usedFreeDays`.)
+      await this.productsRepository.manager.query(
+        `UPDATE stores SET "freePromoDaysCredit" = GREATEST("freePromoDaysCredit" - $2, 0) WHERE id = $1`,
+        [store.id, usedFreeDays],
+      );
     }
 
     if (user.phone) {
@@ -193,11 +215,34 @@ export class PromotionsService implements OnModuleInit {
   }
 
   async toggleActive(id: string): Promise<Promotion> {
-    const promotion = await this.promotionsRepository.findOne({ where: { id } });
+    const promotion = await this.promotionsRepository.findOne({
+      where: { id },
+      relations: ['product'],
+    });
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
     promotion.isActive = !promotion.isActive;
     const saved = await this.promotionsRepository.save(promotion);
-    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+
+    // BL#4: manter o preço promocional do produto em sincronia com o estado da
+    // promoção. ANTES, desativar uma promoção PAGA não removia o
+    // `promotionalPrice` do produto — o desconto continuava valendo em CADA novo
+    // pedido até a data de fim (o pricing lê `product.promotionalPrice` direto,
+    // sem checar `isActive`). Agora ao desativar limpamos; ao reativar dentro da
+    // vigência reaplicamos (mesmo padrão de delete/swapProduct/markAsPaid).
+    if (promotion.isPaid && promotion.product && promotion.promotionalPrice) {
+      if (!promotion.isActive) {
+        await this.productsRepository.update(promotion.product.id, { promotionalPrice: null as any });
+      } else {
+        const now = new Date();
+        if (now >= new Date(promotion.startDate) && now <= new Date(promotion.endDate)) {
+          await this.productsRepository.update(promotion.product.id, {
+            promotionalPrice: promotion.promotionalPrice,
+          });
+        }
+      }
+    }
+
+    this.publishPromotionUpdate(saved);
     return saved;
   }
 
@@ -209,7 +254,7 @@ export class PromotionsService implements OnModuleInit {
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
     promotion.isPaid = true;
     const saved = await this.promotionsRepository.save(promotion);
-    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+    this.publishPromotionUpdate(saved);
 
     if (promotion.store?.owner?.phone) {
       this.whatsAppService.notifyPromotionPaid(promotion.store.owner.phone, promotion.title).catch(() => {});
@@ -260,7 +305,7 @@ export class PromotionsService implements OnModuleInit {
     promotion.title = title;
     if (product.imageUrl) promotion.imageUrl = product.imageUrl;
     const saved = await this.promotionsRepository.save(promotion);
-    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+    this.publishPromotionUpdate(saved);
     if (promotion.isPaid) {
       const now = new Date();
       const end = new Date(promotion.endDate);

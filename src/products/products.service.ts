@@ -72,14 +72,16 @@ export class ProductsService {
   async findByStore(storeId: string): Promise<Product[]> {
     return this.productsRepository.find({
       where: { store: { id: storeId }, isActive: true },
-      relations: ['category'],
+      // 'store' é @Field(() => Store) NÃO-nulável no schema; sem carregar a
+      // relation, selecionar `store { ... }` num product 500a a lista inteira.
+      relations: ['category', 'store'],
     }) as Promise<Product[]>;
   }
 
   async findByStoreAll(storeId: string): Promise<Product[]> {
     return this.productsRepository.find({
       where: { store: { id: storeId } },
-      relations: ['category'],
+      relations: ['category', 'store'],
     }) as Promise<Product[]>;
   }
 

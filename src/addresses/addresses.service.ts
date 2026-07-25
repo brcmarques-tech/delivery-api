@@ -83,11 +83,22 @@ export class AddressesService {
   }
 
   async setDefault(addressId: string, userId: string): Promise<Address> {
+    // Verifica posse ANTES de mexer em qualquer registro: sem isso, um usuario
+    // podia marcar o endereco de outro como default (corrompendo o dado alheio),
+    // zerar o proprio default e ainda receber de volta o endereco da vitima (IDOR).
+    const address = await this.addressesRepository.findOne({
+      where: { id: addressId, user: { id: userId } },
+    });
+    if (!address) throw new NotFoundException('Endereco nao encontrado');
+
     await this.addressesRepository.update(
       { user: { id: userId } },
       { isDefault: false },
     );
-    await this.addressesRepository.update(addressId, { isDefault: true });
+    await this.addressesRepository.update(
+      { id: addressId, user: { id: userId } },
+      { isDefault: true },
+    );
     return this.addressesRepository.findOneOrFail({ where: { id: addressId } });
   }
 
