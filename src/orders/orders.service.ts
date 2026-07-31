@@ -574,7 +574,8 @@ export class OrdersService {
     });
   }
 
-  async findByCustomer(customerId: string): Promise<Order[]> {
+  // Perf (F6): paginado (limit/offset). O cap de 500 vira teto do limit.
+  async findByCustomer(customerId: string, limit = 20, offset = 0): Promise<Order[]> {
     return this.ordersRepository.find({
       where: { customer: { id: customerId } },
       // 'customer' é @Field(() => AppUser) NÃO-nulável; sem a relation, um
@@ -582,7 +583,8 @@ export class OrdersService {
       relations: ['store', 'items', 'items.product', 'delivery', 'customer'],
       order: { createdAt: 'DESC' },
       // Error#3: cap de segurança contra carga ilimitada (ver findByStore).
-      take: 500,
+      take: Math.min(Math.max(limit ?? 20, 1), 500),
+      skip: Math.max(offset ?? 0, 0),
     });
   }
 

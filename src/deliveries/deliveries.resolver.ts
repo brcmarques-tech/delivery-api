@@ -61,11 +61,16 @@ export class DeliveriesResolver {
     return delivery;
   }
 
+  // Perf (F6): paginado — antes o historico completo do entregador descia inteiro.
   @Query(() => [Delivery])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.DELIVERER)
-  myDeliveries(@CurrentUser() user: AppUser): Promise<Delivery[]> {
-    return this.deliveriesService.findByDeliverer(user.id);
+  myDeliveries(
+    @CurrentUser() user: AppUser,
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 20 }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true, defaultValue: 0 }) offset?: number,
+  ): Promise<Delivery[]> {
+    return this.deliveriesService.findByDeliverer(user.id, limit, offset);
   }
 
   @Query(() => [Delivery])

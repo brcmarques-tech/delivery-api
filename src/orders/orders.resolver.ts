@@ -127,10 +127,16 @@ export class OrdersResolver {
     return order;
   }
 
+  // Perf (F6): paginado. Antes descia o historico inteiro (cap 500) com itens +
+  // produtos aninhados a cada abertura da aba de pedidos do app.
   @Query(() => [Order])
   @UseGuards(GqlAuthGuard)
-  myOrders(@CurrentUser() user: AppUser): Promise<Order[]> {
-    return this.ordersService.findByCustomer(user.id);
+  myOrders(
+    @CurrentUser() user: AppUser,
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 20 }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true, defaultValue: 0 }) offset?: number,
+  ): Promise<Order[]> {
+    return this.ordersService.findByCustomer(user.id, limit, offset);
   }
 
   @Query(() => [PopularProduct])

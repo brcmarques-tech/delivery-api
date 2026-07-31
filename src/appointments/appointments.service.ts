@@ -539,11 +539,14 @@ export class AppointmentsService {
 
   // ─── Queries ────────────────────────────────────────────
 
-  async myAppointments(customerId: string): Promise<Appointment[]> {
+  // Perf (F6): paginado (limit/offset), teto 100.
+  async myAppointments(customerId: string, limit = 20, offset = 0): Promise<Appointment[]> {
     return this.appointmentsRepository.find({
       where: { customerId, deletedAt: IsNull() },
       relations: RELATIONS,
       order: { createdAt: 'DESC' },
+      take: Math.min(Math.max(limit ?? 20, 1), 100),
+      skip: Math.max(offset ?? 0, 0),
     });
   }
 

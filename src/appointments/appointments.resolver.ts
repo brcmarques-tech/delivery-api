@@ -1,4 +1,4 @@
-import { Resolver, Query, Mutation, Args, Float } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Float, Int } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { Appointment } from './entities/appointment.entity';
 import { AppointmentsService } from './appointments.service';
@@ -31,8 +31,13 @@ export class AppointmentsResolver {
   @Query(() => [Appointment])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.CUSTOMER)
-  myAppointments(@CurrentUser() user: any): Promise<Appointment[]> {
-    return this.appointmentsService.myAppointments(user.id);
+  myAppointments(
+    @CurrentUser() user: any,
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 20 }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true, defaultValue: 0 }) offset?: number,
+  ): Promise<Appointment[]> {
+    // Perf (F6): paginado.
+    return this.appointmentsService.myAppointments(user.id, limit, offset);
   }
 
   @Query(() => Appointment)

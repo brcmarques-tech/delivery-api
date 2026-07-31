@@ -278,7 +278,8 @@ export class DeliveriesService implements OnModuleInit {
       .getMany();
   }
 
-  async findByDeliverer(delivererId: string): Promise<Delivery[]> {
+  // Perf (F6): paginado (limit/offset); o take de 100 vira teto do limit.
+  async findByDeliverer(delivererId: string, limit = 20, offset = 0): Promise<Delivery[]> {
     const deliveries = await this.deliveriesRepository.find({
       where: { deliverer: { id: delivererId } },
       relations: ['order', 'order.store', 'order.customer', 'order.items', 'order.items.product'],
@@ -287,7 +288,8 @@ export class DeliveriesService implements OnModuleInit {
       // entrega com pedido + itens + produtos aninhados) descia inteiro a cada
       // abertura da aba Entregas. 100 cobre ativas + historico recente; myOrders
       // ja tinha cap analogo (500).
-      take: 100,
+      take: Math.min(Math.max(limit ?? 20, 1), 100),
+      skip: Math.max(offset ?? 0, 0),
     });
     return deliveries;
   }
