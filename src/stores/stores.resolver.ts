@@ -14,6 +14,7 @@ import { UseGuards, Inject } from '@nestjs/common';
 import { verify as jwtVerify } from 'jsonwebtoken'; // KAN-259
 import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
+import { Product } from '../products/entities/product.entity';
 import { StoresService } from './stores.service';
 import { StorefrontResult, PublicStoreCard } from './dto/storefront-result';
 import { AppUser } from '../users/entities/app-user.entity';
@@ -81,6 +82,18 @@ export class StoresResolver {
   @Query(() => Store)
   storeBySlug(@Args('slug') slug: string): Promise<Store> {
     return this.storesService.findBySlug(slug);
+  }
+
+  // Perf (F5/F6): catalogo paginado + busca server-side (tela da loja do app).
+  @Query(() => [Product])
+  storeProducts(
+    @Args('storeId') storeId: string,
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 100 }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true, defaultValue: 0 }) offset?: number,
+    @Args('search', { nullable: true }) search?: string,
+    @Args('categoryId', { nullable: true }) categoryId?: string,
+  ): Promise<Product[]> {
+    return this.storesService.findStoreProducts(storeId, limit, offset, search, categoryId);
   }
 
   @Query(() => StorefrontResult)

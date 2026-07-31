@@ -14,6 +14,7 @@ import { PubSub } from 'graphql-subscriptions';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { Store } from './entities/store.entity';
+import { Product } from '../products/entities/product.entity';
 import { StoreFollow } from './entities/store-follow.entity';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
@@ -374,6 +375,39 @@ export class StoresService implements OnApplicationBootstrap {
     const store = await this.storesRepository.findOne({ where: { id } });
     if (!store) throw new NotFoundException('Loja nao encontrada');
     return store;
+  }
+
+  // Perf (F5/F6): catalogo paginado da loja para o app. O `store(id)` carrega
+  // TODOS os produtos de uma vez (loja PREMIUM sem teto = milhares de itens num
+  // JSON so). O app agora busca por paginas e a busca interna roda no servidor
+  // (cobre o catalogo inteiro, nao so o que ja desceu). Soft-deleted (lixeira)
+  // ficam fora automaticamente pelo @DeleteDateColumn.
+  async findStoreProducts(
+    storeId: string,
+    limit = 100,
+    offset = 0,
+    search?: string,
+    categoryId?: string,
+  ): Promise<Product[]> {
+    const qb = this.storesRepository.manager
+      .getRepository(Product)
+      .createQueryBuilder('p')
+      .leftJoinAndSelect('p.category', 'category')
+      .where('p."storeId" = :storeId', { storeId });
+    const q = search?.trim();
+    if (q) {
+      qb.andWhere('(p.name ILIKE :q OR p.description ILIKE :q)', { q: `%${q}%` });
+    }
+    // UX: chips de categoria na tela da loja — filtro no SQL (indexado por
+    // categoryId), funciona mesmo com catalogo gigante paginado.
+    if (categoryId) {
+      qb.andWhere('p."categoryId" = :categoryId', { categoryId });
+    }
+    return qb
+      .orderBy('p.name', 'ASC')
+      .take(Math.min(Math.max(limit ?? 100, 1), 200))
+      .skip(Math.max(offset ?? 0, 0))
+      .getMany();
   }
 
   async findByWhatsappNumber(number: string): Promise<Store | null> {
