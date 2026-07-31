@@ -29,6 +29,10 @@ export class Order {
   @Column({ unique: true })
   orderNumber: string;
 
+  // Perf (F5): status e o filtro mais quente da tabela — availableDeliveries
+  // (READY), schedulers de expiracao/auto-confirmacao e o painel filtram por ele.
+  // Sem indice era sequential scan crescendo com o volume de pedidos.
+  @Index()
   @Field(() => OrderStatus)
   @Column({ type: 'enum', enum: OrderStatus, default: OrderStatus.PENDING })
   status: OrderStatus;

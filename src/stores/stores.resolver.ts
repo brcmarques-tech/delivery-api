@@ -150,7 +150,8 @@ export class StoresResolver {
     @Args('customerLatitude', { type: () => Float }) customerLat: number,
     @Args('customerLongitude', { type: () => Float }) customerLng: number,
   ): Promise<number> {
-    const store = await this.storesService.findById(storeId);
+    // Perf (F5): findByIdBasic — so precisa de lat/lng, nao do catalogo inteiro.
+    const store = await this.storesService.findByIdBasic(storeId);
     const pricePerKm = await this.platformConfigService.getDeliveryPricePerKm();
     const basePrice = await this.platformConfigService.getDeliveryBasePrice();
 
@@ -176,7 +177,8 @@ export class StoresResolver {
     @Args('customerLatitude', { type: () => Float }) customerLat: number,
     @Args('customerLongitude', { type: () => Float }) customerLng: number,
   ): Promise<number> {
-    const store = await this.storesService.findById(storeId);
+    // Perf (F5): findByIdBasic — so precisa de lat/lng/hasOwnDelivery.
+    const store = await this.storesService.findByIdBasic(storeId);
 
     if (store.hasOwnDelivery) {
       return store.estimatedDeliveryMinutes || 30;

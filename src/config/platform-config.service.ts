@@ -7,8 +7,18 @@ import { AppUser } from '../users/entities/app-user.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole } from '../common/enums';
 
+// Perf (L8/F5): TTL do cache in-memory de PlanConfig. Config de plano muda
+// raramente (so via painel do superadmin) e era lida com 15 SELECTs por chamada.
+const PLAN_CONFIG_CACHE_TTL_MS = 60_000;
+
 @Injectable()
 export class PlatformConfigService {
+  // Perf (L8/F5): cache por plano. `sortByPriority` chama getPlanConfig para CADA
+  // loja de CADA listagem (stores/nearbyStores/followedStores) — sem cache isso
+  // era 15 x N queries por request (30 lojas = ~450 SELECTs so pra ordenar a
+  // home do app). Com ~5 planos, o custo cai para ~O(1) por minuto.
+  private planConfigCache = new Map<string, { config: PlanConfig; expiresAt: number }>();
+
   constructor(
     @InjectRepository(PlatformConfig)
     private configRepository: Repository<PlatformConfig>,
@@ -30,6 +40,9 @@ export class PlatformConfigService {
     } else {
       config = this.configRepository.create({ key, value });
     }
+    // Perf (L8/F5): escrita em chave de plano invalida o cache na hora — o
+    // superadmin ve o novo valor imediatamente, sem esperar o TTL.
+    if (key.startsWith('plan_')) this.planConfigCache.clear();
     return this.configRepository.save(config);
   }
 
@@ -62,8 +75,17 @@ export class PlatformConfigService {
     return parseFloat(value);
   }
 
-  // TODO (L8): Add in-memory caching (TTL ~60s) to avoid N+1 queries per plan config lookup
+  // Perf (L8/F5): resolvido — cache in-memory com TTL de 60s + invalidacao no set().
   async getPlanConfig(plan: string): Promise<PlanConfig> {
+    const cacheKey = (plan || 'FREE').toLowerCase();
+    const cached = this.planConfigCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.config;
+    const config = await this.loadPlanConfig(plan);
+    this.planConfigCache.set(cacheKey, { config, expiresAt: Date.now() + PLAN_CONFIG_CACHE_TTL_MS });
+    return config;
+  }
+
+  private async loadPlanConfig(plan: string): Promise<PlanConfig> {
     const defaults: Record<string, PlanConfig> = {
       FREE: {
         maxStores: 1, commissionPercent: 5, monthlyPrice: 0,
@@ -112,21 +134,31 @@ export class PlatformConfigService {
     // agendamento com pagamento online falhava por completo). Sem plano => FREE.
     const p = (plan || 'FREE').toLowerCase();
 
-    const maxStores = parseInt(await this.get(`plan_${p}_max_stores`, String(def.maxStores)));
-    const commissionPercent = parseFloat(await this.get(`plan_${p}_commission_percent`, String(def.commissionPercent)));
-    const monthlyPrice = parseFloat(await this.get(`plan_${p}_monthly_price`, String(def.monthlyPrice)));
-    const quarterlyPrice = parseFloat(await this.get(`plan_${p}_quarterly_price`, String(def.quarterlyPrice)));
-    const semiannualPrice = parseFloat(await this.get(`plan_${p}_semiannual_price`, String(def.semiannualPrice)));
-    const annualPrice = parseFloat(await this.get(`plan_${p}_annual_price`, String(def.annualPrice)));
-    const freePromosPerWeek = parseInt(await this.get(`plan_${p}_free_promos_per_week`, String(def.freePromosPerWeek)));
-    const maxProductsPerStore = parseInt(await this.get(`plan_${p}_max_products_per_store`, String(def.maxProductsPerStore)));
-    const maxEmailsPerMonth = parseInt(await this.get(`plan_${p}_max_emails_per_month`, String(def.maxEmailsPerMonth)));
-    const listingPriority = parseInt(await this.get(`plan_${p}_listing_priority`, String(def.listingPriority)));
-    const highlightDaysPerMonth = parseInt(await this.get(`plan_${p}_highlight_days_per_month`, String(def.highlightDaysPerMonth)));
-    const canUseCoupons = (await this.get(`plan_${p}_can_use_coupons`, String(def.canUseCoupons))) === 'true';
-    const hasAnalytics = (await this.get(`plan_${p}_has_analytics`, String(def.hasAnalytics))) === 'true';
-    const supportLevel = await this.get(`plan_${p}_support_level`, def.supportLevel);
-    const isContactSales = (await this.get(`plan_${p}_is_contact_sales`, String(def.isContactSales))) === 'true';
+    // Perf (L8/F5): antes eram 15 SELECTs SEQUENCIAIS (um await por campo).
+    // Agora uma unica query LIKE traz todas as chaves do plano de uma vez.
+    const rows = await this.configRepository
+      .createQueryBuilder('c')
+      .where('c.key LIKE :prefix', { prefix: `plan_${p}_%` })
+      .getMany();
+    const values = new Map(rows.map((r) => [r.key, r.value]));
+    const val = (suffix: string, fallback: string): string =>
+      values.get(`plan_${p}_${suffix}`) ?? fallback;
+
+    const maxStores = parseInt(val('max_stores', String(def.maxStores)));
+    const commissionPercent = parseFloat(val('commission_percent', String(def.commissionPercent)));
+    const monthlyPrice = parseFloat(val('monthly_price', String(def.monthlyPrice)));
+    const quarterlyPrice = parseFloat(val('quarterly_price', String(def.quarterlyPrice)));
+    const semiannualPrice = parseFloat(val('semiannual_price', String(def.semiannualPrice)));
+    const annualPrice = parseFloat(val('annual_price', String(def.annualPrice)));
+    const freePromosPerWeek = parseInt(val('free_promos_per_week', String(def.freePromosPerWeek)));
+    const maxProductsPerStore = parseInt(val('max_products_per_store', String(def.maxProductsPerStore)));
+    const maxEmailsPerMonth = parseInt(val('max_emails_per_month', String(def.maxEmailsPerMonth)));
+    const listingPriority = parseInt(val('listing_priority', String(def.listingPriority)));
+    const highlightDaysPerMonth = parseInt(val('highlight_days_per_month', String(def.highlightDaysPerMonth)));
+    const canUseCoupons = val('can_use_coupons', String(def.canUseCoupons)) === 'true';
+    const hasAnalytics = val('has_analytics', String(def.hasAnalytics)) === 'true';
+    const supportLevel = val('support_level', def.supportLevel);
+    const isContactSales = val('is_contact_sales', String(def.isContactSales)) === 'true';
 
     return {
       maxStores, commissionPercent, monthlyPrice, quarterlyPrice, semiannualPrice, annualPrice,

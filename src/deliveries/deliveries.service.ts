@@ -131,8 +131,11 @@ export class DeliveriesService implements OnModuleInit {
   // order.store.owner e deliverer). Necessário para (1) o filtro de ownership da
   // subscription conseguir decidir quem é parte do pedido e (2) clientes poderem
   // selecionar os campos aninhados do pedido sem 500 (campos não-nuláveis).
-  private async publishDeliveryUpdate(deliveryId: string): Promise<void> {
-    const full = await this.deliveriesRepository.findOne({
+  // Perf (F5): aceita um delivery ja carregado com o grafo completo (preloaded)
+  // para nao repetir o findOne profundo — critico no updateLocation, que roda a
+  // cada tick de GPS.
+  private async publishDeliveryUpdate(deliveryId: string, preloaded?: Delivery): Promise<void> {
+    const full = preloaded ?? await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
       relations: ['order', 'order.store', 'order.store.owner', 'order.customer', 'deliverer'],
     });
@@ -157,9 +160,13 @@ export class DeliveriesService implements OnModuleInit {
     latitude: number,
     longitude: number,
   ): Promise<Delivery> {
+    // Perf (F5): carrega o grafo completo UMA vez e o reusa na publicacao. Antes
+    // cada tick de GPS fazia 2 buscas (findOne raso + findOne profundo com 5
+    // relations dentro do publishDeliveryUpdate) — dobro de I/O no caminho mais
+    // frequente do rastreio em tempo real.
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
-      relations: ['order'],
+      relations: ['order', 'order.store', 'order.store.owner', 'order.customer', 'deliverer'],
     });
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
 
@@ -167,7 +174,7 @@ export class DeliveriesService implements OnModuleInit {
     delivery.currentLatitude = latitude;
     delivery.currentLongitude = longitude;
     const saved = await this.deliveriesRepository.save(delivery);
-    await this.publishDeliveryUpdate(saved.id);
+    await this.publishDeliveryUpdate(saved.id, saved);
 
     // First location: notify vendor panel so GPS button appears without F5
     if (wasFirstLocation) {
@@ -276,6 +283,11 @@ export class DeliveriesService implements OnModuleInit {
       where: { deliverer: { id: delivererId } },
       relations: ['order', 'order.store', 'order.customer', 'order.items', 'order.items.product'],
       order: { createdAt: 'DESC' },
+      // Perf (F5): era SEM take — o historico vitalicio do entregador (cada
+      // entrega com pedido + itens + produtos aninhados) descia inteiro a cada
+      // abertura da aba Entregas. 100 cobre ativas + historico recente; myOrders
+      // ja tinha cap analogo (500).
+      take: 100,
     });
     return deliveries;
   }

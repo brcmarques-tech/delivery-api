@@ -366,6 +366,16 @@ export class StoresService implements OnApplicationBootstrap {
     return store;
   }
 
+  // Perf (F5): versao leve, SEM o grafo de catalogo. calculateDeliveryFee e
+  // estimatedDeliveryTime (chamados no checkout do app a cada mudanca de
+  // endereco) usavam o findById completo — baixavam todos os produtos +
+  // servicos + categorias da loja so para ler latitude/longitude/hasOwnDelivery.
+  async findByIdBasic(id: string): Promise<Store> {
+    const store = await this.storesRepository.findOne({ where: { id } });
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+    return store;
+  }
+
   async findByWhatsappNumber(number: string): Promise<Store | null> {
     return this.storesRepository.findOne({ where: { whatsappNumber: number } });
   }
