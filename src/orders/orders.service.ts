@@ -1434,9 +1434,19 @@ export class OrdersService {
       .andWhere('order.updatedAt <= :tenMinAgo', { tenMinAgo })
       .andWhere('delivery.id IS NULL')
       .andWhere('order.isPickup = false')
+      .andWhere("COALESCE(order.notes, '') NOT LIKE '%[NO_DELIVERER_ALERT]%'")
       .getMany();
 
     for (const order of stuckOrders) {
+      // BUGFIX: nada era gravado apos alertar, entao o mesmo pedido re-casava a
+      // cada tick do scheduler — o vendedor recebia UM PUSH POR MINUTO,
+      // indefinidamente, enquanto ninguem aceitasse a entrega. Marca o pedido
+      // (mesmo padrao append-only do flagSettlementFailure, sem migration) e o
+      // filtro da query acima passa a ignora-lo.
+      await this.ordersRepository.manager.query(
+        `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`,
+        [order.id, '\n[NO_DELIVERER_ALERT]'],
+      );
       if (order.store?.owner?.id) {
         this.notificationsService
           .sendToVendorUser(
