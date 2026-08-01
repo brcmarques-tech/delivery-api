@@ -224,4 +224,15 @@ export class AppUsersResolver {
     await this.appUsersService.updatePushToken(user.id, token);
     return true;
   }
+
+  /** Chamada no logout: solta o token deste aparelho para o proximo usuario nao herdar os pushes. */
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  async unregisterAppPushToken(
+    @Args('token', { type: () => String, nullable: true }) token: string | null,
+    @CurrentUser() user: AppUser,
+  ): Promise<boolean> {
+    await this.appUsersService.clearPushToken(user.id, token ?? undefined);
+    return true;
+  }
 }

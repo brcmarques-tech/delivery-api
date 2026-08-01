@@ -32,6 +32,46 @@ export class VisionService {
   }
 
   /**
+   * O SDK do Vision decide entre URL remota e ARQUIVO LOCAL olhando a string:
+   * sem `://` (ou com `file://`) ele trata como `source.filename` e faz
+   * `fs.readFile` no disco da API, mandando o conteudo em base64 para o Google.
+   * Como `imageUrl` chega cru do cliente nas duas mutations (protegidas apenas
+   * por GqlAuthGuard, ou seja, qualquer conta comum), isso permitia:
+   *   - `validateDocumentPhoto(imageUrl: "/app/.env")` -> le segredos do
+   *     servidor e os transmite para fora do perimetro;
+   *   - `validateFacePhoto(imageUrl: "/dev/zero")` -> readFile infinito, OOM,
+   *     API derrubada por um unico usuario logado;
+   *   - `gs://bucket-privado/objeto` -> contem `://`, entao vira imageUri e o
+   *     Vision le o objeto com as credenciais da plataforma.
+   * As fotos legitimas SEMPRE vem do upload da propria plataforma, entao exigir
+   * https no host do Cloudinary nao restringe nenhum uso real.
+   */
+  private assertImagemPermitida(imageUrl: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(imageUrl);
+    } catch {
+      throw new BadRequestException('URL de imagem invalida.');
+    }
+    if (parsed.protocol !== 'https:') {
+      throw new BadRequestException('URL de imagem invalida.');
+    }
+    const permitidos = (
+      this.configService.get<string>('IMAGE_HOST_ALLOWLIST') ||
+      'res.cloudinary.com'
+    )
+      .split(',')
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean);
+    if (!permitidos.includes(parsed.hostname.toLowerCase())) {
+      this.logger.warn(
+        `Host de imagem recusado na validacao: ${parsed.hostname}`,
+      );
+      throw new BadRequestException('URL de imagem invalida.');
+    }
+  }
+
+  /**
    * KAN-230: quando o Vision nao esta disponivel, a validacao NAO deve se
    * passar por uma aprovacao. Antes retornava `{ valid: true }`, indistinguivel
    * de uma checagem real — se a credencial caisse ou expirasse, o KYC de
@@ -58,6 +98,8 @@ export class VisionService {
     imageUrl: string,
   ): Promise<{ valid: boolean; message: string; requiresManualReview?: boolean }> {
     if (!this.client) return this.unavailable();
+
+    this.assertImagemPermitida(imageUrl);
 
     try {
       const [result] = await this.client.faceDetection(imageUrl);
@@ -90,6 +132,8 @@ export class VisionService {
     imageUrl: string,
   ): Promise<{ valid: boolean; message: string; requiresManualReview?: boolean }> {
     if (!this.client) return this.unavailable();
+
+    this.assertImagemPermitida(imageUrl);
 
     try {
       const [result] = await this.client.textDetection(imageUrl);

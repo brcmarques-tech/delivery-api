@@ -258,7 +258,21 @@ export class VendorUsersService {
       // arredondando pra cima — um ciclo trimestral (~91d) virava +4 meses (~120d),
       // dando ~1 mês a mais de plano por ciclo do que foi pago.
       if (expiresAt) {
-        user.planExpiresAt = expiresAt;
+        // ...mas o fim do ciclo do Pagar.me NUNCA pode encurtar o que ja foi
+        // pago. Este ramo (cartao) sobrescrevia direto, enquanto o ramo de baixo
+        // (PIX) empilhava — o mesmo upgrade tirava dias por cartao e dava dias
+        // por PIX. Dois casos concretos de perda: quem tinha PRO anual e subia
+        // para PREMIUM mensal no meio do ciclo ficava com o vencimento do mes
+        // seguinte, perdendo os meses de PRO ja pagos; e os dias de trial do
+        // selo DIAMOND evaporavam na primeira renovacao. Agora vale o MAIOR
+        // entre o ciclo novo e o vencimento atual.
+        const atualCartao = user.planExpiresAt
+          ? new Date(user.planExpiresAt)
+          : null;
+        user.planExpiresAt =
+          atualCartao && atualCartao.getTime() > expiresAt.getTime()
+            ? atualCartao
+            : expiresAt;
       } else {
         // BUGFIX: a base era sempre "hoje" — uma renovacao por PIX feita antes do
         // vencimento DESTRUIA os dias restantes ja pagos (ex.: faltando 40 dias,
@@ -269,6 +283,12 @@ export class VendorUsersService {
         const base = atual && atual.getTime() > Date.now() ? atual : new Date();
         const e = new Date(base);
         e.setMonth(e.getMonth() + durationMonths);
+        // setMonth transborda quando o dia nao existe no mes de destino: renovar
+        // mensal em 31/01 pedia "31 de fevereiro" e o JS normalizava para 03/03,
+        // entregando 31 dias em vez de 28. Como o proximo ciclo parte dessa data
+        // deslocada, o erro nunca se corrigia sozinho. Voltar para o ultimo dia
+        // do mes de destino (setDate(0)) mantem o vencimento no fim do mes.
+        if (e.getDate() !== base.getDate()) e.setDate(0);
         user.planExpiresAt = e;
       }
     } else {

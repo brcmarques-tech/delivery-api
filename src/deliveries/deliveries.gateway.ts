@@ -61,7 +61,13 @@ export class DeliveriesGateway
   afterInit() {
     this.offerService.setEmitters(
       (socketId, event, data) => this.server.to(socketId).emit(event, data),
-      (event, data) => this.server.emit(event, data),
+      // O segundo emitter carrega `newAvailableDelivery`, que inclui o ENDERECO
+      // DE ENTREGA do cliente. Era `this.server.emit`, ou seja, broadcast para
+      // TODO socket conectado — e handleConnection so exige um JWT valido, sem
+      // olhar o papel, entao qualquer cliente comum logado no app recebia o
+      // numero do pedido e o endereco residencial de outra pessoa. A sala
+      // 'deliverers' ja existe e so tem quem entrou como entregador.
+      (event, data) => this.server.to('deliverers').emit(event, data),
     );
   }
 
@@ -81,11 +87,33 @@ export class DeliveriesGateway
       client.disconnect(true);
       return;
     }
+    let payload: any;
     try {
-      (client.data as any).user = jwtVerify(token, secret);
+      payload = jwtVerify(token, secret);
     } catch {
       client.disconnect(true);
+      return;
     }
+    // O jwtVerify so confere assinatura e expiracao. A revogacao mora na
+    // JwtStrategy (isActive e sessionToken) e o socket nao passa por ela: um
+    // entregador banido por fraude, ou uma sessao trocada por login em outro
+    // aparelho, continuava com o socket valido ate o JWT expirar (7 dias) —
+    // seguia online, aparecia no getNearestDeliverers, recebia ofertas e podia
+    // aceitar por `acceptOffer`, prendendo um pedido que o guard HTTP recusa.
+    this.appUsersService
+      .findById(payload?.sub)
+      .then((user) => {
+        const revogado =
+          !user ||
+          user.isActive === false ||
+          (user.sessionToken && payload?.sessionToken !== user.sessionToken);
+        if (revogado) {
+          client.disconnect(true);
+          return;
+        }
+        (client.data as any).user = payload;
+      })
+      .catch(() => client.disconnect(true));
   }
 
   handleDisconnect(client: Socket) {

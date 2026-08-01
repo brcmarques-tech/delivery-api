@@ -310,7 +310,31 @@ export class AppUsersService {
   }
 
   async updatePushToken(id: string, token: string): Promise<void> {
+    // Um token do Expo identifica o APARELHO, nao a conta. Quando o usuario B
+    // loga num celular onde A ja tinha logado, o mesmo token era gravado em B
+    // SEM sair de A — e todo push de A (status de pedido, pagamento, disputa)
+    // continuava chegando naquele aparelho, agora nas maos de B. Antes de
+    // gravar, tiramos o token de qualquer outra conta.
+    await this.appUsersRepository
+      .createQueryBuilder()
+      .update()
+      .set({ expoPushToken: null as any })
+      .where('"expoPushToken" = :token AND id != :id', { token, id })
+      .execute();
     await this.appUsersRepository.update(id, { expoPushToken: token });
+  }
+
+  /** Solta o token deste aparelho no logout, para o proximo usuario nao herdar os pushes. */
+  async clearPushToken(id: string, token?: string): Promise<void> {
+    const qb = this.appUsersRepository
+      .createQueryBuilder()
+      .update()
+      .set({ expoPushToken: null as any });
+    if (token) {
+      await qb.where('"expoPushToken" = :token', { token }).execute();
+    } else {
+      await qb.where('id = :id', { id }).execute();
+    }
   }
 
   async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string, avatarUrl?: string): Promise<AppUser> {

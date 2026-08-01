@@ -1959,6 +1959,45 @@ export class PaymentsService implements OnModuleDestroy {
 
     this.logger.log(`Webhook received: ${eventType} | id: ${data.id}`);
 
+    // A chave de dedup e gravada ANTES dos handlers, e o controller nao envolve
+    // esta chamada em try/catch. Sem o bloco abaixo, um handler que lancasse
+    // (vendor removido, erro transitorio do TypeORM, payload fora do formato)
+    // devolvia 500 ao Pagar.me — que reentrega — e a reentrega batia no dedup e
+    // era descartada como "duplicate skipped". Ou seja: o lojista PAGOU, o
+    // evento foi confirmado, e o plano nunca foi concedido, sem nenhum log de
+    // erro para investigar depois. Agora, se o handler falha, a chave e
+    // removida e o erro sobe: a reentrega do Pagar.me volta a ser processada.
+    try {
+      await this.dispatchWebhook(eventType, data);
+    } catch (err: any) {
+      this.processedWebhooks.delete(eventKey);
+      await this.webhookEventsRepository
+        .delete({ eventKey })
+        .catch((delErr: any) =>
+          this.logger.error(
+            `Falha ao liberar a chave de dedup ${eventKey} apos erro no handler — ` +
+              `a reentrega deste webhook sera descartada: ${delErr?.message}`,
+          ),
+        );
+      this.logger.error(
+        `Erro processando webhook ${eventKey}: ${err?.message}`,
+        err?.stack,
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * `currentPeriodEnd` e nullable e nasce null quando a resposta do Pagar.me nao
+   * traz `current_cycle` (tipico de PIX/boleto, cujo ciclo so existe depois do
+   * primeiro pagamento). Interpolado direto, chegava ao lojista no WhatsApp como
+   * "Proxima cobranca: undefined" e "Voce mantem o acesso ate undefined".
+   */
+  private dataCiclo(fim: Date | null | undefined): string {
+    return fim ? new Date(fim).toLocaleDateString('pt-BR') : 'a definir';
+  }
+
+  private async dispatchWebhook(eventType: string, data: any): Promise<void> {
     // Handle order events
     if (eventType === 'order.paid') {
       await this.handleOrderPaid(data);
@@ -2195,6 +2234,30 @@ export class PaymentsService implements OnModuleDestroy {
           this.whatsAppService.sendText(
             order.customer.phone,
             `✅ *Pagamento confirmado!*\n\nSeu pagamento do pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) foi aprovado.\n\nAguarde a confirmação da loja!`,
+          ).catch(() => {});
+        }
+
+        // O lojista NAO era avisado neste ponto — e este e o unico momento em que
+        // o pedido passa a ser acionavel por ele. O aviso de "Novo pedido!" sai em
+        // createOrder, quando um pedido PIX/cartao ainda esta AWAITING_PAYMENT e
+        // pode nunca ser pago. Quando o pagamento entrava minutos depois, nada
+        // avisava, e `expirePendingOrders` cancelava e estornava o pedido dizendo
+        // que "a loja nao respondeu a tempo". Venda perdida com o lojista
+        // convencido de que nunca foi avisado. O claim atomico acima garante que
+        // isto rode uma vez so.
+        const donoDaLoja = freshOrder?.store?.owner ?? order.store?.owner;
+        if (donoDaLoja?.id) {
+          this.notificationsService.sendToVendorUser(
+            donoDaLoja.id,
+            'Pedido pago — aguardando sua confirmação',
+            `Pedido #${order.orderNumber} - R$ ${Number(order.total).toFixed(2)}`,
+            { type: 'NEW_ORDER', orderId: order.id },
+          ).catch(() => {});
+        }
+        if (donoDaLoja?.phone) {
+          this.whatsAppService.sendText(
+            donoDaLoja.phone,
+            `💰 *Pedido pago!*\n\nO pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) foi pago e aguarda sua confirmação.\n\nAceite pelo painel para não perder a venda.`,
           ).catch(() => {});
         }
       }
@@ -3271,7 +3334,7 @@ export class PaymentsService implements OnModuleDestroy {
     if (local.vendorUser?.phone) {
       this.whatsAppService.sendText(
         local.vendorUser.phone,
-        `✅ *Assinatura ativada!*\n\nSua assinatura do plano ${local.plan} foi ativada com sucesso.\n\nPróxima cobrança: ${local.currentPeriodEnd?.toLocaleDateString('pt-BR')}`,
+        `✅ *Assinatura ativada!*\n\nSua assinatura do plano ${local.plan} foi ativada com sucesso.\n\nPróxima cobrança: ${this.dataCiclo(local.currentPeriodEnd)}`,
       ).catch(() => {});
     }
     if (local.vendorUser?.id) {
@@ -3328,7 +3391,7 @@ export class PaymentsService implements OnModuleDestroy {
       this.whatsAppService.sendText(
         local.vendorUser.phone,
         local.cancelAtPeriodEnd
-          ? `⚠️ *Assinatura cancelada*\n\nSua assinatura do plano ${local.plan} foi cancelada. Você mantém o acesso até ${local.currentPeriodEnd?.toLocaleDateString('pt-BR')}.`
+          ? `⚠️ *Assinatura cancelada*\n\nSua assinatura do plano ${local.plan} foi cancelada. Você mantém o acesso até ${this.dataCiclo(local.currentPeriodEnd)}.`
           : `⚠️ *Assinatura cancelada*\n\nSua assinatura do plano ${local.plan} foi cancelada e seu plano foi alterado para FREE.`,
       ).catch(() => {});
     }
@@ -3337,7 +3400,7 @@ export class PaymentsService implements OnModuleDestroy {
         local.vendorUser.id,
         'Assinatura cancelada',
         local.cancelAtPeriodEnd
-          ? `Sua assinatura será encerrada em ${local.currentPeriodEnd?.toLocaleDateString('pt-BR')}.`
+          ? `Sua assinatura será encerrada em ${this.dataCiclo(local.currentPeriodEnd)}.`
           : 'Sua assinatura foi cancelada e seu plano foi alterado para FREE.',
         { type: 'SUBSCRIPTION_CANCELED', subscriptionId: local.id },
       ).catch(() => {});
@@ -3402,7 +3465,7 @@ export class PaymentsService implements OnModuleDestroy {
     if (local.vendorUser?.phone) {
       this.whatsAppService.sendText(
         local.vendorUser.phone,
-        `✅ *Pagamento da assinatura confirmado!*\n\nR$ ${invoiceAmount.toFixed(2)} - Plano ${local.plan}\nPróxima cobrança: ${local.currentPeriodEnd?.toLocaleDateString('pt-BR')}`,
+        `✅ *Pagamento da assinatura confirmado!*\n\nR$ ${invoiceAmount.toFixed(2)} - Plano ${local.plan}\nPróxima cobrança: ${this.dataCiclo(local.currentPeriodEnd)}`,
       ).catch(() => {});
     }
     if (local.vendorUser?.id) {
