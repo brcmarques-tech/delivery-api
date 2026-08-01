@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { PagarmePlan } from './entities/pagarme-plan.entity';
 import { VendorPlan } from '../common/enums';
+import { PlatformConfigService } from '../config/platform-config.service';
 import { PLAN_CONFIGS } from '../common/plan-config';
 
 const BILLING_PERIODS = [
@@ -36,6 +37,7 @@ export class SubscriptionPlansService implements OnModuleInit {
     private plansRepository: Repository<PagarmePlan>,
     private configService: ConfigService,
     private httpService: HttpService,
+    private platformConfigService: PlatformConfigService,
   ) {
     const secretKey = this.configService.get('PAGARME_SECRET_KEY') || '';
     this.pagarmeAuthHeader = 'Basic ' + Buffer.from(`${secretKey}:`).toString('base64');
@@ -51,18 +53,37 @@ export class SubscriptionPlansService implements OnModuleInit {
 
   private async seedPlans() {
     for (const plan of PAID_PLANS) {
-      const config = PLAN_CONFIGS[plan];
+      // BUGFIX: lia o PLAN_CONFIGS estatico (common/plan-config.ts), enquanto TODO
+      // o resto do sistema usa a config editavel do superadmin
+      // (platform-config.service). Como o plano do Pagar.me criado aqui e o que
+      // de fato COBRA a assinatura recorrente, e `if (existing) continue` nunca
+      // re-sincroniza, subir o preco do PRO no painel fazia o vendedor ver e
+      // aceitar R$ 59,90 enquanto o cartao seguia sendo cobrado R$ 49,90 para
+      // sempre — vazamento de receita silencioso em cada ciclo (e cobranca a
+      // MAIOR se o preco fosse reduzido).
+      const config = await this.platformConfigService.getPlanConfig(plan);
       for (const period of BILLING_PERIODS) {
         const planName = `${plan}_${period.key.toUpperCase()}`;
         const existing = await this.plansRepository.findOne({
           where: { vendorPlan: plan, billingPeriod: period.key },
         });
 
+        const priceInCents = Math.round(config[getPriceKey(period.key)] * 100);
+
         if (existing) {
+          // Preco divergiu da configuracao? Registra — provisionar uma nova
+          // versao do plano no Pagar.me exige migrar as assinaturas vivas, entao
+          // isso e uma decisao operacional, nao algo para fazer sozinho no boot.
+          if (priceInCents > 0 && existing.priceInCents !== priceInCents) {
+            this.logger.warn(
+              `Plano ${planName}: preco configurado (${priceInCents} centavos) difere do plano ` +
+                `Pagar.me em uso (${existing.priceInCents} centavos). As assinaturas ATIVAS seguem ` +
+                `sendo cobradas pelo valor antigo ate serem migradas.`,
+            );
+          }
           continue;
         }
 
-        const priceInCents = Math.round(config[getPriceKey(period.key)] * 100);
         if (priceInCents <= 0) continue;
 
         const installmentsArray = Array.from(
