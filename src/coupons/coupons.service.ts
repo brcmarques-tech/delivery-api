@@ -243,7 +243,19 @@ export class CouponsService {
     return { coupon, discount };
   }
 
-  /** Increment usage count after order is created */
+  /**
+   * Increment usage count after order is created.
+   *
+   * A tabela é `coupons` (@Entity('coupons')); as quatro queries cruas de
+   * contador do sistema escreviam em `coupon`, que não existe. O Postgres
+   * respondia `relation "coupon" does not exist` em TODAS elas, com dois efeitos:
+   *
+   * 1. `maxUses` nunca era aplicado de verdade — `usesCount` ficava travado em
+   *    zero para sempre, então um cupom de "10 usos" valia infinitas vezes.
+   * 2. Aqui o erro NÃO era engolido, e a chamada acontece dentro da transação de
+   *    `createOrder`: todo pedido com cupom pago na entrega abortava inteiro.
+   *    (Os decrementos ficam em try/catch, então esses apenas logavam.)
+   */
   async incrementUsage(couponId: string): Promise<void> {
     // C4: incremento atômico-condicional. `validateAndCalculate` checa
     // `usesCount >= maxUses` e este incremento acontecia depois, fora de lock —
@@ -253,7 +265,7 @@ export class CouponsService {
     // podem ambas receber o desconto — só uma incrementa; travar isso 100% exige
     // reservar o slot na validação + constraint única por usuário/cupom.)
     await this.couponsRepository.manager.query(
-      `UPDATE coupon SET "usesCount" = "usesCount" + 1 WHERE id = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
+      `UPDATE coupons SET "usesCount" = "usesCount" + 1 WHERE id = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
       [couponId],
     );
   }
@@ -262,7 +274,7 @@ export class CouponsService {
   async decrementUsage(couponId: string): Promise<void> {
     // Only decrement if usesCount > 0 to avoid negative values
     await this.couponsRepository.manager.query(
-      `UPDATE coupon SET "usesCount" = GREATEST("usesCount" - 1, 0) WHERE id = $1`,
+      `UPDATE coupons SET "usesCount" = GREATEST("usesCount" - 1, 0) WHERE id = $1`,
       [couponId],
     );
   }

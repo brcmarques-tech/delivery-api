@@ -2172,7 +2172,7 @@ export class PaymentsService implements OnModuleDestroy {
               // Como todo rollback decrementa por ID, o estrago nunca se desfazia:
               // cupons de lojas alheias batiam maxUses sem uma venda sequer e
               // paravam de funcionar. Agora escopado pela loja do pedido.
-              `UPDATE coupon SET "usesCount" = "usesCount" + 1
+              `UPDATE coupons SET "usesCount" = "usesCount" + 1
                  WHERE code = $1 AND "storeId" = $2
                    AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
               [order.couponCode, order.store?.id],
@@ -2411,7 +2411,7 @@ export class PaymentsService implements OnModuleDestroy {
           await this.paymentsRepository.manager.query(
             // CRITICO: idem handleOrderPaid — escopar pela loja, senao o cupom de
             // mesmo codigo de outras lojas e consumido junto.
-            `UPDATE coupon SET "usesCount" = "usesCount" + 1
+            `UPDATE coupons SET "usesCount" = "usesCount" + 1
                WHERE code = $1 AND "storeId" = $2
                  AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
             [order.couponCode, order.store?.id],
