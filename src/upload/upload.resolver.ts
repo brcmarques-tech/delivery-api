@@ -1,5 +1,5 @@
 import { Resolver, Mutation, Query, Args, ObjectType, Field } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { UseGuards, BadRequestException } from '@nestjs/common';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { UploadService } from './upload.service';
 import { VisionService } from './vision.service';
@@ -16,6 +16,30 @@ class PhotoValidation {
   @Field({ defaultValue: false }) requiresManualReview: boolean;
 }
 
+// SEGURANCA: `folder` ia cru para o Cloudinary. Qualquer usuario autenticado
+// (inclusive CUSTOMER) podia despejar arquivos em qualquer pasta — inclusive
+// `identity` (documentos) — ou inventar caminhos, poluindo o namespace e
+// gerando custo de armazenamento. Sem sobrescrita de arquivo (o Cloudinary gera
+// public_id aleatorio), mas o abuso de espaco/pasta era livre.
+const PASTAS_PERMITIDAS = new Set([
+  'delivery',
+  'products',
+  'stores',
+  'categories',
+  'avatars',
+  'identity',
+  'promotions',
+  'services',
+]);
+
+function pastaValida(folder: string | undefined, padrao: string): string {
+  const f = (folder || padrao).trim();
+  if (!PASTAS_PERMITIDAS.has(f)) {
+    throw new BadRequestException('Pasta de upload invalida.');
+  }
+  return f;
+}
+
 @Resolver()
 export class UploadResolver {
   constructor(
@@ -29,7 +53,7 @@ export class UploadResolver {
     @Args('base64') base64: string,
     @Args('folder', { nullable: true }) folder?: string,
   ): Promise<string> {
-    return this.uploadService.uploadBase64(base64, folder || 'delivery');
+    return this.uploadService.uploadBase64(base64, pastaValida(folder, 'delivery'));
   }
 
   @Query(() => [String])
@@ -46,7 +70,7 @@ export class UploadResolver {
     @Args('url') url: string,
     @Args('folder', { nullable: true }) folder?: string,
   ): Promise<string> {
-    return this.uploadService.uploadFromUrl(url, folder || 'products');
+    return this.uploadService.uploadFromUrl(url, pastaValida(folder, 'products'));
   }
 
   @Mutation(() => PhotoValidation)

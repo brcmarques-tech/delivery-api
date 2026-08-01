@@ -9,6 +9,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Permission } from '../auth/decorators/permission.decorator';
 import { UserRole } from '../common/enums';
 import { RegisterDelivererInput } from './dto/register-deliverer.input';
 
@@ -95,6 +96,7 @@ export class AppUsersResolver {
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('approvals')
   async approveAppUser(@Args('id') id: string, @CurrentUser() admin: AppUser): Promise<AppUser> {
     const result = await this.appUsersService.approveUser(id);
     const adminEmail = admin.notificationEmail || admin.email;
@@ -105,6 +107,7 @@ export class AppUsersResolver {
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('approvals')
   async rejectAppUser(
     @Args('id') id: string,
     @Args('reason') reason: string,
@@ -119,6 +122,7 @@ export class AppUsersResolver {
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('users')
   async updateAppUserRole(
     @Args('id') id: string,
     @Args('role', { type: () => UserRole }) role: UserRole,
@@ -133,6 +137,7 @@ export class AppUsersResolver {
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('users')
   async toggleAppUserActive(@Args('id') id: string, @CurrentUser() admin: AppUser): Promise<AppUser> {
     const result = await this.appUsersService.toggleUserActive(id);
     const adminEmail = admin.notificationEmail || admin.email;
@@ -143,6 +148,7 @@ export class AppUsersResolver {
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('settings')
   async registerSuperadmin(
     @Args('name') name: string,
     @Args('email') email: string,
@@ -161,6 +167,7 @@ export class AppUsersResolver {
   @Mutation(() => AppUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('settings')
   async updateSuperadminPermissions(
     @Args('id') id: string,
     @Args('permissions') permissions: string,

@@ -7,6 +7,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Permission } from '../auth/decorators/permission.decorator';
 import { UserRole, VendorPlan } from '../common/enums';
 import { PlanInfo } from '../common/plan-info.type';
 import { AppUser } from './entities/app-user.entity';
@@ -67,6 +68,7 @@ export class VendorUsersResolver {
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('users')
   async toggleVendorUserActive(@Args('id') id: string, @CurrentUser() admin: any): Promise<VendorUser> {
     const result = await this.vendorUsersService.toggleUserActive(id);
     const adminEmail = admin.notificationEmail || admin.email;
@@ -77,6 +79,7 @@ export class VendorUsersResolver {
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('plans')
   async updateVendorPlan(
     @Args('id') id: string,
     @Args('plan', { type: () => VendorPlan }) plan: VendorPlan,
