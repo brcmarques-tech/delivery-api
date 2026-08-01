@@ -29,6 +29,7 @@ import { AppUser } from '../users/entities/app-user.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { MailService } from '../mail/mail.service';
 import { peppered } from '../common/utils/pepper';
+import { businessToday } from '../common/utils/business-time';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { RatingsService } from '../ratings/ratings.service';
@@ -331,9 +332,24 @@ export class StoresService implements OnApplicationBootstrap {
   private isWithinHighlightDays(highlightDaysPerMonth: number): boolean {
     if (highlightDaysPerMonth >= 30) return true;
     if (highlightDaysPerMonth <= 0) return false;
-    const today = new Date().getDate();
+    // BUGFIX: `new Date().getDate()` usa o fuso do PROCESSO (UTC em producao),
+    // entao a virada do mes — que decide se a loja ainda esta na janela de
+    // destaque — acontecia as 21:00 BRT do dia anterior. Agora conta o dia no
+    // fuso do negocio.
+    const today = Number(businessToday().slice(-2));
     return today <= highlightDaysPerMonth;
   }
+
+  // ATENCAO (decisao de negocio, NAO alterada aqui): com os valores padrao
+  // atuais — FREE {prioridade 1, destaque 15d}, PRO {1, 30d},
+  // PREMIUM {2, 15d}, ENTERPRISE {3, 30d} — a ordenacao fica invertida parte do
+  // mes: do dia 16 em diante o PREMIUM (R$ 99,90) sai da janela de destaque e cai
+  // para 0, enquanto o PRO (R$ 49,90) segue em 1 — ou seja, o plano mais barato
+  // aparece ACIMA do mais caro. E do dia 1 ao 15 FREE e PRO empatam em 1, entao
+  // a "prioridade na listagem" que o PRO anuncia nao existe na pratica.
+  // Corrigir isso e mudar precificacao/beneficio de plano, entao fica para o
+  // Bruno decidir os numeros (em common/plan-config.ts e platform-config.service.ts,
+  // que estao duplicados e vao divergir).
 
   private async sortByPriority(stores: Store[]): Promise<Store[]> {
     const storesWithPriority = await Promise.all(
