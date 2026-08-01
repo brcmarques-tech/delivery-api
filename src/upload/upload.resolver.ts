@@ -21,15 +21,21 @@ class PhotoValidation {
 // `identity` (documentos) — ou inventar caminhos, poluindo o namespace e
 // gerando custo de armazenamento. Sem sobrescrita de arquivo (o Cloudinary gera
 // public_id aleatorio), mas o abuso de espaco/pasta era livre.
+// Levantadas do codigo real dos clientes (app, painel do vendedor, superadmin).
+// ATENCAO: adicionar aqui ao criar um novo tipo de upload — uma pasta ausente
+// faz a mutation recusar e o fluxo quebra (foi o que quase aconteceu com
+// profile-photos/identity-photos no cadastro de entregador).
 const PASTAS_PERMITIDAS = new Set([
   'delivery',
   'products',
   'stores',
   'categories',
-  'avatars',
-  'identity',
-  'promotions',
   'services',
+  'promotions',
+  'avatars',
+  'profile-photos',
+  'identity-photos',
+  'identity',
 ]);
 
 function pastaValida(folder: string | undefined, padrao: string): string {
