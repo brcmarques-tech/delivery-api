@@ -12,11 +12,23 @@ export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestr
     // Check every 5 minutes
     this.intervalId = setInterval(() => {
       this.sendReminders();
+      this.expireUnpaid();
     }, 5 * 60_000);
   }
 
   onModuleDestroy() {
     if (this.intervalId) clearInterval(this.intervalId);
+  }
+
+  private async expireUnpaid() {
+    try {
+      const count = await this.appointmentsService.expireUnpaidAppointments();
+      if (count > 0) {
+        this.logger.log(`Cancelados ${count} agendamentos sem pagamento (horarios liberados)`);
+      }
+    } catch (err) {
+      this.logger.error('Falha ao expirar agendamentos sem pagamento:', err);
+    }
   }
 
   private async sendReminders() {

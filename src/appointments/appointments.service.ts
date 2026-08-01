@@ -8,7 +8,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, In, IsNull, Between } from 'typeorm';
+import { Repository, Not, In, IsNull, Between, LessThanOrEqual } from 'typeorm';
 import { Appointment } from './entities/appointment.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Service } from '../services/entities/service.entity';
@@ -142,6 +142,14 @@ export class AppointmentsService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    // A loja desativada pelo superadmin some da vitrine, mas o storeId continua
+    // valido: quem tinha o id salvo (historico, deep link, cache do app) seguia
+    // criando agendamento normalmente — inclusive gerando cobranca PIX/cartao e
+    // notificando um lojista banido. Desativar precisa impedir a entrada de
+    // dinheiro e de compromissos novos, nao so esconder a loja.
+    if (!store.isActive) {
+      throw new BadRequestException('Esta loja nao esta disponivel no momento.');
+    }
     if (store.storeType !== StoreType.SERVICES) {
       throw new BadRequestException('Esta loja nao aceita agendamentos');
     }
@@ -318,6 +326,14 @@ export class AppointmentsService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    // A loja desativada pelo superadmin some da vitrine, mas o storeId continua
+    // valido: quem tinha o id salvo (historico, deep link, cache do app) seguia
+    // criando agendamento normalmente — inclusive gerando cobranca PIX/cartao e
+    // notificando um lojista banido. Desativar precisa impedir a entrada de
+    // dinheiro e de compromissos novos, nao so esconder a loja.
+    if (!store.isActive) {
+      throw new BadRequestException('Esta loja nao esta disponivel no momento.');
+    }
     if (store.storeType !== StoreType.SERVICES) {
       throw new BadRequestException('Esta loja nao aceita agendamentos');
     }
@@ -416,11 +432,50 @@ export class AppointmentsService {
     const endMinutes = h * 60 + m + appointment.service.estimatedDuration;
     const endTime = `${String(Math.floor(endMinutes / 60)).padStart(2, '0')}:${String(endMinutes % 60).padStart(2, '0')}`;
 
-    appointment.scheduledDate = scheduledDate;
-    appointment.scheduledTime = scheduledTime;
-    appointment.endTime = endTime;
-    appointment.status = AppointmentStatus.PENDING;
-    await this.appointmentsRepository.save(appointment);
+    // A checagem acima e um classico check-then-act: `availableSlots` e o `save`
+    // ficavam fora de qualquer transacao, sem lock. Dois clientes com orcamento
+    // na mesma loja aceitando o mesmo horario viam ambos o slot livre e ambos
+    // gravavam. Pior: o lock de `create()` nao protegia nada contra este
+    // caminho, porque este escritor nao o respeitava — dava para `create` e
+    // `acceptQuote` gravarem o mesmo horario um por cima do outro. Agora usamos
+    // a mesma transacao: lock na loja e re-checagem por SOBREPOSICAO (nao so por
+    // horario identico, para cobrir duracoes diferentes).
+    await this.appointmentsRepository.manager.transaction(async (manager) => {
+      const lockedStore = await manager
+        .getRepository(Store)
+        .createQueryBuilder('store')
+        .setLock('pessimistic_write')
+        .where('store.id = :id', { id: appointment.storeId })
+        .getOne();
+      if (!lockedStore) throw new NotFoundException('Loja nao encontrada');
+
+      const conflict = await manager
+        .getRepository(Appointment)
+        .createQueryBuilder('apt')
+        .where('apt.storeId = :storeId', { storeId: appointment.storeId })
+        .andWhere('apt.id != :selfId', { selfId: appointment.id })
+        .andWhere('apt.scheduledDate = :date', { date: scheduledDate })
+        .andWhere('apt.deletedAt IS NULL')
+        .andWhere('apt.status NOT IN (:...excluded)', {
+          excluded: [
+            AppointmentStatus.CANCELLED,
+            AppointmentStatus.NO_SHOW,
+            AppointmentStatus.QUOTE_REJECTED,
+          ],
+        })
+        .andWhere('apt.scheduledTime < :endTime', { endTime })
+        .andWhere('apt.endTime > :startTime', { startTime: scheduledTime })
+        .getCount();
+      if (conflict > 0) {
+        throw new BadRequestException('Horario ja foi reservado. Escolha outro.');
+      }
+
+      appointment.scheduledDate = scheduledDate;
+      appointment.scheduledTime = scheduledTime;
+      appointment.endTime = endTime;
+      appointment.status = AppointmentStatus.PENDING;
+      await manager.getRepository(Appointment).save(appointment);
+    });
 
     this.notificationsService.sendToVendorUser(
       appointment.store.owner.id,
@@ -480,6 +535,19 @@ export class AppointmentsService {
     appointment.status = AppointmentStatus.CANCELLED;
     await this.appointmentsRepository.save(appointment);
 
+    // O cancelamento nao mexia no dinheiro: no cartao os R$ ficavam bloqueados
+    // no limite do cliente ate a pre-autorizacao caducar sozinha, e no PIX (ja
+    // pago de verdade) o valor ficava parado na plataforma sem nenhum caminho de
+    // devolucao. Nao bloqueia o cancelamento se o estorno falhar — o erro fica
+    // logado para reprocessamento.
+    await this.paymentsService
+      .releaseAppointmentPayment(appointment)
+      .catch((err) =>
+        this.logger.error(
+          `Falha ao liberar pagamento do agendamento ${appointment.appointmentNumber}: ${err?.message}`,
+        ),
+      );
+
     this.notificationsService.sendToVendorUser(
       appointment.store.owner.id,
       'Agendamento cancelado',
@@ -497,6 +565,19 @@ export class AppointmentsService {
 
     appointment.status = AppointmentStatus.CANCELLED;
     await this.appointmentsRepository.save(appointment);
+
+    // O cancelamento nao mexia no dinheiro: no cartao os R$ ficavam bloqueados
+    // no limite do cliente ate a pre-autorizacao caducar sozinha, e no PIX (ja
+    // pago de verdade) o valor ficava parado na plataforma sem nenhum caminho de
+    // devolucao. Nao bloqueia o cancelamento se o estorno falhar — o erro fica
+    // logado para reprocessamento.
+    await this.paymentsService
+      .releaseAppointmentPayment(appointment)
+      .catch((err) =>
+        this.logger.error(
+          `Falha ao liberar pagamento do agendamento ${appointment.appointmentNumber}: ${err?.message}`,
+        ),
+      );
 
     this.notificationsService.sendToAppUser(
       appointment.customerId,
@@ -603,6 +684,52 @@ export class AppointmentsService {
       throw new ForbiddenException('Voce nao tem acesso a este agendamento');
     }
     return appointment;
+  }
+
+  // ─── Expiracao por falta de pagamento ───────────────────
+
+  /**
+   * Cancela agendamentos que nunca foram pagos, liberando o horario.
+   *
+   * Pedidos ja tinham `expireAwaitingPaymentOrders`; agendamentos NAO tinham
+   * equivalente. O agendamento nasce PENDING antes de o pagamento existir, e
+   * `availableSlots` so ignora CANCELLED/NO_SHOW/QUOTE_REJECTED — entao um
+   * AWAITING_PAYMENT ocupava a grade indefinidamente. Bastava criar uma conta e
+   * chamar `createAppointment(PIX)` para cada slot dos proximos 30 dias, sem
+   * pagar nenhum, para deixar a agenda inteira da loja indisponivel para
+   * clientes reais, de graca, sem nenhuma rotina que limpasse. Os 30 min
+   * acompanham a validade do QR do PIX.
+   */
+  async expireUnpaidAppointments(): Promise<number> {
+    const trintaMinAtras = new Date(Date.now() - 30 * 60 * 1000);
+    const vencidos = await this.appointmentsRepository.find({
+      where: {
+        paymentStatus: 'AWAITING_PAYMENT',
+        status: In([
+          AppointmentStatus.PENDING,
+          AppointmentStatus.QUOTE_ACCEPTED,
+        ]),
+        createdAt: LessThanOrEqual(trintaMinAtras),
+        deletedAt: IsNull(),
+      },
+    });
+
+    for (const apt of vencidos) {
+      apt.status = AppointmentStatus.CANCELLED;
+      await this.appointmentsRepository.save(apt);
+      this.logger.log(
+        `Agendamento ${apt.appointmentNumber} cancelado por falta de pagamento — horario liberado`,
+      );
+      this.notificationsService
+        .sendToAppUser(
+          apt.customerId,
+          'Agendamento cancelado',
+          `${apt.appointmentNumber} foi cancelado porque o pagamento nao foi concluido.`,
+          { type: 'APPOINTMENT', appointmentId: apt.id },
+        )
+        .catch(() => {});
+    }
+    return vencidos.length;
   }
 
   // ─── Reminder ───────────────────────────────────────────

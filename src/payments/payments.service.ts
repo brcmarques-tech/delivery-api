@@ -3187,6 +3187,77 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Libera o dinheiro de um agendamento CANCELADO.
+   *
+   * Nenhuma das duas mutations de cancelamento (cliente ou lojista) tocava no
+   * pagamento — so trocavam o status e notificavam. Como `create` ja cobra
+   * (pre-autorizacao no cartao, PIX pago na hora), o resultado era:
+   *   - CARTAO: os R$ X ficavam bloqueados no limite do cliente ate a
+   *     pre-autorizacao caducar sozinha na adquirente, dias depois;
+   *   - PIX: o cliente ja PAGOU de verdade, o dinheiro ficava parado na conta da
+   *     plataforma, `isSettled` seguia false (o lojista tambem nao recebia) e
+   *     nao existia caminho nenhum de devolucao.
+   *
+   * Nao lanca: o cancelamento em si nao pode falhar por causa do estorno. O erro
+   * fica registrado em log para reprocessamento manual.
+   */
+  async releaseAppointmentPayment(appointment: Appointment): Promise<void> {
+    // Ja capturado/liquidado: nao e caso de liberacao, e de estorno manual.
+    if (appointment.capturedAt || appointment.isSettled) {
+      this.logger.warn(
+        `Agendamento ${appointment.appointmentNumber} cancelado ja com pagamento capturado — ` +
+          `estorno precisa de acao manual.`,
+      );
+      return;
+    }
+
+    // Cartao pre-autorizado e nao capturado: basta soltar a reserva.
+    if (appointment.preAuthChargeId) {
+      try {
+        await this.pagarmeDelete(`/charges/${appointment.preAuthChargeId}`);
+        this.logger.log(
+          `Pre-auth liberada no cancelamento do agendamento ${appointment.appointmentNumber}`,
+        );
+      } catch (err: any) {
+        this.logger.warn(
+          `Falha ao liberar pre-auth do agendamento ${appointment.appointmentNumber} ` +
+            `(pode ja ter expirado): ${err.response?.data?.message || err.message}`,
+        );
+      }
+      return;
+    }
+
+    // PIX ja pago: precisa devolver.
+    if (appointment.paymentStatus === 'PAID' && appointment.pagarmeOrderId) {
+      try {
+        const pagarmeOrder = await this.pagarmeGet(
+          `/orders/${appointment.pagarmeOrderId}`,
+        );
+        const charge = (pagarmeOrder?.charges || []).find(
+          (c: any) => c.status === 'paid' || c.status === 'captured',
+        );
+        if (!charge) {
+          this.logger.warn(
+            `Agendamento ${appointment.appointmentNumber}: nenhuma cobranca paga encontrada para estornar.`,
+          );
+          return;
+        }
+        await this.pagarmePost(`/charges/${charge.id}/refund`, {
+          amount: charge.amount,
+        });
+        this.logger.log(
+          `Estorno solicitado no cancelamento do agendamento ${appointment.appointmentNumber}`,
+        );
+      } catch (err: any) {
+        this.logger.error(
+          `[APPOINTMENT_REFUND_ERROR] ${appointment.appointmentNumber}: ` +
+            `${err.response?.data?.message || err.message}`,
+        );
+      }
+    }
+  }
+
   async settleAppointmentPayment(appointment: Appointment): Promise<void> {
     // Atomic idempotency guard
     const aptRepo = this.paymentsRepository.manager.getRepository(Appointment);
