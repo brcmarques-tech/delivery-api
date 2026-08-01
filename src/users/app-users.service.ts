@@ -299,6 +299,28 @@ export class AppUsersService {
   }
 
   async disconnectPayment(id: string): Promise<void> {
+    // Desconectar no meio de uma entrega fazia o entregador perder 100% do
+    // ganho: sem `pagarmeRecipientId` na hora do split, a parte dele e absorvida
+    // pela plataforma, definitivamente e sem retroativo. O guard de saldo do
+    // Pagar.me nao pega esse caso, porque no modelo de custodia o dinheiro so
+    // chega ao entregador APOS a entrega — durante a corrida o saldo dele e
+    // zero. Bloqueamos enquanto houver entrega em aberto ou pedido nao
+    // liquidado.
+    const pendentes = await this.appUsersRepository.manager.query(
+      `SELECT COUNT(*)::int AS n
+         FROM deliveries d
+         JOIN orders o ON o.id = d."orderId"
+        WHERE d."delivererId" = $1
+          AND (d."deliveredAt" IS NULL OR o."isSettled" = false)
+          AND o.status NOT IN ('CANCELLED','REJECTED','EXPIRED')`,
+      [id],
+    );
+    if ((pendentes?.[0]?.n ?? 0) > 0) {
+      throw new BadRequestException(
+        'Voce tem entregas em andamento ou pagamentos ainda nao repassados. ' +
+          'Conclua-as antes de desconectar sua conta de recebimento.',
+      );
+    }
     await this.appUsersRepository.update(id, {
       pagarmeRecipientId: null as any,
       paymentConnected: false,

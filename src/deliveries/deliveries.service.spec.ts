@@ -8,6 +8,7 @@ import { DeliveryOfferService } from './delivery-offer.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PlatformConfigService } from '../config/platform-config.service';
 
 describe('DeliveriesService', () => {
   let service: DeliveriesService;
@@ -70,6 +71,12 @@ describe('DeliveriesService', () => {
     sendToAppUser: jest.fn().mockResolvedValue(undefined),
   };
 
+// Comissao de entrega padrao da plataforma (10%): payoutAmount e o LIQUIDO que
+// o entregador recebe, nao a taxa cheia.
+const mockPlatformConfig = {
+  getDeliveryCommissionPercent: jest.fn().mockResolvedValue(10),
+};
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -81,6 +88,7 @@ describe('DeliveriesService', () => {
         { provide: DeliveryOfferService, useValue: mockOfferService },
         { provide: PUB_SUB, useValue: mockPubSub },
         { provide: NotificationsService, useValue: mockNotificationsService },
+        { provide: PlatformConfigService, useValue: mockPlatformConfig },
       ],
     }).compile();
 
@@ -263,7 +271,10 @@ describe('DeliveriesService', () => {
 
         await service.confirmDelivery('delivery-1', 'deliverer-1');
 
-        expect(delivery.payoutAmount).toBe(5.0);
+        // 5.00 de taxa - 10% de comissao = 4.50 liquido. Antes o teste exigia
+        // 5.00, congelando o bug: o app prometia a taxa cheia e o extrato do
+        // Pagar.me mostrava o liquido.
+        expect(delivery.payoutAmount).toBe(4.5);
         expect(delivery.payoutStatus).toBe('pending_confirmation');
       });
 
@@ -306,7 +317,10 @@ describe('DeliveriesService', () => {
 
         await service.confirmDelivery('delivery-1', 'deliverer-1');
 
-        expect(delivery.payoutAmount).toBe(5.0);
+        // 5.00 de taxa - 10% de comissao = 4.50 liquido. Antes o teste exigia
+        // 5.00, congelando o bug: o app prometia a taxa cheia e o extrato do
+        // Pagar.me mostrava o liquido.
+        expect(delivery.payoutAmount).toBe(4.5);
         expect(delivery.payoutStatus).toBe('pending_confirmation');
       });
     });

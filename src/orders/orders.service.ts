@@ -173,7 +173,19 @@ export class OrdersService {
       let weightGrams: number | undefined;
 
       if (product.isVariableWeight && itemInput.weightGrams) {
-        totalPrice = (unitPrice * itemInput.weightGrams) / 1000;
+        // Arredondar em CENTAVOS aqui e obrigatorio. A coluna e decimal(10,2),
+        // mas a pre-autorizacao usa o objeto EM MEMORIA (nao arredondado) e a
+        // captura usa o pedido relido do banco (arredondado pelo Postgres). Os
+        // dois arredondam de formas diferentes: Math.round opera sobre o binario
+        // IEEE-754 e o Postgres sobre o decimal exato. Com R$ 0,29/kg e 500 g,
+        // 0.145 * 100 da 14.499999999999998 -> a pre-autorizacao sai 14, o banco
+        // grava 0.15 e a captura pede 15 sobre uma autorizacao de 14: o Pagar.me
+        // recusa por valor acima do autorizado. O pedido ficava COMPLETED sem
+        // captura, com retryFailedSettlements repetindo o mesmo calculo errado a
+        // cada 60s por 48h — vendedor e entregador nunca recebiam por uma
+        // entrega ja feita.
+        totalPrice =
+          Math.round((unitPrice * itemInput.weightGrams) / 10) / 100;
         quantity = 1;
         weightGrams = itemInput.weightGrams;
       } else {
@@ -899,6 +911,21 @@ export class OrdersService {
     }
     order.customerConfirmedAt = new Date();
     return this.completeOrderWithPayment(order);
+  }
+
+  /**
+   * Grava a confirmacao de recebimento de forma atomica e diz se ESTE chamador
+   * foi quem a gravou. Usado pelos caminhos automaticos (proximidade por GPS e
+   * expiracao dos 10 min), que precisam persistir a coluna — `customerConfirmedAt`
+   * e a prova de recebimento que autoriza o repasse no modelo de custodia.
+   */
+  async claimCustomerConfirmation(orderId: string): Promise<boolean> {
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "customerConfirmedAt" = NOW()
+        WHERE id = $1 AND "customerConfirmedAt" IS NULL RETURNING id`,
+      [orderId],
+    );
+    return !!claim && claim.length > 0;
   }
 
   // ─── Cliente nega recebimento → DISPUTED ─────────────────────────────
@@ -1951,7 +1978,11 @@ export class OrdersService {
       throw new BadRequestException('Peso invalido. Informe um valor maior que zero.');
     }
 
-    item.totalPrice = (Number(item.unitPrice) * actualWeightGrams) / 1000;
+    // Mesmo arredondamento em centavos da criacao do pedido: sem ele, o valor em
+    // memoria e o que o Postgres grava em decimal(10,2) podem diferir em 1
+    // centavo, e a captura passa a pedir mais do que foi pre-autorizado.
+    item.totalPrice =
+      Math.round((Number(item.unitPrice) * actualWeightGrams) / 10) / 100;
     item.weightGrams = actualWeightGrams;
     await this.orderItemsRepository.save(item);
 

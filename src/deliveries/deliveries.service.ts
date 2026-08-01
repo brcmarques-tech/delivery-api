@@ -9,6 +9,7 @@ import { DeliveryOfferService } from './delivery-offer.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PlatformConfigService } from '../config/platform-config.service';
 
 @Injectable()
 export class DeliveriesService implements OnModuleInit {
@@ -19,6 +20,7 @@ export class DeliveriesService implements OnModuleInit {
     private ordersService: OrdersService,
     private offerService: DeliveryOfferService,
     private notificationsService: NotificationsService,
+    private platformConfigService: PlatformConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -96,6 +98,33 @@ export class DeliveriesService implements OnModuleInit {
 
       if (!lockedOrder || lockedOrder.length === 0) {
         throw new BadRequestException('Pedido não encontrado.');
+      }
+
+      // A regra "um entregador leva uma entrega por vez" era checada FORA desta
+      // transacao, sem lock no entregador, e nao era revalidada aqui dentro.
+      // Dois `acceptDelivery` em paralelo (dois toques no app, ou reenvio por
+      // timeout) para pedidos DIFERENTES liam ambos zero entregas ativas, e
+      // depois travavam linhas de `orders` distintas — sem conflito entre si.
+      // Resultado: uma pessoa com duas entregas simultaneas, dois pedidos fora
+      // da fila e duas lojas esperando uma coleta que so pode acontecer em
+      // serie. O lock no proprio entregador serializa as duas tentativas.
+      await manager.query(`SELECT id FROM app_users WHERE id = $1 FOR UPDATE`, [
+        deliverer.id,
+      ]);
+      const jaTem = await manager.query(
+        `SELECT d.id
+           FROM deliveries d
+           JOIN orders o ON o.id = d."orderId"
+          WHERE d."delivererId" = $1
+            AND d."deliveredAt" IS NULL
+            AND o.status NOT IN ('COMPLETED','CANCELLED','REJECTED','EXPIRED','DISPUTED')
+          LIMIT 1`,
+        [deliverer.id],
+      );
+      if (jaTem && jaTem.length > 0) {
+        throw new BadRequestException(
+          'Voce ja tem uma entrega em andamento. Finalize-a antes de aceitar outra.',
+        );
       }
 
       // O pedido precisa estar READY para ser aceito para entrega. Sem isto, um
@@ -278,7 +307,16 @@ export class DeliveriesService implements OnModuleInit {
       }
 
       if (!order.store?.hasOwnDelivery && deliveryFee > 0) {
-        delivery.payoutAmount = deliveryFee;
+        // payoutAmount guardava a taxa BRUTA, mas o que sai de fato para o
+        // entregador e liquido da comissao de entrega (default 10%). Como este
+        // campo e @Field e chega no app pelo myDeliveries, o entregador via
+        // "R$ 10,00" na tela e "R$ 9,00" no extrato do Pagar.me, toda entrega.
+        const comissaoPct =
+          await this.platformConfigService.getDeliveryCommissionPercent();
+        const brutoCents = Math.round(deliveryFee * 100);
+        const liquidoCents =
+          brutoCents - Math.round((brutoCents * comissaoPct) / 100);
+        delivery.payoutAmount = liquidoCents / 100;
         delivery.payoutStatus = 'pending_confirmation';
       }
     }

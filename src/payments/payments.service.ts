@@ -896,8 +896,26 @@ export class PaymentsService implements OnModuleDestroy {
           options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
         });
       } else {
-        // No deliverer recipient — platform absorbs deliverer share
+        // No deliverer recipient — platform absorbs deliverer share.
+        // Isto acontecia em SILENCIO: sem log, sem marca no pedido, sem
+        // pendencia registrada, e a captura saia como sucesso. O entregador
+        // perdia 100% do ganho de uma entrega ja feita e ninguem — nem ele nem a
+        // plataforma — tinha como descobrir depois, porque o split ja foi
+        // executado e nao ha retroativo. Marcamos o pedido para que a divida
+        // fique rastreavel e possa ser paga manualmente.
         platformAmount += delivererAmount;
+        this.logger.error(
+          `[DELIVERER_UNPAID] Pedido #${order.orderNumber}: entregador sem recipient no Pagar.me. ` +
+            `R$ ${(delivererAmount / 100).toFixed(2)} ficaram com a plataforma e precisam de repasse manual.`,
+        );
+        this.paymentsRepository.manager
+          .getRepository(Order)
+          .update(order.id, {
+            notes: `${order.notes || ''}\n[DELIVERER_UNPAID] R$ ${(delivererAmount / 100).toFixed(2)} nao repassados ao entregador (sem recipient).`.trim(),
+          })
+          .catch((err: any) =>
+            this.logger.error(`Falha ao marcar DELIVERER_UNPAID: ${err?.message}`),
+          );
       }
     } else {
       // Pickup or own delivery — vendor gets total minus commission

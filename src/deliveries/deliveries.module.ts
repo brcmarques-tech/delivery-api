@@ -13,6 +13,7 @@ import { OrdersModule } from '../orders/orders.module';
 import { UsersModule } from '../users/users.module';
 // PaymentsModule no longer needed — Pagar.me split handles all payments at transaction time
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PlatformConfigModule } from '../config/platform-config.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     forwardRef(() => OrdersModule),
     forwardRef(() => UsersModule),
     NotificationsModule,
+    PlatformConfigModule,
   ],
   providers: [
     DeliveriesService,
