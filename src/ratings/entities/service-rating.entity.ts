@@ -62,7 +62,11 @@ export class ServiceRating {
   serviceId: string;
 
   @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
-  @Field(() => Appointment)
+  // SEGURANCA: nullable porque `serviceRatings` e uma query PUBLICA (avaliacoes
+  // aparecem para qualquer visitante) e o agendamento carrega endereco do
+  // cliente, coordenadas GPS, valor e handles de pagamento. O @ResolveField do
+  // resolver so devolve o agendamento a quem e parte dele.
+  @Field(() => Appointment, { nullable: true })
   @ManyToOne(() => Appointment)
   @JoinColumn({ name: 'appointmentId' })
   appointment: Appointment;

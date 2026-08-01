@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, IsNull } from 'typeorm';
+import { Repository, Not, In, IsNull } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
 import { Delivery } from './entities/delivery.entity';
 import { AppUser } from '../users/entities/app-user.entity';
@@ -47,9 +47,34 @@ export class DeliveriesService implements OnModuleInit {
       );
     }
 
-    // Check if deliverer already has an active delivery (not delivered yet)
+    // Check if deliverer already has an active delivery (not delivered yet).
+    //
+    // BUGFIX: a checagem era so `deliveredAt IS NULL`, e existem caminhos que
+    // levam o PEDIDO a um estado terminal sem nunca fechar a ENTREGA — estorno
+    // pelo vendedor/painel do Pagar.me, cancelamento, expiracao. A linha ficava
+    // orfa (deliveredAt nulo pra sempre) e o entregador nao conseguia mais
+    // aceitar NENHUMA entrega: ficava permanentemente fora do trabalho, sem ter
+    // feito nada errado e sem forma de destravar pelo app. (Confirmado em dados
+    // reais: pedido COMPLETED com a entrega ainda sem deliveredAt.)
+    //
+    // A regra continua a mesma — um entregador so leva uma entrega por vez. So
+    // deixamos de contar como "em andamento" a entrega cujo pedido ja acabou.
     const activeDelivery = await this.deliveriesRepository.findOne({
-      where: { deliverer: { id: deliverer.id }, deliveredAt: IsNull() },
+      where: {
+        deliverer: { id: deliverer.id },
+        deliveredAt: IsNull(),
+        order: {
+          status: Not(
+            In([
+              OrderStatus.COMPLETED,
+              OrderStatus.CANCELLED,
+              OrderStatus.REJECTED,
+              OrderStatus.EXPIRED,
+              OrderStatus.DISPUTED,
+            ]),
+          ),
+        },
+      },
       relations: ['order'],
     });
     if (activeDelivery) {

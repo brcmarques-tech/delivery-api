@@ -1072,6 +1072,22 @@ export class OrdersService {
       );
     }
 
+    // BUGFIX: nao havia checagem de que existe entregador atribuido. Confirmar a
+    // coleta a partir de READY sem ninguem designado criava um BECO SEM SAIDA:
+    // o pedido some de findPendingForDelivery (que so lista READY), entao nenhum
+    // entregador pode mais aceita-lo; 5 min depois o scheduler o empurra para
+    // DELIVERING, e de DELIVERING so `confirmDelivery` sai — o que exige uma
+    // entrega com entregador. Pedido travado para sempre com o dinheiro do
+    // cliente retido.
+    //
+    // Confirmar coleta E confirmar a ENTREGA DO PEDIDO A UM ENTREGADOR — exigir
+    // que ele exista e aplicar a regra, nao afrouxa-la.
+    if (!order.delivery?.deliverer) {
+      throw new BadRequestException(
+        'Nenhum entregador aceitou este pedido ainda. Aguarde a atribuicao para confirmar a coleta.',
+      );
+    }
+
     // If already DELIVERING, just record timestamp
     if (order.status === OrderStatus.DELIVERING) {
       order.vendorConfirmedPickupAt = new Date();
@@ -1328,6 +1344,11 @@ export class OrdersService {
         statuses: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.PICKED_UP],
       })
       .andWhere('order.updatedAt <= :fiveMinAgo', { fiveMinAgo })
+      // BUGFIX: sem este filtro, o scheduler empurrava para DELIVERING pedidos
+      // SEM entregador atribuido — e de DELIVERING so sai por confirmDelivery,
+      // que exige entregador. Resultado: beco sem saida. Agora so avanca o que
+      // tem entregador de fato.
+      .andWhere('deliverer.id IS NOT NULL')
       .getMany();
 
     for (const order of stuckOrders) {
@@ -1596,6 +1617,35 @@ export class OrdersService {
 
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode estornar este pedido');
+    }
+
+    // BUGFIX: nao havia NENHUMA checagem de status. O vendedor conseguia estornar
+    // um pedido que ja estava com o entregador (DELIVERING) ou ate ja concluido —
+    // e o codigo abaixo ainda devolvia ao estoque mercadoria que fisicamente saiu
+    // da loja. Pior: o estorno marca o pedido como CANCELLED, e a entrega ficava
+    // orfa (deliveredAt nulo), travando o entregador.
+    //
+    // Estorno direto do vendedor so faz sentido enquanto ninguem pegou a
+    // mercadoria. Depois disso o caminho correto e a DISPUTA, que ja existe e
+    // sabe reverter repasse e acertar o entregador — a regra nao foi afrouxada,
+    // apenas roteada para o fluxo certo.
+    const estornavelPeloVendedor = [
+      OrderStatus.AWAITING_PAYMENT,
+      OrderStatus.PAYMENT_REVIEW,
+      OrderStatus.PENDING,
+      OrderStatus.ACCEPTED,
+      OrderStatus.PREPARING,
+      OrderStatus.READY,
+    ];
+    if (!estornavelPeloVendedor.includes(order.status)) {
+      throw new BadRequestException(
+        'Este pedido ja saiu para entrega ou foi concluido. Abra uma disputa para resolver o estorno.',
+      );
+    }
+    if (order.delivery?.deliverer) {
+      throw new BadRequestException(
+        'Um entregador ja aceitou este pedido. Abra uma disputa para resolver o estorno.',
+      );
     }
 
     const result = await this.paymentsService.refundOrder(orderId);
@@ -1874,6 +1924,12 @@ export class OrdersService {
       throw new BadRequestException('Este produto nao e de peso variavel');
     }
 
+    // BUGFIX: `actualWeightGrams` chegava sem validacao nenhuma — um valor
+    // negativo virava totalPrice negativo e contaminava subtotal/total/comissao.
+    if (!Number.isFinite(actualWeightGrams) || actualWeightGrams <= 0) {
+      throw new BadRequestException('Peso invalido. Informe um valor maior que zero.');
+    }
+
     item.totalPrice = (Number(item.unitPrice) * actualWeightGrams) / 1000;
     item.weightGrams = actualWeightGrams;
     await this.orderItemsRepository.save(item);
@@ -1883,14 +1939,25 @@ export class OrdersService {
       (sum, i) => sum + Number(i.totalPrice),
       0,
     );
-    const discount = Number(updatedOrder.discount) || 0;
+    // BUGFIX: o desconto ficava CONGELADO do momento do pedido e era reaplicado
+    // sobre um subtotal novo e menor. Ex.: 2 kg a R$50 = R$100 com cupom fixo de
+    // R$100 (valido, pois o cupom e limitado ao subtotal na criacao); o vendedor
+    // pesa 500 g -> subtotal R$25 -> total = 25 - 100 + frete = NEGATIVO, e
+    // comissao negativa junto. Um total negativo ia direto para a captura no
+    // Pagar.me. Agora o desconto e re-limitado ao novo subtotal (mesma regra do
+    // cupom na criacao: nunca desconta mais do que o valor dos itens).
+    const rawDiscount = Number(updatedOrder.discount) || 0;
+    const discount = Math.min(rawDiscount, subtotal);
+    const baseComissionavel = Math.max(subtotal - discount, 0);
+    updatedOrder.discount = discount;
     updatedOrder.subtotal = subtotal;
-    updatedOrder.total = subtotal - discount + Number(updatedOrder.deliveryFee);
+    updatedOrder.total = Math.max(
+      baseComissionavel + Number(updatedOrder.deliveryFee),
+      0,
+    );
     updatedOrder.commissionAmount =
       Math.round(
-        (((subtotal - discount) * Number(updatedOrder.commissionPercent)) /
-          100) *
-          100,
+        ((baseComissionavel * Number(updatedOrder.commissionPercent)) / 100) * 100,
       ) / 100;
     const saved = await this.ordersRepository.save(updatedOrder);
 
