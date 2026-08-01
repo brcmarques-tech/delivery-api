@@ -28,6 +28,25 @@ export class ProductsService {
     private verificationService: VerificationService,
   ) {}
 
+  // SEGURANCA: o dono da LOJA e do PRODUTO ja eram checados, mas o `categoryId`
+  // entrava cru. Um vendedor podia criar/editar um produto da sua loja apontando
+  // para uma categoria de OUTRA loja — e a vitrine publica monta o catalogo por
+  // categoria (store.categories -> c.products), entao o produto dele aparecia
+  // dentro da loja alheia. Injecao de catalogo entre lojas.
+  private async assertCategoryBelongsToStore(
+    categoryId: string | undefined | null,
+    storeId: string,
+  ): Promise<void> {
+    if (!categoryId) return;
+    const rows = await this.productsRepository.manager.query(
+      `SELECT 1 FROM categories WHERE id = $1 AND "storeId" = $2 LIMIT 1`,
+      [categoryId, storeId],
+    );
+    if (!rows || rows.length === 0) {
+      throw new BadRequestException('Categoria invalida para esta loja.');
+    }
+  }
+
   private async checkProductLimit(storeId: string): Promise<void> {
     const store = await this.storeRepository.findOne({
       where: { id: storeId },
@@ -63,6 +82,7 @@ export class ProductsService {
       store: { id: input.storeId } as any,
       category: input.categoryId ? ({ id: input.categoryId } as any) : undefined,
     });
+    await this.assertCategoryBelongsToStore(input.categoryId, input.storeId);
     const saved = await this.productsRepository.save(product);
     this.pubSub.publish('productUpdated', { productUpdated: saved });
     this.verificationService.onProductAdded(input.storeId).catch(() => {});
@@ -114,6 +134,10 @@ export class ProductsService {
     if (input.imageUrl !== undefined) product.imageUrl = input.imageUrl;
     if (input.unit !== undefined) product.unit = input.unit;
     if (input.categoryId !== undefined) {
+      await this.assertCategoryBelongsToStore(
+        input.categoryId,
+        (product as any).store?.id ?? (product as any).storeId,
+      );
       product.category = input.categoryId ? ({ id: input.categoryId } as any) : null;
     }
     if (input.stock !== undefined) product.stock = input.stock;

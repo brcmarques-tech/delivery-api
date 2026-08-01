@@ -112,6 +112,12 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais invalidas');
     }
 
+    // SEGURANCA: conta desativada pelo superadmin nao pode emitir token novo.
+    // Sem isto, banir alguem nao adiantava — bastava logar de novo.
+    if (user.isActive === false) {
+      throw new UnauthorizedException('Esta conta esta desativada. Fale com o suporte.');
+    }
+
     if (user.sessionToken && !forceLogin) {
       throw new BadRequestException('ACTIVE_SESSION');
     }
@@ -148,6 +154,11 @@ export class AuthService {
     const passwordValid = await bcrypt.compare(peppered(password), user.password);
     if (!passwordValid) {
       throw new UnauthorizedException('Credenciais invalidas');
+    }
+
+    // SEGURANCA: idem loginApp — vendedor banido nao emite token novo.
+    if (user.isActive === false) {
+      throw new UnauthorizedException('Esta conta esta desativada. Fale com o suporte.');
     }
 
     const accessToken = await this.signWithSession(user.id, user.role, 'vendor');

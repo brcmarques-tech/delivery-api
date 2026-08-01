@@ -359,7 +359,7 @@ describe('DeliveriesService', () => {
 
   // ─── findByDeliverer ────────────────────────────────────────
   describe('findByDeliverer', () => {
-    it('should query deliveries for given deliverer', async () => {
+    it('should query deliveries for given deliverer (primeira pagina)', async () => {
       deliveriesRepo.find.mockResolvedValue([]);
       await service.findByDeliverer('d1');
       expect(deliveriesRepo.find).toHaveBeenCalledWith({
@@ -369,7 +369,25 @@ describe('DeliveriesService', () => {
         // separar). O teste ainda esperava a lista antiga de relations.
         relations: ['order', 'order.store', 'order.customer', 'order.items', 'order.items.product'],
         order: { createdAt: 'DESC' },
+        // Perf (F6): a lista passou a ser paginada — antes descia o historico
+        // vitalicio inteiro a cada abertura da aba Entregas.
+        take: 20,
+        skip: 0,
       });
+    });
+
+    it('should respect limit/offset and cap the page size at 100', async () => {
+      deliveriesRepo.find.mockResolvedValue([]);
+      await service.findByDeliverer('d1', 50, 40);
+      expect(deliveriesRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 50, skip: 40 }),
+      );
+
+      deliveriesRepo.find.mockClear();
+      await service.findByDeliverer('d1', 9999, -5);
+      expect(deliveriesRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 100, skip: 0 }),
+      );
     });
   });
 

@@ -189,6 +189,16 @@ export class Order {
   @Column({ default: false })
   isSettled: boolean;
 
+  // Registra COMO o pedido foi liquidado. Antes isso era inferido de
+  // `capturedAt` — premissa falsa: no caminho do antifraude (PAYMENT_REVIEW
+  // aprovado no painel) o Pagar.me captura sozinho e grava `capturedAt` SEM
+  // nenhum split, e o repasse sai depois por /transfers manual. Na hora do
+  // estorno/chargeback o codigo via `capturedAt` e presumia "split reverte
+  // sozinho", entao NAO revertia os repasses: a plataforma devolvia ao cliente
+  // e perdia tambem o valor ja transferido a vendedor e entregador.
+  @Column({ default: false })
+  settledViaSplit: boolean;
+
   @Column({ default: false })
   couponCredited: boolean;
 

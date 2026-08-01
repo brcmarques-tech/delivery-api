@@ -240,6 +240,12 @@ export class AppUsersService {
     const user = await this.appUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     user.isActive = !user.isActive;
+    // SEGURANCA: ao DESATIVAR, rotaciona o sessionToken para derrubar na hora
+    // qualquer sessao ja aberta (o jwt.strategy compara o token da sessao).
+    // Sem isto o banido continuava usando o app ate o JWT expirar.
+    if (!user.isActive) {
+      user.sessionToken = crypto.randomBytes(32).toString('hex');
+    }
     return this.appUsersRepository.save(user);
   }
 

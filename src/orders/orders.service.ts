@@ -976,9 +976,14 @@ export class OrdersService {
     if (order.status !== OrderStatus.DISPUTED) {
       throw new BadRequestException('Este pedido nao esta em disputa');
     }
-    order.disputeReason = undefined as any;
-    order.disputedAt = undefined as any;
-    await this.ordersRepository.save(order);
+    // BUGFIX: era `undefined as any` + save() — o TypeORM IGNORA propriedades
+    // undefined, entao as colunas mantinham o valor antigo e o pedido seguia
+    // marcado como disputado apos a disputa ser cancelada (relatorios e telas
+    // de disputa continuavam listando). `null` grava NULL de verdade.
+    await this.ordersRepository.update(order.id, {
+      disputeReason: null,
+      disputedAt: null,
+    } as any);
     return this.updateStatus(order.id, OrderStatus.COMPLETED);
   }
 
@@ -1358,9 +1363,24 @@ export class OrdersService {
 
     for (const order of expiredOrders) {
       try {
-        order.customerConfirmedAt = new Date();
-        await this.ordersRepository.save(order);
-        await this.completeOrderWithPayment(order);
+        // CRITICO: era `order.customerConfirmedAt = ...; save(order)` — um save de
+        // ENTIDADE INTEIRA a partir de um snapshot carregado antes do laco. Se o
+        // cliente abrisse disputa (ou confirmasse) nesse meio-tempo, o save
+        // regravava o status antigo POR CIMA do novo, ressuscitando um estado que
+        // o cliente ja tinha deixado. O confirmReceipt manual ja usava claim
+        // atomico exatamente por isso; este caminho ficou de fora.
+        //
+        // Agora: claim atomico (so confirma se ainda estiver aguardando o cliente)
+        // e releitura fresca antes de finalizar.
+        const claim = await this.ordersRepository.manager.query(
+          `UPDATE orders SET "customerConfirmedAt" = NOW(), "updatedAt" = NOW()
+             WHERE id = $1 AND "customerConfirmedAt" IS NULL AND status = $2
+             RETURNING id`,
+          [order.id, OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
+        );
+        if (!claim || claim.length === 0) continue; // cliente agiu antes: nao mexe
+        const fresh = await this.findById(order.id);
+        await this.completeOrderWithPayment(fresh);
       } catch (err) {
         console.error(`Auto-confirm failed for order ${order.id}:`, err);
       }
@@ -1486,13 +1506,32 @@ export class OrdersService {
       return order;
     }
 
-    // DB-level atomic guard: prevents double settlement via concurrent calls
+    // DB-level atomic guard: prevents double settlement via concurrent calls.
+    //
+    // CRITICO: o guard era apenas `status != COMPLETED`, o que deixava este metodo
+    // finalizar um pedido em QUALQUER outro estado. Os chamadores (scheduler de
+    // auto-confirmacao e automacao por geolocalizacao) trabalham sobre um snapshot
+    // carregado antes do laco: se o cliente abrisse disputa nesse meio-tempo, o
+    // pedido DISPUTED era sobrescrito para COMPLETED e o dinheiro liberado —
+    // apagando a disputa. Idem para um pedido ja CANCELLED/estornado, que era
+    // "ressuscitado" e pago uma segunda vez.
+    //
+    // Agora so aceita as origens legitimas da finalizacao (entrega confirmada
+    // pelo entregador, ou marcada como entregue). A regra de negocio continua a
+    // mesma — apenas deixou de ser possivel pular estados.
     const result = await this.ordersRepository.manager.query(
-      `UPDATE orders SET status = $1, "completedAt" = NOW() WHERE id = $2 AND status != $1 RETURNING id`,
-      [OrderStatus.COMPLETED, order.id],
+      `UPDATE orders SET status = $1, "completedAt" = NOW()
+         WHERE id = $2 AND status IN ($3, $4) RETURNING id`,
+      [
+        OrderStatus.COMPLETED,
+        order.id,
+        OrderStatus.DELIVERER_CONFIRMED_DELIVERY,
+        OrderStatus.DELIVERED,
+      ],
     );
     if (!result || result.length === 0) {
-      // Another call already completed this order
+      // Ja finalizado por outra chamada, ou saiu do estado que permite finalizar
+      // (disputa/cancelamento) — devolve o estado real sem tocar em nada.
       return this.findById(order.id);
     }
 

@@ -981,8 +981,16 @@ export class PaymentsService implements OnModuleDestroy {
       return;
     }
 
-    // Credit card with capture-with-split: refund on the charge reverses splits automatically
-    if (order.paymentMethod === 'CREDIT_CARD' && order.preAuthChargeId && order.capturedAt) {
+    // Cartao liquidado via capture-with-split: o estorno na cobranca ja desfaz os
+    // splits no proprio Pagar.me, entao nao ha transferencia manual a reverter.
+    //
+    // CRITICO: a condicao era `preAuthChargeId && capturedAt`, que tambem casava
+    // com o caminho do ANTIFRAUDE — ali o Pagar.me captura sozinho (gravando
+    // capturedAt) SEM split, e o repasse sai depois por /transfers manual. Nesses
+    // pedidos a reversao era pulada: no chargeback a plataforma devolvia 100% ao
+    // cliente E perdia o que ja tinha repassado a vendedor/entregador.
+    // Agora usa a marca explicita gravada na propria captura com split.
+    if (order.paymentMethod === 'CREDIT_CARD' && order.settledViaSplit) {
       this.logger.log(`Order #${order.orderNumber} settled via capture-with-split — refund will reverse splits automatically`);
       return;
     }
@@ -1077,7 +1085,9 @@ export class PaymentsService implements OnModuleDestroy {
     if (order.paymentMethod === 'CREDIT_CARD' && order.preAuthChargeId && !order.capturedAt) {
       try {
         await this.captureWithSplit(order);
-        await orderRepo.update(order.id, { capturedAt: new Date() });
+        // Marca explicitamente que ESTE pedido foi liquidado via split na captura
+        // — e o unico caso em que o estorno no Pagar.me desfaz os repasses sozinho.
+        await orderRepo.update(order.id, { capturedAt: new Date(), settledViaSplit: true } as any);
         const totalCents = Math.round(Number(order.total) * 100);
         this.logger.log(`Settlement for order #${order.orderNumber} | capture-with-split | total: ${totalCents} cents`);
       } catch (err: any) {
@@ -2100,8 +2110,15 @@ export class PaymentsService implements OnModuleDestroy {
           ? pagarmeOrderId
           : order.mpPreferenceId;
         const paidClaim = await orderRepo.manager.query(
+          // CRITICO: "updatedAt" = NOW() e OBRIGATORIO aqui. expirePendingOrders
+          // usa updatedAt para medir ha quanto tempo o pedido esta PENDING sem a
+          // loja aceitar. @UpdateDateColumn so age em save() do TypeORM — SQL cru
+          // deixava updatedAt na hora da CRIACAO. Resultado: PIX pago 10+ min
+          // depois da criacao virava PENDING ja "vencido" e o scheduler expirava
+          // + estornava um pedido recem-pago, dizendo que a loja nao respondeu.
           `UPDATE orders
-              SET status = 'PENDING', "couponCredited" = true, "mpPreferenceId" = $2
+              SET status = 'PENDING', "couponCredited" = true, "mpPreferenceId" = $2,
+                  "updatedAt" = NOW()
             WHERE id = $1 AND status IN ('AWAITING_PAYMENT','PAYMENT_REVIEW')
             RETURNING id`,
           [order.id, newMpPref],
@@ -2132,8 +2149,16 @@ export class PaymentsService implements OnModuleDestroy {
         if (order.couponCode) {
           try {
             await this.paymentsRepository.manager.query(
-              `UPDATE coupon SET "usesCount" = "usesCount" + 1 WHERE code = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
-              [order.couponCode],
+              // CRITICO: era `WHERE code = $1` sem escopo de loja. `code` NAO e
+              // unico globalmente (a unicidade e por loja) — entao um pedido pago
+              // com PROMO10 da loja A incrementava o PROMO10 de TODAS as lojas.
+              // Como todo rollback decrementa por ID, o estrago nunca se desfazia:
+              // cupons de lojas alheias batiam maxUses sem uma venda sequer e
+              // paravam de funcionar. Agora escopado pela loja do pedido.
+              `UPDATE coupon SET "usesCount" = "usesCount" + 1
+                 WHERE code = $1 AND "storeId" = $2
+                   AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
+              [order.couponCode, order.store?.id],
             );
           } catch (err: any) {
             this.logger.warn(`Failed to increment coupon usage for ${order.couponCode}: ${err.message}`);
@@ -2318,7 +2343,9 @@ export class PaymentsService implements OnModuleDestroy {
       // recebe 0 linhas e retorna. Dispensa o antigo snapshot `couponAlreadyCredited`.
       const setCaptured = wasPaymentReview && !!order.preAuthChargeId && !order.capturedAt;
       const chargeClaim = await orderRepo.manager.query(
-        `UPDATE orders SET status = 'PENDING', "couponCredited" = true${setCaptured ? ', "capturedAt" = NOW()' : ''}
+        // CRITICO: idem ao handleOrderPaid — sem "updatedAt" = NOW() o
+        // expirePendingOrders expira e estorna pedido que acabou de ser pago.
+        `UPDATE orders SET status = 'PENDING', "couponCredited" = true, "updatedAt" = NOW()${setCaptured ? ', "capturedAt" = NOW()' : ''}
            WHERE id = $1 AND status IN ('AWAITING_PAYMENT','PAYMENT_REVIEW') RETURNING id`,
         [order.id],
       );
@@ -2365,8 +2392,12 @@ export class PaymentsService implements OnModuleDestroy {
       if (order.couponCode) {
         try {
           await this.paymentsRepository.manager.query(
-            `UPDATE coupon SET "usesCount" = "usesCount" + 1 WHERE code = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
-            [order.couponCode],
+            // CRITICO: idem handleOrderPaid — escopar pela loja, senao o cupom de
+            // mesmo codigo de outras lojas e consumido junto.
+            `UPDATE coupon SET "usesCount" = "usesCount" + 1
+               WHERE code = $1 AND "storeId" = $2
+                 AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
+            [order.couponCode, order.store?.id],
           );
         } catch (err: any) {
           this.logger.warn(`Failed to increment coupon usage (charge.paid) for ${order.couponCode}: ${err.message}`);
@@ -2394,6 +2425,33 @@ export class PaymentsService implements OnModuleDestroy {
       // cancelar + reverter repasse (gated). Impede um `charge.refunded` forjado
       // de puxar dinheiro de volta do vendedor/entregador.
       if (!(await this.webhookChargeConfirms(data.id, null, order, ['refunded', 'partially_refunded', 'chargedback'], false))) return;
+
+      // BUGFIX: `partially_refunded` caia no mesmo caminho do estorno TOTAL —
+      // cancelava o pedido inteiro e revertia 100% dos repasses. Um reembolso de
+      // cortesia de R$10 num pedido entregue de R$200 puxava de volta os ~R$190
+      // ja repassados ao vendedor e marcava o pedido como cancelado.
+      // Estorno parcial nao cancela nem reverte: registra e fica para conferencia
+      // manual (a plataforma decide como ratear).
+      const chargeStatus = String(data?.status || '').toLowerCase();
+      const isPartial =
+        chargeStatus === 'partially_refunded' ||
+        (typeof data?.amount === 'number' &&
+          typeof data?.paid_amount === 'number' &&
+          data.amount > 0 &&
+          data.amount < data.paid_amount);
+      if (isPartial) {
+        this.logger.warn(
+          `Estorno PARCIAL na cobranca ${data.id} do pedido #${order.orderNumber} — ` +
+            `pedido NAO cancelado e repasses NAO revertidos. Conferencia manual necessaria.`,
+        );
+        await orderRepo.manager.query(
+          `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`,
+          [order.id, `
+[PARTIAL_REFUND ${new Date().toISOString()}] charge=${data.id}`],
+        );
+        return;
+      }
+
       const wasCompleted = order.status === OrderStatus.COMPLETED;
       order.status = OrderStatus.CANCELLED;
       await orderRepo.save(order);
@@ -2405,7 +2463,14 @@ export class PaymentsService implements OnModuleDestroy {
       // proprio refundOrder rodou primeiro (ele seta CANCELLED). Esse caminho
       // cobre o estorno iniciado direto no painel do Pagar.me, que dispara
       // charge.refunded sem passar pelo refundOrder.
-      if (wasCompleted && order.isSettled) {
+      // BUGFIX: era `wasCompleted && isSettled`. `resolveDispute` liquida o
+      // pedido ENQUANTO ele ainda esta DISPUTED e so depois transiciona para
+      // COMPLETED — se essa transicao falhar, sobra um pedido liquidado que nunca
+      // ficou COMPLETED. No estorno seguinte a reversao era pulada e a plataforma
+      // devolvia ao cliente sem recuperar o repasse. `isSettled` sozinho ja e a
+      // condicao correta ("o dinheiro ja saiu") e reverseSettlementTransfers ja
+      // e no-op quando nao houve liquidacao.
+      if (order.isSettled) {
         this.logger.error(`CRITICAL: Estorno em pedido COMPLETED #${order.orderNumber} — revertendo repasses`);
         try {
           await this.reverseSettlementTransfers(order);
@@ -2466,7 +2531,14 @@ export class PaymentsService implements OnModuleDestroy {
       this.logger.warn(`Pedido #${order.orderNumber} cancelado por chargeback | wasCompleted: ${wasCompleted}`);
 
       // C1: If order was COMPLETED, reverse settlement transfers
-      if (wasCompleted && order.isSettled) {
+      // BUGFIX: era `wasCompleted && isSettled`. `resolveDispute` liquida o
+      // pedido ENQUANTO ele ainda esta DISPUTED e so depois transiciona para
+      // COMPLETED — se essa transicao falhar, sobra um pedido liquidado que nunca
+      // ficou COMPLETED. No estorno seguinte a reversao era pulada e a plataforma
+      // devolvia ao cliente sem recuperar o repasse. `isSettled` sozinho ja e a
+      // condicao correta ("o dinheiro ja saiu") e reverseSettlementTransfers ja
+      // e no-op quando nao houve liquidacao.
+      if (order.isSettled) {
         this.logger.error(`CRITICAL: Chargeback on COMPLETED order #${order.orderNumber} — reversing transfers`);
         try {
           await this.reverseSettlementTransfers(order);
@@ -2536,7 +2608,8 @@ export class PaymentsService implements OnModuleDestroy {
     // A partir daqui o pedido JÁ está CANCELLED no banco: se o estorno externo
     // falhar, ele permanece cancelado e sinalizado p/ reconciliação manual — o
     // que é preferível a um estorno em dobro.
-    if (wasCompleted && wasSettled) {
+    // BUGFIX: idem — `isSettled` e a condicao real de "dinheiro ja repassado".
+    if (wasSettled) {
       this.logger.warn(`Refund requested for completed+settled order #${order.orderNumber} — reversing transfers first`);
       try {
         await this.reverseSettlementTransfers(order);

@@ -220,6 +220,12 @@ export class VendorUsersService {
     const user = await this.vendorUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     user.isActive = !user.isActive;
+    // SEGURANCA: ao DESATIVAR, rotaciona o sessionToken para derrubar na hora
+    // qualquer sessao ja aberta (o jwt.strategy compara o token da sessao).
+    // Sem isto o banido continuava usando o app ate o JWT expirar.
+    if (!user.isActive) {
+      user.sessionToken = crypto.randomBytes(32).toString('hex');
+    }
     return this.vendorUsersRepository.save(user);
   }
 
@@ -254,7 +260,14 @@ export class VendorUsersService {
       if (expiresAt) {
         user.planExpiresAt = expiresAt;
       } else {
-        const e = new Date();
+        // BUGFIX: a base era sempre "hoje" — uma renovacao por PIX feita antes do
+        // vencimento DESTRUIA os dias restantes ja pagos (ex.: faltando 40 dias,
+        // comprar +12 meses dava 12 meses a partir de hoje, perdendo os 40).
+        // Agora empilha sobre o que resta: base = max(hoje, vencimento atual).
+        // Continua correto para quem ja venceu (base vira hoje).
+        const atual = user.planExpiresAt ? new Date(user.planExpiresAt) : null;
+        const base = atual && atual.getTime() > Date.now() ? atual : new Date();
+        const e = new Date(base);
         e.setMonth(e.getMonth() + durationMonths);
         user.planExpiresAt = e;
       }
