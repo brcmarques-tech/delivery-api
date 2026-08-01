@@ -933,6 +933,23 @@ export class PaymentsService implements OnModuleDestroy {
         type: 'flat',
         options: { charge_processing_fee: true, liable: true, charge_remainder_fee: true },
       });
+    } else if (splitRules.length > 0) {
+      // BUGFIX: com comissao 0% (PREMIUM/ENTERPRISE) em pedido de retirada ou
+      // entrega propria, o vendedor fica com 100% e `platformAmount` da 0 —
+      // entao a regra da plataforma NAO era adicionada e o split saia SEM
+      // ninguem marcado como responsavel (`liable`) nem pagando a taxa da
+      // adquirente. Ou o Pagar.me recusa (422) e o pedido entregue nunca e
+      // capturado (a plataforma nao recebe NADA), ou aceita e a plataforma paga
+      // o MDR do proprio bolso em todo pedido desses.
+      // Sem regra de valor zero (que o gateway costuma recusar): as opcoes de
+      // taxa/responsabilidade passam para a regra do vendedor.
+      const principal = splitRules[0];
+      principal.options = {
+        ...(principal.options || {}),
+        charge_processing_fee: true,
+        liable: true,
+        charge_remainder_fee: true,
+      };
     }
 
     // Final validation
@@ -3180,24 +3197,39 @@ export class PaymentsService implements OnModuleDestroy {
 
     if (vendorRecipientId && vendorAmount > 0) {
       try {
-        const result = await this.pagarmePost('/transfers', {
-          amount: vendorAmount,
-          recipient_id: vendorRecipientId,
-          metadata: {
-            appointment_id: appointment.id,
-            appointment_number: appointment.appointmentNumber,
-            type: 'service_payment',
+        const result = await this.pagarmePost(
+          '/transfers',
+          {
+            amount: vendorAmount,
+            recipient_id: vendorRecipientId,
+            metadata: {
+              appointment_id: appointment.id,
+              appointment_number: appointment.appointmentNumber,
+              type: 'service_payment',
+            },
           },
-        });
+          // BUGFIX: sem Idempotency-Key, qualquer re-tentativa (manual ou
+          // automatica) pagaria o vendedor DUAS VEZES. O caminho de PEDIDO ja
+          // usava chave deterministica (Error#2); a copia de agendamento nao foi
+          // atualizada junto.
+          `settle-apt-${appointment.id}-vendor`,
+        );
         this.logger.log(`Transfer to vendor for appointment ${appointment.appointmentNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
       } catch (err: any) {
         const errorDetail = JSON.stringify(err.response?.data || err.message);
         this.logger.error(`Transfer to vendor failed for appointment ${appointment.appointmentNumber}: ${errorDetail}`);
+        // BUGFIX: `isSettled` foi marcado ANTES da transferencia e continuava
+        // `true` mesmo com a transferencia falhando — o agendamento saia da fila
+        // para sempre, o vendedor NUNCA era pago e a plataforma ficava com 100%,
+        // em silencio. (O caminho de cartao logo acima ja revertia; o de PIX
+        // nao.) Agora reverte para poder ser re-tentado — e a chave de
+        // idempotencia acima garante que a re-tentativa nao pague duas vezes.
+        await aptRepo.update(appointment.id, { isSettled: false } as any);
         if (appointment.store?.owner?.id) {
           this.notificationsService.sendToVendorUser(
             appointment.store.owner.id,
             'Falha na transferencia',
-            `Transferencia do agendamento ${appointment.appointmentNumber} (R$ ${(vendorAmount / 100).toFixed(2)}) falhou.`,
+            `Transferencia do agendamento ${appointment.appointmentNumber} (R$ ${(vendorAmount / 100).toFixed(2)}) falhou. Sera re-tentada.`,
             { type: 'TRANSFER_FAILED', appointmentId: appointment.id },
           ).catch(() => {});
         }

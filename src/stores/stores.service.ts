@@ -299,7 +299,12 @@ export class StoresService implements OnApplicationBootstrap {
       where: { owner: { id: owner.id } },
     });
 
-    if (currentStores >= planConfig.maxStores) {
+    // BUGFIX: `0` significa ILIMITADO em maxProductsPerStore (products.service.ts
+    // trata explicitamente), mas aqui era comparado direto — entao o plano
+    // CUSTOM (`maxStores: 0`, a faixa "fale com vendas") deixava justamente o
+    // cliente negociado SEM PODER CRIAR NENHUMA LOJA, com a mensagem "seu plano
+    // permite no maximo 0 loja(s)". Semantica agora consistente.
+    if (planConfig.maxStores > 0 && currentStores >= planConfig.maxStores) {
       throw new BadRequestException(
         `Seu plano permite no maximo ${planConfig.maxStores} loja(s). Faca upgrade para criar mais.`,
       );
@@ -416,7 +421,21 @@ export class StoresService implements OnApplicationBootstrap {
   }
 
   async findByWhatsappNumber(number: string): Promise<Store | null> {
-    return this.storesRepository.findOne({ where: { whatsappNumber: number } });
+    // BUGFIX: o controller do n8n normaliza o telefone para so digitos
+    // ("5553984424244") e aqui a comparacao era EXATA contra a coluna, que o
+    // vendedor digita livre no painel ("+55 53 8442-4244"). Nunca casava — o
+    // roteador do WhatsApp entao concluia "nao e vendedor" e mandava TODA
+    // mensagem de vendedor para o agente do CLIENTE (ferramentas e prompt
+    // errados) ou para a resposta de desconhecido. O agente do vendedor estava
+    // inerte. O users/by-phone ja tinha sido corrigido assim; este ficou.
+    const digits = (number || '').replace(/\D/g, '');
+    if (!digits) return null;
+    const semPais = digits.startsWith('55') ? digits.slice(2) : digits;
+    return this.storesRepository
+      .createQueryBuilder('s')
+      .where("regexp_replace(s.\"whatsappNumber\", '[^0-9]', '', 'g') = :d", { d: digits })
+      .orWhere("regexp_replace(s.\"whatsappNumber\", '[^0-9]', '', 'g') = :nc", { nc: semPais })
+      .getOne();
   }
 
   async findByOwner(ownerId: string): Promise<Store[]> {

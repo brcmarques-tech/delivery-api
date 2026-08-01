@@ -44,6 +44,10 @@ async function bootstrap() {
   }
 
   const port = process.env.PORT || 3000;
+  // Sem isto o Nest nao dispara onModuleDestroy no SIGTERM — os clearInterval
+  // dos 4 schedulers (e do OTP) nunca rodam no shutdown.
+  app.enableShutdownHooks();
+
   await app.listen(port);
   console.log(`API rodando na porta ${port}`);
 
@@ -70,4 +74,15 @@ async function bootstrap() {
     }, 10 * 60 * 1000);
   }
 }
-bootstrap();
+// BUGFIX: `bootstrap()` era chamado sem `.catch()`. Uma falha no boot (banco
+// momentaneamente indisponivel, coluna faltando, seed/site-config falhando)
+// virava unhandled rejection: o Node derruba o processo com stack trace cru,
+// SEM evento no Sentry (o filtro global so cobre escopo de request) — ninguem
+// fica sabendo por que a API nao subiu.
+bootstrap().catch((err) => {
+  try {
+    Sentry.captureException(err);
+  } catch {}
+  console.error('[BOOTSTRAP] Falha ao iniciar a API:', err);
+  process.exit(1);
+});

@@ -6,11 +6,14 @@ import {
   ManyToOne,
   CreateDateColumn,
   UpdateDateColumn,
-  Index,
-} from 'typeorm';
+  Index, Unique, JoinColumn } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 
 @ObjectType()
+// Unicidade real no banco (migration 1785600000000). Antes era so uma checagem
+// read-then-write no service, sem constraint — dois cupons de mesmo codigo na
+// mesma loja eram possiveis, e o update sequer re-checava.
+@Unique('UQ_coupons_code_store', ['code', 'storeId'])
 @Entity('coupons')
 export class Coupon {
   @Field(() => ID)
@@ -56,7 +59,13 @@ export class Coupon {
   @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store)
+  @JoinColumn({ name: 'storeId' })
   store: Store;
+
+  // Coluna FK declarada para o @Unique('code','storeId') acima poder referencia-la
+  // (o TypeORM exige a propriedade na entity, nao so a relacao).
+  @Column()
+  storeId: string;
 
   @Field()
   @CreateDateColumn()

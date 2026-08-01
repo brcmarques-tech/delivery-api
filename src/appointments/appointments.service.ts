@@ -15,7 +15,7 @@ import { Service } from '../services/entities/service.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { AppointmentStatus } from '../common/enums/appointment-status.enum';
-import { businessMinutes, businessTodayDate } from '../common/utils/business-time';
+import { businessMinutes, businessToday, businessTodayDate } from '../common/utils/business-time';
 import { StoreType } from '../common/enums/store-type.enum';
 import { CreateAppointmentInput } from './dto/create-appointment.input';
 import { RequestQuoteInput } from './dto/request-quote.input';
@@ -608,11 +608,15 @@ export class AppointmentsService {
   // ─── Reminder ───────────────────────────────────────────
 
   async sendUpcomingReminders(): Promise<number> {
-    // BRT = UTC-3, server runs in BRT but stores as UTC
+    // BUGFIX: o comentario antigo dizia "server runs in BRT" — em producao NAO
+    // roda (TZ=UTC). O lembrete de 1 hora era calculado em UTC contra horarios
+    // de parede brasileiros: disparava ~4h adiantado (e marcava reminderSent,
+    // entao o lembrete de verdade nunca chegava), e agendamento a partir das
+    // ~21:00 BRT nunca era encontrado porque a data UTC ja era a de amanha.
     const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayStr = businessToday(now);
 
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const nowMinutes = businessMinutes(now);
     const targetMin = nowMinutes + 55;
     const targetMax = nowMinutes + 65;
 

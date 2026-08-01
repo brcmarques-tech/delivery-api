@@ -304,6 +304,33 @@ export class DeliveriesService implements OnModuleInit {
   }
 
   // Perf (F6): paginado (limit/offset); o take de 100 vira teto do limit.
+  /** O usuario e parte deste pedido? (cliente, dono da loja ou entregador) */
+  async userIsOrderParty(orderId: string, userId: string, role?: string): Promise<boolean> {
+    if (!orderId || !userId) return false;
+    if (role === 'SUPERADMIN') return true;
+    const rows = await this.deliveriesRepository.manager.query(
+      `SELECT 1
+         FROM orders o
+         LEFT JOIN stores s ON s.id = o."storeId"
+         LEFT JOIN deliveries d ON d."orderId" = o.id
+        WHERE o.id = $1
+          AND ($2 IN (o."customerId", s."ownerId") OR d."delivererId" = $2)
+        LIMIT 1`,
+      [orderId, userId],
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
+  /** O usuario e o entregador atribuido a esta entrega? */
+  async delivererOwnsDelivery(deliveryId: string, userId: string): Promise<boolean> {
+    if (!deliveryId || !userId) return false;
+    const rows = await this.deliveriesRepository.manager.query(
+      `SELECT 1 FROM deliveries WHERE id = $1 AND "delivererId" = $2 LIMIT 1`,
+      [deliveryId, userId],
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
   async findByDeliverer(delivererId: string, limit = 20, offset = 0): Promise<Delivery[]> {
     const deliveries = await this.deliveriesRepository.find({
       where: { deliverer: { id: delivererId } },

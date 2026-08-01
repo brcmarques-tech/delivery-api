@@ -55,24 +55,36 @@ export class PlatformConfigService {
     return parseFloat(value);
   }
 
+  // BUGFIX: todos os getters de dinheiro eram `parseFloat` cru, sem faixa nem
+  // guarda de NaN, e os setters (resolver) nao validavam nada. Uma comissao
+  // NEGATIVA digitada no painel fazia `vendorAmount = total - (negativo)` ficar
+  // MAIOR que a cobranca: a plataforma transferia mais do que recebeu. E no
+  // cartao o splitSum passava do total, entao a captura falhava para sempre e o
+  // pedido nunca era cobrado. Um valor invalido agora cai no padrao.
+  private static clamp(valor: string, padrao: number, min: number, max: number): number {
+    const n = parseFloat(valor);
+    if (!Number.isFinite(n)) return padrao;
+    return Math.min(Math.max(n, min), max);
+  }
+
   async getDeliveryPricePerKm(): Promise<number> {
     const value = await this.get('delivery_price_per_km', '1.50');
-    return parseFloat(value);
+    return PlatformConfigService.clamp(value, 1.5, 0, 1000);
   }
 
   async getDeliveryBasePrice(): Promise<number> {
     const value = await this.get('delivery_base_price', '3.00');
-    return parseFloat(value);
+    return PlatformConfigService.clamp(value, 3, 0, 1000);
   }
 
   async getDeliveryCommissionPercent(): Promise<number> {
     const value = await this.get('delivery_commission_percent', '10');
-    return parseFloat(value);
+    return PlatformConfigService.clamp(value, 10, 0, 100);
   }
 
   async getMinimumOrderPlatform(): Promise<number> {
     const value = await this.get('minimum_order_platform', '1');
-    return parseFloat(value);
+    return PlatformConfigService.clamp(value, 1, 0, 10000);
   }
 
   // Perf (L8/F5): resolvido — cache in-memory com TTL de 60s + invalidacao no set().
@@ -145,7 +157,7 @@ export class PlatformConfigService {
       values.get(`plan_${p}_${suffix}`) ?? fallback;
 
     const maxStores = parseInt(val('max_stores', String(def.maxStores)));
-    const commissionPercent = parseFloat(val('commission_percent', String(def.commissionPercent)));
+    const commissionPercent = PlatformConfigService.clamp(val('commission_percent', String(def.commissionPercent)), def.commissionPercent, 0, 100);
     const monthlyPrice = parseFloat(val('monthly_price', String(def.monthlyPrice)));
     const quarterlyPrice = parseFloat(val('quarterly_price', String(def.quarterlyPrice)));
     const semiannualPrice = parseFloat(val('semiannual_price', String(def.semiannualPrice)));

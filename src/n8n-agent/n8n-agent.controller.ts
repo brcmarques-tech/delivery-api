@@ -403,8 +403,17 @@ export class N8nAgentController {
     // #4: o agente não pode dirigir estados de entrega/liquidação (que movem
     // dinheiro): PICKED_UP/DELIVERING/DELIVERED/DELIVERER_CONFIRMED_DELIVERY/
     // COMPLETED/VENDOR_CONFIRMED_PICKUP ficam de fora.
-    const AGENT_ALLOWED_STATUSES = ['ACCEPTED', 'PREPARING', 'READY', 'CANCELLED', 'REJECTED'];
-    if (!AGENT_ALLOWED_STATUSES.includes(body.status)) {
+    // BUGFIX: a allowlist era UNICA para os dois agentes. Como quem se identifica
+    // por `customerId` e o proprio cliente, ele podia empurrar o PROPRIO pedido
+    // por PENDING -> ACCEPTED -> PREPARING -> READY (todas na lista) — e READY e
+    // exatamente o estado que faz o pedido entrar em `availableDeliveries`: um
+    // entregador seria despachado para coletar um pedido que a loja nunca
+    // aceitou nem preparou. Agora o conjunto permitido depende de QUEM se
+    // identificou: vendedor conduz o preparo; cliente so cancela o proprio.
+    const VENDOR_STATUSES = ['ACCEPTED', 'PREPARING', 'READY', 'CANCELLED', 'REJECTED'];
+    const CUSTOMER_STATUSES = ['CANCELLED'];
+    const permitidos = body.storeId ? VENDOR_STATUSES : CUSTOMER_STATUSES;
+    if (!permitidos.includes(body.status)) {
       throw new ForbiddenException('O agente nao pode definir este status do pedido.');
     }
 
