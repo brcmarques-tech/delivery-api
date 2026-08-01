@@ -26,6 +26,7 @@ import { VerificationService } from '../stores/verification.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { MailService } from '../mail/mail.service';
 import { OrderStatus } from '../common/enums';
+import { businessClock } from '../common/utils/business-time';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 type OnOrderReadyCallback = (order: Order) => void;
@@ -110,13 +111,23 @@ export class OrdersService {
     const store = await this.storesService.findById(input.storeId);
     const isPickup = input.isPickup || false;
 
+    // BUGFIX: so `isOpen` era checado. Loja DESATIVADA pela plataforma seguia
+    // aceitando pedido por link direto — o pedido entrava e era roteado para uma
+    // loja que nao deveria mais operar.
+    if (!store.isActive) {
+      throw new BadRequestException('Esta loja nao esta disponivel no momento');
+    }
+
     if (!store.isOpen) {
       throw new BadRequestException('Esta loja esta fechada no momento');
     }
 
     if (store.deliveryStartTime && store.deliveryEndTime) {
-      const now = new Date();
-      const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      // BUGFIX: usava now.getHours() — em producao o processo roda em UTC
+      // (proposital), entao comparava 3h adiantado com o horario de parede que
+      // o vendedor cadastrou. Loja 08:00-18:00 so aceitava pedido das 05:00 as
+      // 15:00 BRT e recusava tudo no pico. Ver common/utils/business-time.ts.
+      const currentTime = businessClock();
       // Trata janelas que cruzam a meia-noite (ex.: 18:00 as 02:00). Antes a
       // comparação simples rejeitava o dia inteiro nesse caso, e a loja nunca
       // recebia pedido.

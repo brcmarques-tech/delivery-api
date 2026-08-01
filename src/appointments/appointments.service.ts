@@ -15,6 +15,7 @@ import { Service } from '../services/entities/service.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { AppointmentStatus } from '../common/enums/appointment-status.enum';
+import { businessMinutes, businessTodayDate } from '../common/utils/business-time';
 import { StoreType } from '../common/enums/store-type.enum';
 import { CreateAppointmentInput } from './dto/create-appointment.input';
 import { RequestQuoteInput } from './dto/request-quote.input';
@@ -61,16 +62,20 @@ export class AppointmentsService {
     const dateObj = new Date(date + 'T00:00:00');
     if (isNaN(dateObj.getTime())) throw new BadRequestException('Data invalida');
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (dateObj < today) return [];
+    // BUGFIX: `new Date()` + setHours usava o fuso do PROCESSO, que em producao
+    // e UTC. Depois das 21:00 BRT a data UTC ja e o dia seguinte, entao "hoje"
+    // era tratado como passado e a agenda do proprio dia retornava vazia. E o
+    // nowMinutes em UTC descartava ~3h de horarios ainda validos (a manha
+    // inteira sumia da grade). Agora tudo no fuso do negocio.
+    const today = businessTodayDate();
+    const dateOnly = new Date(date + 'T00:00:00.000Z');
+    if (dateOnly < today) return [];
 
     // BL#2: se a data é HOJE, não oferecer horários que já passaram. Antes só a
     // data era comparada (à meia-noite), então marcar hoje às 09:00 às 15:00 era
     // aceito.
-    const now = new Date();
-    const isToday = dateObj.getTime() === today.getTime();
-    const nowMinutes = isToday ? now.getHours() * 60 + now.getMinutes() : -1;
+    const isToday = dateOnly.getTime() === today.getTime();
+    const nowMinutes = isToday ? businessMinutes() : -1;
 
     const dayOfWeek = dateObj.getDay();
 
@@ -156,9 +161,11 @@ export class AppointmentsService {
     const dateObj = new Date(input.scheduledDate + 'T00:00:00');
     if (isNaN(dateObj.getTime())) throw new BadRequestException('Data invalida');
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (dateObj < today) throw new BadRequestException('Data nao pode ser no passado');
+    // BUGFIX: idem availableSlots — comparacao de data no fuso do negocio.
+    // Em UTC, depois das 21:00 BRT o proprio dia virava "passado".
+    const today = businessTodayDate();
+    const dateOnlyUtc = new Date(input.scheduledDate + 'T00:00:00.000Z');
+    if (dateOnlyUtc < today) throw new BadRequestException('Data nao pode ser no passado');
 
     const maxDate = new Date();
     maxDate.setDate(maxDate.getDate() + 30);

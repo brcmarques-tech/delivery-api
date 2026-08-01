@@ -131,6 +131,11 @@ export class StoresService implements OnApplicationBootstrap {
         });
 
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    // BUGFIX: `isActive` era filtrado apenas na LISTAGEM. Uma loja desativada
+    // (fraude, inadimplencia, encerramento) sumia da home mas continuava
+    // servindo o catalogo inteiro pelo link direto /loja/<slug> — ja
+    // compartilhado no Instagram/WhatsApp — e os pedidos eram aceitos.
+    if (!store.isActive) throw new NotFoundException('Loja nao encontrada');
 
     const [avgRating, totalRatings] = await Promise.all([
       this.ratingsService.averageStoreRating(store.id),
