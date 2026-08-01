@@ -12,9 +12,15 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole, VendorPlan } from '../common/enums';
+import { GqlThrottlerGuard } from '../auth/guards/gql-throttler.guard';
+import { Throttle } from '@nestjs/throttler';
 
-// M11 / L10: TODO — Add @Throttle() decorator from @nestjs/throttler on sensitive mutations
-// (saveCard, requestAnticipation, registerRecipient) once throttler module is installed.
+// M11 / L10: RESOLVIDO — o throttler ja esta instalado e em uso no auth.resolver
+// desde a rodada de seguranca; este TODO ficou desatualizado. Mutations que
+// movem dinheiro ou falam com o gateway agora tem limite proprio: sem ele, um
+// script conseguia disparar tokenizacao de cartao / pedido de antecipacao /
+// cadastro de recebedor em rajada, gerando custo e ruido no Pagar.me.
+@UseGuards(GqlThrottlerGuard)
 @Resolver(() => Payment)
 export class PaymentsResolver {
   constructor(private paymentsService: PaymentsService) {}
@@ -88,6 +94,7 @@ export class PaymentsResolver {
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR, UserRole.DELIVERER)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async registerRecipient(
     @CurrentUser() user: any,
     @Args('recipientData') recipientData: string,
@@ -153,6 +160,7 @@ export class PaymentsResolver {
   @Mutation(() => SavedCard)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.CUSTOMER, UserRole.DELIVERER)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async saveCard(
     @Args('token') token: string,
     @CurrentUser() user: AppUser,
@@ -209,6 +217,7 @@ export class PaymentsResolver {
   @Mutation(() => AnticipationResult)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR, UserRole.DELIVERER)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async requestAnticipation(@CurrentUser() user: any): Promise<AnticipationResult> {
     const recipientId = user.pagarmeRecipientId;
     if (!recipientId) {

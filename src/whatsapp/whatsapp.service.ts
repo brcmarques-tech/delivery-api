@@ -24,7 +24,15 @@ export class WhatsAppService {
     if (!digits.startsWith('55')) digits = `55${digits}`;
     // WhatsApp BR: celulares com 9 digitos (55 + DDD + 9XXXX-XXXX = 13 digitos)
     // sao registrados no WhatsApp sem o nono digito (55 + DDD + XXXX-XXXX = 12 digitos)
-    if (digits.length === 13 && digits[4] === '9') {
+    //
+    // BUGFIX: a remocao era aplicada a TODOS os numeros. Essa convencao so vale
+    // para DDD >= 31 — em Sao Paulo, Rio e demais DDDs ate 30 o nono digito FAZ
+    // PARTE do identificador. Resultado: mensagem enviada para um numero que nao
+    // existe, `sendText` devolvia false e ninguem checa o retorno, entao pedido
+    // confirmado, pedido pronto, saiu para entrega, recuperacao de senha e aviso
+    // de plano NUNCA chegavam justamente nos maiores DDDs do pais — em silencio.
+    const ddd = Number(digits.slice(2, 4));
+    if (digits.length === 13 && digits[4] === '9' && ddd >= 31) {
       digits = digits.slice(0, 4) + digits.slice(5);
     }
     return digits;
