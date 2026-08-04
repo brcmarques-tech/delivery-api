@@ -49,7 +49,13 @@ export class RolesGuard implements CanActivate {
         // Falha FECHADA: permissions corrompido nao pode virar acesso total.
         return false;
       }
-      return mapa?.[permissao] !== false;
+      // Falha FECHADA tambem para chave AUSENTE. Antes era `!== false`, entao um
+      // mapa parcial — perfeitamente possivel via mutation direta, ja que
+      // registerSuperadmin aceita qualquer JSON — concedia todas as chaves que
+      // nao estivessem explicitamente negadas. O painel sempre envia as 14, mas
+      // o guard nao pode depender disso. `permissions` null continua sendo o
+      // superadmin pleno historico (tratado acima).
+      return mapa?.[permissao] === true;
     }
 
     return requiredRoles.includes(user.role);

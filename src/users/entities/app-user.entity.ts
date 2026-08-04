@@ -158,6 +158,13 @@ export class AppUser {
   resetPasswordExpires: Date;
 
   // Permissoes do superadmin (null = todas as permissoes)
+  //
+  // A coluna e jsonb, entao o TypeORM devolve um OBJETO — mas o campo GraphQL e
+  // String. Ao pedir `permissions` numa query, o scalar String nao conseguia
+  // serializar o objeto e a query inteira falhava com "String cannot represent
+  // value". Por isso o campo nunca foi pedido pelo painel, e o sistema de
+  // permissoes granulares ficou inteiro sem efeito. O @ResolveField no
+  // AppUsersResolver serializa antes de devolver.
   @Field(() => String, { nullable: true })
   @Column({ type: 'jsonb', nullable: true })
   permissions: string | null;

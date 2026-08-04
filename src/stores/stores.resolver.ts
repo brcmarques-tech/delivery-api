@@ -26,6 +26,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Permission } from '../auth/decorators/permission.decorator';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole, VerificationLevel } from '../common/enums';
 import { PlatformConfigService } from '../config/platform-config.service';
@@ -231,6 +232,7 @@ export class StoresResolver {
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('stores')
   async toggleStoreActive(
     @Args('id') id: string,
     @CurrentUser() admin: any,
@@ -251,6 +253,7 @@ export class StoresResolver {
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('stores')
   requestStoreDelete(
     @Args('storeId') storeId: string,
     @Args('password') password: string,
@@ -285,6 +288,7 @@ export class StoresResolver {
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('stores')
   async setStoreVerification(
     @Args('storeId') storeId: string,
     @Args('level', { type: () => VerificationLevel }) level: VerificationLevel,

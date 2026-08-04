@@ -44,6 +44,7 @@ export class VendorUsersResolver {
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('approvals')
   async approveVendorUser(@Args('id') id: string, @CurrentUser() admin: any): Promise<VendorUser> {
     const result = await this.vendorUsersService.approveUser(id);
     const adminEmail = admin.notificationEmail || admin.email;
@@ -54,6 +55,7 @@ export class VendorUsersResolver {
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('approvals')
   async rejectVendorUser(
     @Args('id') id: string,
     @Args('reason') reason: string,

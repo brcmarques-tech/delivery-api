@@ -1,5 +1,5 @@
 import { Resolver, Query, Mutation, Args, ResolveField, Parent, Context } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
+import { UseGuards, ForbiddenException } from '@nestjs/common';
 import { verify as jwtVerify } from 'jsonwebtoken';
 import { AppUser } from './entities/app-user.entity';
 import { ApprovalLog } from './entities/approval-log.entity';
@@ -43,6 +43,14 @@ export class AppUsersResolver {
     }
     if (!payload) return false;
     return payload.role === 'SUPERADMIN' || (!!payload.sub && payload.sub === user.id);
+  }
+
+  /** Serializa o jsonb para String — ver o comentario no campo da entity. */
+  @ResolveField(() => String, { nullable: true })
+  permissions(@Parent() user: AppUser): string | null {
+    const raw = (user as any).permissions;
+    if (raw === null || raw === undefined) return null;
+    return typeof raw === 'string' ? raw : JSON.stringify(raw);
   }
 
   @ResolveField(() => String, { nullable: true })
@@ -128,6 +136,32 @@ export class AppUsersResolver {
     @Args('role', { type: () => UserRole }) role: UserRole,
     @CurrentUser() admin: AppUser,
   ): Promise<AppUser> {
+    // ESCALONAMENTO DE PRIVILEGIO: promover alguem a SUPERADMIN cria uma conta
+    // com `permissions = null`, que o RolesGuard trata como superadmin PLENO.
+    // Como esta mutation exigia apenas a chave `users`, um admin restrito
+    // (users:true, settings:false) promovia a propria conta secundaria e passava
+    // a poder tudo — inclusive `settings`. Promover a superadmin agora exige a
+    // mesma chave que administra superadmins.
+    if (role === UserRole.SUPERADMIN) {
+      const raw = (admin as any).permissions;
+      const permitido =
+        raw === null ||
+        raw === undefined ||
+        (() => {
+          try {
+            const mapa = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            return mapa?.settings === true;
+          } catch {
+            return false;
+          }
+        })();
+      if (!permitido) {
+        throw new ForbiddenException(
+          'Promover a SUPERADMIN exige a permissao de Configuracoes.',
+        );
+      }
+    }
+
     const result = await this.appUsersService.updateUserRole(id, role);
     const adminEmail = admin.notificationEmail || admin.email;
     this.mailService.sendAdminActionEmail(adminEmail, admin.name, 'Role de usuario alterado', `Usuario: ${result.name} (${result.email})\nNovo role: ${role}`).catch(() => {});
