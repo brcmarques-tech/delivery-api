@@ -1010,8 +1010,22 @@ export class PaymentsService implements OnModuleDestroy {
 
   // C1 + C3: Reverse settlement from vendor/deliverer back to platform
   // Used on chargeback or refund of already-completed (settled) orders
-  async reverseSettlementTransfers(order: Order): Promise<void> {
-    if (!order.isSettled) {
+  /**
+   * @param motivo distingue ESTORNO de CHARGEBACK — a diferenca decide se as
+   * transferencias precisam ser revertidas na mao. Ver o bloco do split abaixo.
+   */
+  async reverseSettlementTransfers(
+    order: Order,
+    motivo: 'refund' | 'chargeback' = 'refund',
+  ): Promise<void> {
+    // A guarda era `!order.isSettled`, e esse booleano volta a FALSE quando uma
+    // das duas transferencias falha — mesmo com a outra ja efetivada. Entao um
+    // chargeback depois de liquidacao PARCIAL saia por aqui sem recuperar o
+    // dinheiro que JA tinha saido: a plataforma devolvia 100% ao cliente e
+    // perdia o repasse feito. Agora a condicao e "alguma parte saiu de fato".
+    const algoSaiu =
+      order.isSettled || !!order.vendorSettledAt || !!order.delivererSettledAt;
+    if (!algoSaiu) {
       this.logger.log(`No settlement to reverse for order #${order.orderNumber} (not settled)`);
       return;
     }
@@ -1024,8 +1038,16 @@ export class PaymentsService implements OnModuleDestroy {
     // semanticamente correto: depois de reverter, o dinheiro nao esta mais
     // repassado.
     const reverseClaim = await this.paymentsRepository.manager.query(
-      `UPDATE orders SET "isSettled" = false, "updatedAt" = NOW()
-         WHERE id = $1 AND "isSettled" = true RETURNING id`,
+      `UPDATE orders
+          SET "isSettled" = false,
+              "vendorSettledAt" = NULL,
+              "delivererSettledAt" = NULL,
+              "updatedAt" = NOW()
+        WHERE id = $1
+          AND ("isSettled" = true
+               OR "vendorSettledAt" IS NOT NULL
+               OR "delivererSettledAt" IS NOT NULL)
+        RETURNING id, "isSettled" AS estava_liquidado`,
       [order.id],
     );
     if (!reverseClaim || reverseClaim.length === 0) {
@@ -1034,6 +1056,12 @@ export class PaymentsService implements OnModuleDestroy {
       );
       return;
     }
+
+    // O claim zera as marcas por recebedor, entao guardamos o que ELAS DIZIAM
+    // antes: e isso que decide o que precisa voltar. `isSettled` legado (pedidos
+    // anteriores a estas colunas) conta como "as duas partes sairam".
+    const vendorRecebeu = !!order.vendorSettledAt || order.isSettled;
+    const entregadorRecebeu = !!order.delivererSettledAt || order.isSettled;
 
     // Cartao liquidado via capture-with-split: o estorno na cobranca ja desfaz os
     // splits no proprio Pagar.me, entao nao ha transferencia manual a reverter.
@@ -1044,9 +1072,39 @@ export class PaymentsService implements OnModuleDestroy {
     // pedidos a reversao era pulada: no chargeback a plataforma devolvia 100% ao
     // cliente E perdia o que ja tinha repassado a vendedor/entregador.
     // Agora usa a marca explicita gravada na propria captura com split.
-    if (order.paymentMethod === 'CREDIT_CARD' && order.settledViaSplit) {
+    // ...mas isso so vale para ESTORNO. Este early-return era aplicado tambem ao
+    // CHARGEBACK, e sao coisas diferentes: no estorno o Pagar.me desfaz o split
+    // da propria cobranca; no chargeback quem paga e quem esta `liable`, e nas
+    // regras de split montadas na captura o vendedor e o entregador estao com
+    // `liable: false` — so a plataforma esta `liable: true`.
+    //
+    // Resultado com valores: pedido de R$ 200 no cartao, split de R$ 150 para o
+    // lojista, R$ 24 para o entregador e R$ 26 para a plataforma. O cliente
+    // contesta no banco 30 dias depois. O adquirente debita os R$ 200 INTEIROS
+    // da plataforma (unica liable), a reversao saia por aqui sem fazer nada, e
+    // ninguem recuperava os R$ 174 que ficaram com lojista e entregador. Em
+    // silencio, em TODO chargeback de cartao liquidado.
+    //
+    // No chargeback seguimos para a reversao manual via /transfers, o mesmo
+    // caminho que o PIX ja usava.
+    if (
+      motivo === 'refund' &&
+      order.paymentMethod === 'CREDIT_CARD' &&
+      order.settledViaSplit
+    ) {
       this.logger.log(`Order #${order.orderNumber} settled via capture-with-split — refund will reverse splits automatically`);
       return;
+    }
+    if (
+      motivo === 'chargeback' &&
+      order.paymentMethod === 'CREDIT_CARD' &&
+      order.settledViaSplit
+    ) {
+      this.logger.error(
+        `CHARGEBACK em pedido #${order.orderNumber} liquidado via split — revertendo ` +
+          `manualmente: no chargeback o adquirente debita apenas a plataforma ` +
+          `(unica liable), entao o split NAO se desfaz sozinho.`,
+      );
     }
 
     // PIX: manual transfer reversal (existing logic)
@@ -1059,8 +1117,10 @@ export class PaymentsService implements OnModuleDestroy {
     const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
     const deliveryCommissionPercent = await this.platformConfigService.getDeliveryCommissionPercent();
 
-    // Reverse deliverer transfer
-    if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0) {
+    // Reverse deliverer transfer — so se ele REALMENTE recebeu. Antes a reversao
+    // era tentada sempre que houvesse recipient, independente de a transferencia
+    // ter dado certo, o que podia debitar quem nunca foi pago.
+    if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0 && entregadorRecebeu) {
       const delivery = (order as any).delivery;
       const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
       if (delivererRecipientId) {
@@ -1089,7 +1149,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     // Reverse vendor transfer
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
-    if (vendorRecipientId) {
+    if (vendorRecipientId && vendorRecebeu) {
       const platformDeliveryFee = (!store?.hasOwnDelivery && !order.isPickup) ? deliveryFeeCents : 0;
       const vendorAmount = Math.max(0, totalCents - commissionCents - platformDeliveryFee);
       if (vendorAmount > 0) {
@@ -1166,7 +1226,12 @@ export class PaymentsService implements OnModuleDestroy {
     const settlementErrors: string[] = [];
 
     // 1. Transfer to deliverer (if applicable)
-    if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0) {
+    // `!order.delivererSettledAt`: no retry de uma liquidacao PARCIAL, a parte
+    // que ja saiu nao e reenviada. Antes o retry re-postava as duas
+    // transferencias a cada rodada de 60s por ate 48h, confiando so no header
+    // Idempotency-Key — que nao e comportamento documentado do Pagar.me v5 para
+    // /transfers.
+    if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0 && !order.delivererSettledAt) {
       const delivery = (order as any).delivery;
       const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
 
@@ -1186,6 +1251,8 @@ export class PaymentsService implements OnModuleDestroy {
               },
             }, `settle-${order.id}-deliverer`);
             this.logger.log(`Transfer to deliverer for order #${order.orderNumber} | amount: ${delivererAmount} cents | transfer: ${result.id}`);
+            await orderRepo.update(order.id, { delivererSettledAt: new Date() } as any);
+            order.delivererSettledAt = new Date();
           } catch (err: any) {
             const errorDetail = JSON.stringify(err.response?.data || err.message);
             this.logger.error(`Transfer to deliverer failed for order #${order.orderNumber}: ${errorDetail}`);
@@ -1203,8 +1270,8 @@ export class PaymentsService implements OnModuleDestroy {
       }
     }
 
-    // 2. Transfer to vendor
-    if (vendorRecipientId) {
+    // 2. Transfer to vendor (idem: nao reenvia se ja saiu)
+    if (vendorRecipientId && !order.vendorSettledAt) {
       const platformDeliveryFee = (!store?.hasOwnDelivery && !order.isPickup) ? deliveryFeeCents : 0;
       const vendorAmount = totalCents - commissionCents - platformDeliveryFee;
 
@@ -1220,6 +1287,8 @@ export class PaymentsService implements OnModuleDestroy {
             },
           }, `settle-${order.id}-vendor`);
           this.logger.log(`Transfer to vendor for order #${order.orderNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
+          await orderRepo.update(order.id, { vendorSettledAt: new Date() } as any);
+          order.vendorSettledAt = new Date();
         } catch (err: any) {
           const errorDetail = JSON.stringify(err.response?.data || err.message);
           this.logger.error(`Transfer to vendor failed for order #${order.orderNumber}: ${errorDetail}`);
@@ -2701,7 +2770,7 @@ export class PaymentsService implements OnModuleDestroy {
       if (order.isSettled) {
         this.logger.error(`CRITICAL: Chargeback on COMPLETED order #${order.orderNumber} — reversing transfers`);
         try {
-          await this.reverseSettlementTransfers(order);
+          await this.reverseSettlementTransfers(order, 'chargeback');
         } catch (err: any) {
           this.logger.error(`CRITICAL: Transfer reversal failed for chargeback on order #${order.orderNumber}: ${err.message}`);
         }

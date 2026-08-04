@@ -199,6 +199,19 @@ export class Order {
   @Column({ default: false })
   settledViaSplit: boolean;
 
+  // Quem JA recebeu, por parte. O booleano `isSettled` sozinho nao distinguia
+  // "nada saiu" de "metade saiu": bastava uma das duas transferencias falhar
+  // para ele voltar a false, mesmo com a outra ja efetivada. Isso fazia o
+  // chargeback pular a reversao do que ja tinha saido (prejuizo direto da
+  // plataforma) e o retry re-enviar a transferencia que ja tinha dado certo.
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  vendorSettledAt: Date;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  delivererSettledAt: Date;
+
   @Column({ default: false })
   couponCredited: boolean;
 
