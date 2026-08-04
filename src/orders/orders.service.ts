@@ -1043,8 +1043,15 @@ export class OrdersService {
     order.rejectionReason = reason;
     await this.ordersRepository.save(order);
 
-    // Cancelar pré-autorização ou estornar PIX
-    await this.handlePaymentCancellation(order);
+    // Cancelar pré-autorização ou estornar PIX. Quando há estorno, ele grava o
+    // status terminal no próprio claim atômico (anti-estorno-duplo) e já devolve
+    // estoque/cupom — chamar `updateStatus` depois disso lançaria, e antes era
+    // exatamente isso que fazia o estoque sumir.
+    const jaTerminou = await this.handlePaymentCancellation(
+      order,
+      OrderStatus.REJECTED,
+    );
+    if (jaTerminou) return this.findById(order.id);
 
     return this.updateStatus(order.id, OrderStatus.REJECTED);
   }
@@ -1082,7 +1089,11 @@ export class OrdersService {
     order.rejectionReason = reason;
     await this.ordersRepository.save(order);
 
-    await this.handlePaymentCancellation(order);
+    const jaTerminouVendor = await this.handlePaymentCancellation(
+      order,
+      OrderStatus.CANCELLED,
+    );
+    if (jaTerminouVendor) return this.findById(order.id);
 
     return this.updateStatus(order.id, OrderStatus.CANCELLED);
   }
@@ -1249,14 +1260,18 @@ export class OrdersService {
     }
 
     // Cancelar pré-autorização ou estornar pagamento
-    await this.handlePaymentCancellation(order);
-
-    // updateStatus already restores stock for CANCELLED
-    const saved = await this.updateStatus(
-      order.id,
+    const jaTerminouCliente = await this.handlePaymentCancellation(
+      order,
       OrderStatus.CANCELLED,
-      order.customer,
     );
+
+    const saved = jaTerminouCliente
+      ? await this.findById(order.id)
+      : await this.updateStatus(
+          order.id,
+          OrderStatus.CANCELLED,
+          order.customer,
+        );
 
     // Notificar vendedor
     if (order.store?.owner?.id) {
@@ -1279,7 +1294,47 @@ export class OrdersService {
 
   // ─── Helper: cancelar pagamento (pré-auth ou estorno) ─────────────────
 
-  private async handlePaymentCancellation(order: Order): Promise<void> {
+  /**
+   * Devolve estoque e uso de cupom de um pedido que foi para um estado terminal.
+   *
+   * Esta lógica vivia SÓ dentro do `updateStatus`. Quando o estorno passou a
+   * gravar o status terminal por conta própria (claim atômico anti-estorno-duplo),
+   * o `updateStatus` seguinte passou a lançar — e levava junto a restauração de
+   * estoque. Na prática: TODO cancelamento de pedido pago online perdia o estoque
+   * para sempre, e no `expirePendingOrders` o erro ainda era engolido pelo
+   * try/catch, sumindo em silêncio e sem re-tentativa.
+   *
+   * Idempotente: `couponCredited` é zerado ao devolver, e o chamador só invoca
+   * este método quando GANHOU o claim da transição.
+   */
+  private async restoreStockAndCoupon(order: Order): Promise<void> {
+    for (const item of order.items || []) {
+      if (item.product) {
+        await this.productsService.restoreStock(item.product.id, item.quantity);
+      }
+    }
+    if (order.coupon?.id && order.couponCredited) {
+      try {
+        await this.couponsService.decrementUsage(order.coupon.id);
+        await this.ordersRepository.update(order.id, { couponCredited: false });
+      } catch (err: any) {
+        console.error(
+          `Failed to decrement coupon usage for order ${order.id}:`,
+          err?.message,
+        );
+      }
+    }
+  }
+
+  /**
+   * @returns `true` se o estorno JÁ gravou o status terminal (e portanto já
+   * devolveu estoque/cupom) — nesse caso o chamador NÃO deve chamar
+   * `updateStatus`, que lançaria a partir de um estado sem transições.
+   */
+  private async handlePaymentCancellation(
+    order: Order,
+    statusFinal: OrderStatus = OrderStatus.CANCELLED,
+  ): Promise<boolean> {
     // Cartão com pré-auth não capturada: cancela pré-auth (libera limite)
     if (order.preAuthChargeId && !order.capturedAt) {
       try {
@@ -1287,17 +1342,12 @@ export class OrdersService {
       } catch (err: any) {
         console.error('Cancel pre-auth failed:', err?.message);
       }
-      return;
+      return false; // nao houve claim de status: o chamador segue pelo updateStatus
     }
 
     // Cartão já capturado (com split) ou PIX/Checkout: estorno
     if (order.preAuthChargeId && order.capturedAt) {
-      try {
-        await this.paymentsService.refundOrder(order.id);
-      } catch (err: any) {
-        console.error('Refund captured charge failed:', err?.message);
-      }
-      return;
+      return this.estornarEDecidir(order, statusFinal, 'Refund captured charge');
     }
 
     // PIX ou Checkout já pago (sem pré-auth): estorno
@@ -1305,12 +1355,49 @@ export class OrdersService {
       order.mpPreferenceId &&
       (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD')
     ) {
-      try {
-        await this.paymentsService.refundOrder(order.id);
-      } catch (err: any) {
-        console.error('Refund on cancel failed:', err?.message);
-      }
+      return this.estornarEDecidir(order, statusFinal, 'Refund on cancel');
     }
+    return false;
+  }
+
+  /**
+   * Tenta o estorno e decide o que fazer olhando o ESTADO REAL do pedido no
+   * banco — não o sucesso da chamada externa.
+   *
+   * Isto é o ponto sutil do bug: `refundOrder` grava o status terminal no claim
+   * atômico ANTES de chamar o Pagar.me (de propósito, para impedir estorno
+   * duplo). Se a chamada externa falhar depois disso, a exceção sobe, mas o
+   * pedido JÁ ESTÁ terminal no banco. Tratar isso como "não terminou" fazia o
+   * chamador seguir para `updateStatus`, que lançava por falta de transição — e
+   * levava junto a devolução de estoque e cupom. Era o caminho mais comum de
+   * perda de estoque, e no `expirePendingOrders` sumia em silêncio.
+   */
+  private async estornarEDecidir(
+    order: Order,
+    statusFinal: OrderStatus,
+    rotuloLog: string,
+  ): Promise<boolean> {
+    const TERMINAIS = [
+      OrderStatus.CANCELLED,
+      OrderStatus.REJECTED,
+      OrderStatus.EXPIRED,
+    ];
+    try {
+      await this.paymentsService.refundOrder(order.id, statusFinal);
+    } catch (err: any) {
+      console.error(`${rotuloLog} failed:`, err?.message);
+    }
+
+    const [linha] = await this.ordersRepository.manager.query(
+      `SELECT status FROM orders WHERE id = $1`,
+      [order.id],
+    );
+    const agoraTerminal = TERMINAIS.includes(linha?.status as OrderStatus);
+    if (!agoraTerminal) return false; // o claim não aconteceu: segue pelo updateStatus
+
+    order.status = linha.status;
+    await this.restoreStockAndCoupon(order);
+    return true;
   }
 
   // ─── Expirar pedidos PENDING sem resposta do vendedor (10 min) ────────
@@ -1338,9 +1425,13 @@ export class OrdersService {
 
     for (const order of expiredOrders) {
       try {
-        await this.handlePaymentCancellation(order);
-        // updateStatus handles stock restoration for EXPIRED status
-        await this.updateStatus(order.id, OrderStatus.EXPIRED);
+        const jaTerminouExpiry = await this.handlePaymentCancellation(
+          order,
+          OrderStatus.EXPIRED,
+        );
+        if (!jaTerminouExpiry) {
+          await this.updateStatus(order.id, OrderStatus.EXPIRED);
+        }
 
         // Notify customer
         if (order.customer?.id) {

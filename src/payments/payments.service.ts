@@ -1016,6 +1016,25 @@ export class PaymentsService implements OnModuleDestroy {
       return;
     }
 
+    // A reversao nao tinha NENHUMA marca de "ja revertido" e era re-executavel.
+    // Sequencia real: estorno manual reverte os repasses e cancela o pedido; o
+    // cliente ainda abre chargeback no banco (acontece) e o webbook chega com o
+    // pedido ja CANCELLED e `isSettled` intacto -> reverte de novo, debitando o
+    // lojista duas vezes. Proteger com claim atomico em `isSettled` tambem e
+    // semanticamente correto: depois de reverter, o dinheiro nao esta mais
+    // repassado.
+    const reverseClaim = await this.paymentsRepository.manager.query(
+      `UPDATE orders SET "isSettled" = false, "updatedAt" = NOW()
+         WHERE id = $1 AND "isSettled" = true RETURNING id`,
+      [order.id],
+    );
+    if (!reverseClaim || reverseClaim.length === 0) {
+      this.logger.log(
+        `Settlement reversal already performed for order #${order.orderNumber} — skipping`,
+      );
+      return;
+    }
+
     // Cartao liquidado via capture-with-split: o estorno na cobranca ja desfaz os
     // splits no proprio Pagar.me, entao nao ha transferencia manual a reverter.
     //
@@ -2332,8 +2351,15 @@ export class PaymentsService implements OnModuleDestroy {
       return;
     }
 
+    // Mesmo motivo do handleOrderCanceled: a guarda so pulava CANCELLED, entao um
+    // pedido ja EXPIRED/REJECTED (estoque devolvido) ganhava estoque de novo.
+    const claimFalha = await orderRepo.manager.query(
+      `UPDATE orders SET status = 'CANCELLED', "updatedAt" = NOW()
+         WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+      [order.id],
+    );
+    if (!claimFalha || claimFalha.length === 0) return;
     order.status = OrderStatus.CANCELLED;
-    await orderRepo.save(order);
     this.logger.log(`Pedido #${order.orderNumber} cancelado por falha no pagamento`);
 
     // Restaurar estoque
@@ -2380,10 +2406,27 @@ export class PaymentsService implements OnModuleDestroy {
       relations: ['customer', 'store', 'store.owner', 'items', 'items.product'],
     });
 
-    if (!order || order.status === OrderStatus.CANCELLED) return;
+    if (!order) return;
 
+    // A guarda cobria so CANCELLED. Pedido ja em EXPIRED ou REJECTED — cujo
+    // estoque JA foi devolvido pelo fluxo interno — passava por aqui, ganhava
+    // estoque de novo e ainda tinha o status sobrescrito para CANCELLED por um
+    // save de entidade inteira.
+    //
+    // Caminho deterministico, sem corrida: PIX em AWAITING_PAYMENT expira, o
+    // scheduler devolve o estoque aos 30 min, e o QR tambem expira no Pagar.me,
+    // que dispara `order.canceled` minutos depois. O webhook via EXPIRED !=
+    // CANCELLED e devolvia tudo outra vez -> oversell na sequencia.
+    //
+    // Claim atomico com a mesma lista de terminais usada no estorno: 0 linhas
+    // significa que outro fluxo ja encerrou o pedido e nao ha o que devolver.
+    const claimCancel = await orderRepo.manager.query(
+      `UPDATE orders SET status = 'CANCELLED', "updatedAt" = NOW()
+         WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+      [order.id],
+    );
+    if (!claimCancel || claimCancel.length === 0) return;
     order.status = OrderStatus.CANCELLED;
-    await orderRepo.save(order);
     this.logger.log(`Pedido #${order.orderNumber} cancelado via Pagar.me webhook`);
 
     // Restaurar estoque
@@ -2632,9 +2675,20 @@ export class PaymentsService implements OnModuleDestroy {
       // reverter repasse (gated). Impede um `charge.chargedback` forjado.
       if (!(await this.webhookChargeConfirms(data.id, null, order, ['chargedback', 'refunded'], false))) return;
       const wasCompleted = order.status === OrderStatus.COMPLETED;
+      // Este handler nao tinha guarda de status NENHUMA (ao contrario do de
+      // estorno). Um pedido ja encerrado — estornado manualmente, por exemplo —
+      // tinha o estoque devolvido outra vez. O claim diz se ESTE fluxo foi quem
+      // encerrou o pedido; a reversao de repasse continua acontecendo em ambos
+      // os casos (o dinheiro andou de verdade), mas agora e idempotente por
+      // conta propria.
+      const claimChargeback = await orderRepo.manager.query(
+        `UPDATE orders SET status = 'CANCELLED', "updatedAt" = NOW()
+           WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+        [order.id],
+      );
+      const encerradoAqui = !!claimChargeback && claimChargeback.length > 0;
       order.status = OrderStatus.CANCELLED;
-      await orderRepo.save(order);
-      this.logger.warn(`Pedido #${order.orderNumber} cancelado por chargeback | wasCompleted: ${wasCompleted}`);
+      this.logger.warn(`Pedido #${order.orderNumber} cancelado por chargeback | wasCompleted: ${wasCompleted} | encerradoAqui: ${encerradoAqui}`);
 
       // C1: If order was COMPLETED, reverse settlement transfers
       // BUGFIX: era `wasCompleted && isSettled`. `resolveDispute` liquida o
@@ -2653,8 +2707,10 @@ export class PaymentsService implements OnModuleDestroy {
         }
       }
 
-      // Only restore stock if order was NOT already completed/delivered (products not physically delivered)
-      if (!wasCompleted && order.items) {
+      // Only restore stock if order was NOT already completed/delivered (products
+      // not physically delivered) E se foi este fluxo que encerrou o pedido —
+      // senao o estoque ja foi devolvido por quem encerrou antes.
+      if (!wasCompleted && encerradoAqui && order.items) {
         const productRepo = this.paymentsRepository.manager.getRepository('Product');
         for (const item of order.items) {
           if (item.product?.id) {
@@ -2680,7 +2736,18 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Refund ───────────────────────────────────────────────────────────
 
-  async refundOrder(orderId: string): Promise<{ success: boolean; message: string }> {
+  /**
+   * @param statusFinal estado terminal a gravar no claim. O padrao e CANCELLED,
+   * mas rejeicao e expiracao precisam preservar o proprio estado — antes este
+   * metodo forcava CANCELLED em todos os casos, e o chamador seguinte tentava
+   * `updateStatus(REJECTED)` a partir de um pedido ja CANCELLED, cuja lista de
+   * transicoes e vazia. O `updateStatus` lancava, e com ele iam embora a
+   * RESTAURACAO DE ESTOQUE e a devolucao do cupom, que so acontecem la dentro.
+   */
+  async refundOrder(
+    orderId: string,
+    statusFinal: OrderStatus = OrderStatus.CANCELLED,
+  ): Promise<{ success: boolean; message: string }> {
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
       where: { id: orderId },
@@ -2702,13 +2769,14 @@ export class PaymentsService implements OnModuleDestroy {
     const wasCompleted = order.status === OrderStatus.COMPLETED;
     const wasSettled = order.isSettled;
     const claim = await orderRepo.manager.query(
-      `UPDATE orders SET status = 'CANCELLED' WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
-      [order.id],
+      `UPDATE orders SET status = $2, "updatedAt" = NOW()
+         WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+      [order.id, statusFinal],
     );
     if (!claim || claim.length === 0) {
       throw new BadRequestException('Este pedido já está sendo cancelado/estornado.');
     }
-    order.status = OrderStatus.CANCELLED; // reflete o claim no objeto em memória
+    order.status = statusFinal; // reflete o claim no objeto em memória
 
     // C3: If order was COMPLETED and settled, reverse transfers before refunding.
     // A partir daqui o pedido JÁ está CANCELLED no banco: se o estorno externo
