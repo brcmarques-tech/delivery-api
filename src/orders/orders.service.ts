@@ -1184,15 +1184,14 @@ export class OrdersService {
         order.status = OrderStatus.CANCELLED;
         await this.ordersRepository.save(order);
       }
-      // Restore stock (refundOrder doesn't handle this)
-      for (const item of order.items) {
-        if (item.product) {
-          await this.productsService.restoreStock(
-            item.product.id,
-            item.quantity,
-          );
-        }
-      }
+      // O estoque NAO volta aqui. DISPUTED so e alcancavel a partir de
+      // DELIVERER_CONFIRMED_DELIVERY ou COMPLETED (ver STATUS_TRANSITIONS): a
+      // mercadoria ja saiu fisicamente da loja e nao esta na prateleira, esteja
+      // ela com o cliente ou perdida no caminho. Restaurar criava estoque
+      // fantasma e oversell na sequencia — um pedido de 3 unidades disputado
+      // devolvia 3 unidades que nao existem. Os webhooks de estorno e chargeback
+      // ja aplicam essa mesma regra com o guard `!wasCompleted`
+      // (payments.service.ts), e este caminho era a excecao incoerente.
       // Devolve o uso do cupom (mesmo motivo do refundOrder: o refund seta
       // CANCELLED direto, pulando o updateStatus que decrementa). Idempotente.
       if (order.coupon?.id && order.couponCredited) {
@@ -1442,6 +1441,40 @@ export class OrdersService {
         await this.completeOrderWithPayment(fresh);
       } catch (err) {
         console.error(`Auto-confirm failed for order ${order.id}:`, err);
+      }
+    }
+
+    // Retirada no local e loja com frota propria terminam em DELIVERED, nao em
+    // DELIVERER_CONFIRMED_DELIVERY (nao existe entregador do app nesses casos).
+    // Sem este segundo bloco, o pedido ficava parado em DELIVERED ate o cliente
+    // abrir o app para confirmar — e se ele nunca abrisse, o dinheiro ficava em
+    // custodia indefinidamente e o lojista nunca recebia por uma venda ja
+    // entregue no balcao. Mesma janela de 10 min e mesmo claim atomico do bloco
+    // acima; o cliente segue sendo avisado no momento da entrega e mantem a
+    // janela de disputa de 48h.
+    const pendentesRetirada = await this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .where('order.status = :status', { status: OrderStatus.DELIVERED })
+      .andWhere('order.updatedAt <= :tenMinAgo', { tenMinAgo })
+      .andWhere('order.customerConfirmedAt IS NULL')
+      .getMany();
+
+    for (const order of pendentesRetirada) {
+      try {
+        const claim = await this.ordersRepository.manager.query(
+          `UPDATE orders SET "customerConfirmedAt" = NOW(), "updatedAt" = NOW()
+             WHERE id = $1 AND "customerConfirmedAt" IS NULL AND status = $2
+             RETURNING id`,
+          [order.id, OrderStatus.DELIVERED],
+        );
+        if (!claim || claim.length === 0) continue;
+        const fresh = await this.findById(order.id);
+        await this.completeOrderWithPayment(fresh);
+      } catch (err) {
+        console.error(`Auto-confirm (retirada) failed for order ${order.id}:`, err);
       }
     }
 

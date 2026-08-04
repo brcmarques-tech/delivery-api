@@ -329,6 +329,26 @@ export class OrdersResolver {
       OrderStatus.PREPARING,
       OrderStatus.READY,
     ];
+
+    // ...mas isso criava um beco sem saída para quem não usa entregador do app.
+    // A tabela permite READY→DELIVERED, e NINGUÉM podia disparar essa transição:
+    // o lojista era barrado aqui, `vendorConfirmPickup` exige entregador, o
+    // agente n8n também bloqueia DELIVERED, e `confirmDelivery` exige um
+    // entregador do app — que nunca vai aparecer, porque pedidos `isPickup` são
+    // excluídos de `findPendingForDelivery`. Resultado: pedido de retirada pago
+    // por PIX ficava em READY para SEMPRE — nunca virava COMPLETED, o
+    // `settlePayment` nunca rodava e o lojista nunca recebia. Custódia eterna.
+    //
+    // Liberar DELIVERED aqui NÃO reabre o BL#1 descrito acima: o cliente ainda
+    // precisa de `confirmReceipt` para chegar a COMPLETED, e o scheduler de
+    // auto-confirmação só casa `DELIVERER_CONFIRMED_DELIVERY` — o lojista não
+    // consegue se auto-pagar. E só vale onde de fato não há entregador do app.
+    const entregaPropriaOuRetirada =
+      order.isPickup === true || order.store?.hasOwnDelivery === true;
+    if (entregaPropriaOuRetirada) {
+      VENDOR_ALLOWED.push(OrderStatus.DELIVERED);
+    }
+
     if (!VENDOR_ALLOWED.includes(status)) {
       throw new BadRequestException('O lojista não pode definir este status do pedido.');
     }

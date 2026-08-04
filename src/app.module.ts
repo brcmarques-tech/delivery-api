@@ -110,9 +110,11 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
       // forRootAsync (era forRoot) so para injetar o DataSource: o handshake do
       // WebSocket precisa consultar o banco para saber se a conta foi banida ou
       // se a sessao foi rotacionada — ver o bloco de revogacao no onConnect.
+      // O `driver` fica FORA do useFactory: o Nest le esse campo antes de
+      // resolver a factory (assertDriver), e dentro dela o boot quebra.
+      driver: ApolloDriver,
       inject: [DataSource],
       useFactory: (dataSource: DataSource) => ({
-      driver: ApolloDriver,
       autoSchemaFile: true,
       sortSchema: true,
       // Input#1: limite de profundidade contra DoS por query aninhada nas relações
