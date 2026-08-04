@@ -40,11 +40,31 @@ export class RatingsResolver {
     }
   }
 
+  /**
+   * O `role` e um claim CONGELADO no token, valido por ate 7 dias, e este
+   * caminho nao passa pela JwtStrategy — entao nem `isActive` nem `sessionToken`
+   * eram conferidos. Um superadmin desligado (conta desativada, sessao
+   * rotacionada) colava o token antigo numa query publica como
+   * `serviceRatings(storeId)` e seguia baixando email, telefone e endereco de
+   * todos os avaliadores de qualquer loja. Agora a elevacao a SUPERADMIN so vale
+   * depois de conferir a conta no banco, com memo por request para nao virar
+   * N+1 numa lista de avaliacoes.
+   */
+  private async ehSuperadminVivo(ctx: any, p: any): Promise<boolean> {
+    if (p?.role !== 'SUPERADMIN' || !p?.sub) return false;
+    if (ctx.__piiSuperadmin === undefined) {
+      ctx.__piiSuperadmin = this.ratingsService
+        .isActiveSuperadmin(p.sub, p.sessionToken)
+        .catch(() => false);
+    }
+    return ctx.__piiSuperadmin;
+  }
+
   @ResolveField(() => AppUser)
-  customer(@Parent() rating: ServiceRating, @Context() ctx: any): any {
+  async customer(@Parent() rating: ServiceRating, @Context() ctx: any): Promise<any> {
     const p = this.principal(ctx);
     const dono = !!p?.sub && p.sub === (rating as any).customerId;
-    if (p?.role === 'SUPERADMIN' || dono) return rating.customer;
+    if (dono || (await this.ehSuperadminVivo(ctx, p))) return rating.customer;
     // Visao publica: identidade minima para exibir a avaliacao.
     const c: any = rating.customer || {};
     return {
@@ -60,10 +80,12 @@ export class RatingsResolver {
   }
 
   @ResolveField(() => Appointment, { nullable: true })
-  appointment(@Parent() rating: ServiceRating, @Context() ctx: any): any {
+  async appointment(@Parent() rating: ServiceRating, @Context() ctx: any): Promise<any> {
     const p = this.principal(ctx);
     const dono = !!p?.sub && p.sub === (rating as any).customerId;
-    return p?.role === 'SUPERADMIN' || dono ? rating.appointment : null;
+    return dono || (await this.ehSuperadminVivo(ctx, p))
+      ? rating.appointment
+      : null;
   }
 
   @Mutation(() => ServiceRating)

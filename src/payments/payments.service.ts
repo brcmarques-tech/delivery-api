@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger, OnModuleDestroy } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { Payment } from './entities/payment.entity';
@@ -1634,10 +1634,18 @@ export class PaymentsService implements OnModuleDestroy {
     });
     if (active) return active;
 
+    // A segunda consulta existe para o vendedor que cancelou mas ainda esta
+    // DENTRO do periodo pago. Faltava justamente o filtro de periodo: como
+    // `cancelVendorSubscription` deixa `cancelAtPeriodEnd = true` para sempre e
+    // nada limpa esse flag, uma assinatura cancelada em janeiro e vencida em
+    // fevereiro continuava sendo devolvida em julho. O painel exibia "Plano
+    // PREMIUM — acesso ate 10/02/2026" para quem hoje e FREE, e
+    // `reactivateSubscription` reanimava essa mesma linha morta.
     return this.subscriptionsRepository.findOne({
       where: {
         vendorUser: { id: vendorId },
         cancelAtPeriodEnd: true,
+        currentPeriodEnd: MoreThan(new Date()),
       },
       relations: ['vendorUser'],
       order: { createdAt: 'DESC' },

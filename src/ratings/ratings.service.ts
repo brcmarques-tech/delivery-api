@@ -10,6 +10,8 @@ import { ServiceRating } from './entities/service-rating.entity';
 import { Appointment } from '../appointments/entities/appointment.entity';
 import { AppointmentStatus } from '../common/enums/appointment-status.enum';
 import { CreateServiceRatingInput } from './dto/create-service-rating.input';
+import { AppUser } from '../users/entities/app-user.entity';
+import { UserRole } from '../common/enums/user-role.enum';
 
 const RELATIONS = ['customer', 'store', 'service', 'appointment'];
 
@@ -20,7 +22,23 @@ export class RatingsService {
     private ratingsRepository: Repository<ServiceRating>,
     @InjectRepository(Appointment)
     private appointmentsRepository: Repository<Appointment>,
+    @InjectRepository(AppUser)
+    private appUsersRepository: Repository<AppUser>,
   ) {}
+
+  /**
+   * Confere no BANCO se o `sub` do token e mesmo um superadmin ativo e com a
+   * sessao vigente. Os portoes de PII confiavam no claim `role`, que fica
+   * congelado no token por ate 7 dias e nao percorre a JwtStrategy — entao uma
+   * conta desativada ou uma sessao rotacionada continuavam abrindo dados.
+   */
+  async isActiveSuperadmin(userId: string, sessionToken?: string): Promise<boolean> {
+    const user = await this.appUsersRepository.findOne({ where: { id: userId } });
+    if (!user || user.role !== UserRole.SUPERADMIN) return false;
+    if (user.isActive === false) return false;
+    if (user.sessionToken && sessionToken !== user.sessionToken) return false;
+    return true;
+  }
 
   async rateService(input: CreateServiceRatingInput, customerId: string): Promise<ServiceRating> {
     if (input.rating < 1 || input.rating > 5) {

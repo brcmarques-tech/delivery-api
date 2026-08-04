@@ -110,7 +110,14 @@ export class VerificationService {
     const newExpiry = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 
     user.planExpiresAt = newExpiry;
-    if (!user.vendorPlan) {
+    // Quem ja passou por um downgrade tem vendorPlan = 'FREE' (nao null), entao
+    // o teste antigo (`!user.vendorPlan`) nao casava: o trial era registrado —
+    // planExpiresAt ia para a frente — e o plano continuava FREE, ou seja, o
+    // premio nunca era entregue. Pior: como o scheduler de expiracao filtra por
+    // vendorPlan != FREE, aquele planExpiresAt ficava pendurado para sempre e
+    // envenenava o max(hoje, vencimento) de uma compra futura, dando dias extras
+    // que ninguem concedeu.
+    if (!user.vendorPlan || user.vendorPlan === VendorPlan.FREE) {
       user.vendorPlan = VendorPlan.PRO;
     }
 

@@ -152,8 +152,11 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
               throw new Error('Unauthorized: token ausente ou invalido');
             }
 
-            // Disponibiliza para os resolvers de subscription.
-            context.extra = { ...(context.extra || {}), user };
+            // Disponibiliza para os resolvers de subscription. O token cru
+            // tambem vai junto: o GqlAuthGuard precisa dele para rodar a
+            // JwtStrategy (que valida isActive e sessionToken) — sobre WS o
+            // header Authorization nao existe, o token vem em connectionParams.
+            context.extra = { ...(context.extra || {}), user, wsToken: token };
             return true;
           },
         },
@@ -162,6 +165,7 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
         req: req || extra?.request,
         // KAN-253: usuario autenticado do WebSocket, quando houver.
         wsUser: extra?.user ?? null,
+        wsToken: extra?.wsToken ?? null,
       }),
     }),
 

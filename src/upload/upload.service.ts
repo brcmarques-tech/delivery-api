@@ -22,11 +22,27 @@ export class UploadService {
       throw new Error('Imagem muito grande. Tamanho máximo: 10MB.');
     }
 
+    // Quando a string ja vem como data URI, o mimetype era do CLIENTE e passava
+    // sem inspecao nenhuma. `resource_type: 'image'` do Cloudinary ainda aceita
+    // SVG, que devolve uma URL servida como imagem e executa script para quem a
+    // abrir direto no navegador — alem de virar hospedagem gratuita de conteudo
+    // arbitrario na conta paga da plataforma.
+    const FORMATOS_PERMITIDOS = ['image/jpeg', 'image/png', 'image/webp'];
+    if (base64.startsWith('data:')) {
+      const mime = (base64.slice(5).split(';')[0] || '').toLowerCase();
+      if (!FORMATOS_PERMITIDOS.includes(mime)) {
+        throw new Error(
+          'Formato de imagem nao suportado. Envie JPG, PNG ou WEBP.',
+        );
+      }
+    }
+
     const dataUri = base64.startsWith('data:') ? base64 : `data:image/jpeg;base64,${base64}`;
 
     const result = await cloudinary.uploader.upload(dataUri, {
       folder,
       resource_type: 'image',
+      allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
     });
 
     this.logger.log(`Imagem enviada: ${result.secure_url}`);
