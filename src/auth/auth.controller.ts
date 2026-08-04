@@ -13,6 +13,55 @@ export class AuthController {
     private jwtService: JwtService,
   ) {}
 
+  /**
+   * Destinos permitidos para o `returnUrl` do login social.
+   *
+   * CRITICO: o `returnUrl` chegava cru da query string publica, era assinado
+   * dentro do `state` e o callback redirecionava para ele COM O ACCESS_TOKEN DO
+   * GOOGLE na query. Assinar o state garante integridade, nao legitimidade — o
+   * valor era escolhido pelo proprio atacante. Bastava mandar para a vitima
+   * `/auth/google/mobile?returnUrl=https://evil.com/x`: ela via a tela legitima
+   * do Google, no dominio legitimo da API, e no fim o navegador dela era
+   * redirecionado para o atacante carregando o token. Como `verifyGoogleToken`
+   * aceita access_token, o atacante trocava aquilo por um JWT de 7 dias da conta
+   * — tomada de conta em um clique. Agora so redirecionamos para destinos que a
+   * propria plataforma declara.
+   */
+  private returnUrlPermitida(candidata?: string): string {
+    const padrao = 'shopping-app://google-auth';
+    if (!candidata) return padrao;
+
+    const permitidos = [
+      padrao,
+      'shopping-vendor://google-auth',
+      this.configService.get('VENDOR_APP_URL'),
+      this.configService.get('SUPERADMIN_URL'),
+      this.configService.get('STOREFRONT_URL'),
+      ...String(this.configService.get('OAUTH_RETURN_ALLOWLIST') || '')
+        .split(',')
+        .map((s) => s.trim()),
+    ].filter(Boolean) as string[];
+
+    const limpa = candidata.replace(/\?.*$/, '');
+
+    for (const permitido of permitidos) {
+      // Deep link: precisa bater exatamente (esquema custom nao tem origem).
+      if (permitido.includes('://') && !permitido.startsWith('http')) {
+        if (limpa === permitido) return limpa;
+        continue;
+      }
+      // Web: mesma origem (esquema + host + porta), caminho livre.
+      try {
+        const alvo = new URL(limpa);
+        const base = new URL(permitido);
+        if (alvo.origin === base.origin) return limpa;
+      } catch {
+        // candidata nao e URL absoluta valida — segue para o proximo
+      }
+    }
+    return padrao;
+  }
+
   @Get('reset-password')
   async resetPasswordPage(
     @Query('token') token: string,
@@ -68,7 +117,12 @@ export class AuthController {
     const clientId = this.configService.get('GOOGLE_CLIENT_ID');
     const appUrl = this.configService.get('APP_URL');
     const state = this.jwtService.sign(
-      { mode: mode || 'login', userType: userType || 'app', returnUrl: returnUrl || 'shopping-app://google-auth' },
+      {
+        mode: mode || 'login',
+        userType: userType || 'app',
+        // Valida na ENTRADA: um returnUrl hostil nunca chega a ser assinado.
+        returnUrl: this.returnUrlPermitida(returnUrl),
+      },
       { expiresIn: '10m' },
     );
     const redirectUri = `${appUrl}/auth/google/mobile/callback`;
@@ -103,7 +157,9 @@ export class AuthController {
     }
 
     const { mode, userType, returnUrl } = statePayload;
-    const baseReturnUrl = (returnUrl || 'shopping-app://google-auth').replace(/\?.*$/, '');
+    // Revalida na SAIDA tambem: states assinados antes desta correcao seguem
+    // validos por ate 10 minutos e poderiam carregar um destino hostil.
+    const baseReturnUrl = this.returnUrlPermitida(returnUrl);
     const clientId = this.configService.get('GOOGLE_CLIENT_ID');
     const clientSecret = this.configService.get('GOOGLE_CLIENT_SECRET');
     const appUrl = this.configService.get('APP_URL');

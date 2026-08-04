@@ -209,10 +209,17 @@ export class AuthService {
   private assertGoogleAudience(aud: string | undefined): void {
     const allowed = this.getAllowedGoogleAudiences();
     if (allowed.length === 0) {
-      // Sem GOOGLE_CLIENT_ID configurado seria uma misconfig; nao trava o login,
-      // mas registra para nao passar despercebido.
-      this.logger.error('GOOGLE_CLIENT_ID/GOOGLE_ALLOWED_AUDIENCES ausente — audiencia do token Google NAO validada.');
-      return;
+      // Falhava ABERTO: um deploy sem GOOGLE_CLIENT_ID (typo no .env, secret nao
+      // propagado) subia normalmente, registrava um logger.error que ninguem le,
+      // e a partir dali QUALQUER token Google valido — emitido para qualquer
+      // aplicacao de terceiros — era aceito, exatamente o account takeover por
+      // confusao de audiencia que o KAN-213 fechou. A JwtStrategy ja adota a
+      // postura correta para o JWT_SECRET (falha em vez de seguir sem validar);
+      // aqui era o oposto. Agora recusa.
+      this.logger.error('GOOGLE_CLIENT_ID/GOOGLE_ALLOWED_AUDIENCES ausente — login Google indisponivel.');
+      throw new BadRequestException(
+        'Login com Google indisponivel no momento. Use e-mail e senha.',
+      );
     }
     if (!aud || !allowed.includes(aud)) {
       throw new BadRequestException('Token Google nao emitido para esta aplicacao.');
@@ -306,6 +313,14 @@ export class AuthService {
       }
     }
     if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+    // As rotas de senha checam isActive; as de Google nao checavam. A conta
+    // banida recebia accessToken e os proprios dados de volta, e o app entrava
+    // num estado incoerente (tela de sucesso seguida de erro em toda query).
+    if (user.isActive === false) {
+      throw new UnauthorizedException(
+        'Esta conta esta desativada. Entre em contato com o suporte.',
+      );
+    }
 
     const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
@@ -332,6 +347,14 @@ export class AuthService {
         }
       }
       if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+    // As rotas de senha checam isActive; as de Google nao checavam. A conta
+    // banida recebia accessToken e os proprios dados de volta, e o app entrava
+    // num estado incoerente (tela de sucesso seguida de erro em toda query).
+    if (user.isActive === false) {
+      throw new UnauthorizedException(
+        'Esta conta esta desativada. Entre em contato com o suporte.',
+      );
+    }
 
       const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
       return { accessToken, user };
@@ -350,6 +373,14 @@ export class AuthService {
       }
     }
     if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+    // As rotas de senha checam isActive; as de Google nao checavam. A conta
+    // banida recebia accessToken e os proprios dados de volta, e o app entrava
+    // num estado incoerente (tela de sucesso seguida de erro em toda query).
+    if (user.isActive === false) {
+      throw new UnauthorizedException(
+        'Esta conta esta desativada. Entre em contato com o suporte.',
+      );
+    }
 
     // Google auth always overrides — notify old session if exists
     if (user.sessionToken) {
@@ -378,6 +409,14 @@ export class AuthService {
       }
     }
     if (!user) throw new BadRequestException('GOOGLE_NO_ACCOUNT');
+    // As rotas de senha checam isActive; as de Google nao checavam. A conta
+    // banida recebia accessToken e os proprios dados de volta, e o app entrava
+    // num estado incoerente (tela de sucesso seguida de erro em toda query).
+    if (user.isActive === false) {
+      throw new UnauthorizedException(
+        'Esta conta esta desativada. Entre em contato com o suporte.',
+      );
+    }
 
     // Google auth always overrides — notify old session if exists
     if (user.sessionToken) {

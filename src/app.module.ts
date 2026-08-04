@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import { SentryGlobalFilter } from '@sentry/nestjs/setup';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
@@ -105,7 +106,12 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
       inject: [ConfigService],
     }),
 
-    GraphQLModule.forRoot<ApolloDriverConfig>({
+    GraphQLModule.forRootAsync<ApolloDriverConfig>({
+      // forRootAsync (era forRoot) so para injetar o DataSource: o handshake do
+      // WebSocket precisa consultar o banco para saber se a conta foi banida ou
+      // se a sessao foi rotacionada — ver o bloco de revogacao no onConnect.
+      inject: [DataSource],
+      useFactory: (dataSource: DataSource) => ({
       driver: ApolloDriver,
       autoSchemaFile: true,
       sortSchema: true,
@@ -132,7 +138,7 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
       // app (pedidos e entregas). Ligue depois de validar com o app mobile.
       subscriptions: {
         'graphql-ws': {
-          onConnect: (context: any) => {
+          onConnect: async (context: any) => {
             const params = context.connectionParams || {};
             const raw: string =
               params.authorization || params.Authorization || '';
@@ -152,6 +158,42 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
               throw new Error('Unauthorized: token ausente ou invalido');
             }
 
+            // O jwtVerify acima confere so assinatura e expiracao. A revogacao
+            // (isActive e sessionToken) mora na JwtStrategy, e as subscriptions
+            // que filtram apenas por `wsUser` — orderCreated, orderUpdated,
+            // deliveryUpdated, sessionKicked — nunca passam por ela. Resultado:
+            // um lojista banido por fraude continuava recebendo, em tempo real,
+            // os pedidos com nome, telefone e endereco dos clientes ate o JWT
+            // expirar (7 dias). Pior no filtro de superadmin, que le o `role` do
+            // claim congelado: um superadmin rebaixado seguia recebendo TODOS os
+            // pedidos da plataforma.
+            if (user?.sub) {
+              const tabela =
+                user.userType === 'vendor' ? 'vendor_users' : 'app_users';
+              try {
+                const linhas = await dataSource.query(
+                  `SELECT "isActive", "sessionToken", role FROM ${tabela} WHERE id = $1`,
+                  [user.sub],
+                );
+                const conta = linhas?.[0];
+                const revogado =
+                  !conta ||
+                  conta.isActive === false ||
+                  (conta.sessionToken &&
+                    user.sessionToken !== conta.sessionToken);
+                if (revogado) {
+                  throw new Error('Unauthorized: sessao revogada');
+                }
+                // `role` tambem sai do banco: o claim fica congelado no token.
+                user = { ...user, role: conta.role };
+              } catch (err: any) {
+                if (String(err?.message).startsWith('Unauthorized')) throw err;
+                // Falha de banco no handshake: nao autentica, mas nao derruba a
+                // conexao anonima (mesma postura do REQUIRE_WS_AUTH).
+                user = null;
+              }
+            }
+
             // Disponibiliza para os resolvers de subscription. O token cru
             // tambem vai junto: o GqlAuthGuard precisa dele para rodar a
             // JwtStrategy (que valida isActive e sessionToken) — sobre WS o
@@ -166,6 +208,7 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
         // KAN-253: usuario autenticado do WebSocket, quando houver.
         wsUser: extra?.user ?? null,
         wsToken: extra?.wsToken ?? null,
+      }),
       }),
     }),
 
