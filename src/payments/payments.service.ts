@@ -1320,6 +1320,61 @@ export class PaymentsService implements OnModuleDestroy {
       this.logger.warn(`No vendor recipient for order #${order.orderNumber}, skipping vendor transfer`);
     }
 
+    // 3. Reembolso parcial ao CLIENTE quando o peso final ficou abaixo do pago.
+    // `onlinePaidTotal` so existe se houve ajuste de peso em pedido pago online;
+    // se ele e maior que o total final, a diferenca esta em custodia e nao
+    // pertence a ninguem alem do cliente — antes ela ficava com a plataforma em
+    // silencio. So no ramo manual (PIX/link ja capturado): no cartao pre-auth a
+    // captura sai pelo total ja limitado e o excedente da autorizacao e liberado
+    // sozinho pelo Pagar.me.
+    const pagoCents = Math.round(Number(order.onlinePaidTotal ?? 0) * 100);
+    const sobraCents = pagoCents - totalCents;
+    if (order.onlinePaidTotal != null && sobraCents > 0 && !order.overpaidRefundedAt) {
+      // Mesma guarda atomica dos repasses: claim antes da chamada externa, solta
+      // no erro. A Idempotency-Key cobre a janela entre o POST ter efeito no
+      // Pagar.me e a resposta se perder.
+      const claim = await orderRepo.manager.query(
+        `UPDATE orders SET "overpaidRefundedAt" = now()
+          WHERE id = $1 AND "overpaidRefundedAt" IS NULL RETURNING id`,
+        [order.id],
+      );
+      if (claim && claim.length > 0) {
+        try {
+          let chargeId: string | null = null;
+          if (order.preAuthChargeId) {
+            chargeId = order.preAuthChargeId;
+          } else if (order.mpPreferenceId && !order.mpPreferenceId.startsWith('link-')) {
+            const pagarmeOrder = await this.pagarmeGet(`/orders/${order.mpPreferenceId}`);
+            chargeId = pagarmeOrder.charges?.[0]?.id ?? null;
+          }
+          if (!chargeId) throw new Error('cobranca nao localizada no Pagar.me');
+
+          await this.pagarmePost(
+            `/charges/${chargeId}/refund`,
+            { amount: sobraCents },
+            `weight-refund-${order.id}`,
+          );
+          this.logger.log(
+            `Partial weight refund for order #${order.orderNumber} | paid: ${pagoCents} | final: ${totalCents} | refunded: ${sobraCents} cents`,
+          );
+          if (order.customer?.id) {
+            this.notificationsService.sendToAppUser(
+              order.customer.id,
+              'Reembolso parcial a caminho',
+              `O peso final do pedido #${order.orderNumber} ficou abaixo do estimado. R$ ${(sobraCents / 100).toFixed(2)} serão devolvidos ao seu meio de pagamento.`,
+              { type: 'PARTIAL_REFUND', orderId: order.id },
+            ).catch(() => {});
+          }
+        } catch (err: any) {
+          const errorDetail = JSON.stringify(err.response?.data || err.message);
+          this.logger.error(`Partial weight refund failed for order #${order.orderNumber}: ${errorDetail}`);
+          // Solta o claim para o retry re-tentar; a Idempotency-Key impede duplicar.
+          await orderRepo.update(order.id, { overpaidRefundedAt: null } as any);
+          settlementErrors.push(`weight_refund:${sobraCents}:${errorDetail}`);
+        }
+      }
+    }
+
     // Track failed settlements in order notes for superadmin visibility
     if (settlementErrors.length > 0) {
       // Error#2: reabre o settlement (isSettled=false) para o

@@ -212,6 +212,20 @@ export class Order {
   @Column({ type: 'timestamp', nullable: true })
   delivererSettledAt: Date;
 
+  // Foto do valor que o cliente JA pagou/autorizou online, tirada no PRIMEIRO
+  // ajuste de peso (adjustItemWeight e o unico lugar que muda `total` depois da
+  // criacao — depois do primeiro ajuste o `total` deixa de dizer quanto foi
+  // cobrado). Null = pedido nunca ajustado, ou pago na entrega.
+  // E o teto da captura no cartao e a referencia do reembolso parcial no PIX.
+  @Field(() => Number, { nullable: true })
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  onlinePaidTotal: number | null;
+
+  // Guarda de idempotencia do reembolso parcial de peso (pago > total final).
+  // Mesmo papel dos vendorSettledAt/delivererSettledAt para as transferencias.
+  @Column({ type: 'timestamp', nullable: true })
+  overpaidRefundedAt: Date | null;
+
   @Column({ default: false })
   couponCredited: boolean;
 

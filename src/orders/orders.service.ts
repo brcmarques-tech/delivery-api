@@ -2102,6 +2102,19 @@ export class OrdersService {
       throw new BadRequestException('Peso invalido. Informe um valor maior que zero.');
     }
 
+    // Foto do valor pago/autorizado ANTES do primeiro ajuste. Este metodo e o
+    // unico que muda `total` depois da criacao, entao no primeiro ajuste o
+    // `total` atual ainda E o valor que o cliente pagou (PIX/link) ou autorizou
+    // (pre-auth do cartao). Sem esta foto, o segundo ajuste em diante nao teria
+    // mais como saber quanto foi cobrado.
+    const pagoOnline = order.paymentMethod !== 'ON_DELIVERY';
+    const tetoPago =
+      pagoOnline
+        ? (order.onlinePaidTotal !== null && order.onlinePaidTotal !== undefined
+            ? Number(order.onlinePaidTotal)
+            : Number(order.total))
+        : null;
+
     // Mesmo arredondamento em centavos da criacao do pedido: sem ele, o valor em
     // memoria e o que o Postgres grava em decimal(10,2) podem diferir em 1
     // centavo, e a captura passa a pedir mais do que foi pre-autorizado.
@@ -2124,13 +2137,35 @@ export class OrdersService {
     // cupom na criacao: nunca desconta mais do que o valor dos itens).
     const rawDiscount = Number(updatedOrder.discount) || 0;
     const discount = Math.min(rawDiscount, subtotal);
-    const baseComissionavel = Math.max(subtotal - discount, 0);
+    let baseComissionavel = Math.max(subtotal - discount, 0);
     updatedOrder.discount = discount;
     updatedOrder.subtotal = subtotal;
-    updatedOrder.total = Math.max(
+    let novoTotal = Math.max(
       baseComissionavel + Number(updatedOrder.deliveryFee),
       0,
     );
+
+    // TETO DO PAGAMENTO ONLINE: o total nao pode passar do que o cliente ja
+    // pagou (PIX/link) ou autorizou (pre-auth). Sem isto:
+    //  - cartao: a captura pedia MAIS que a pre-autorizacao -> Pagar.me recusa,
+    //    o retry repete a captura invalida por 48h e vendedor/entregador nunca
+    //    recebem;
+    //  - PIX: os repasses saiam sobre o total novo, maior que o valor em
+    //    custodia -> a plataforma pagava a diferenca do proprio bolso.
+    // O excedente sai da base comissionavel (e do repasse do vendedor), nunca do
+    // frete: e o vendedor quem pesou acima do estimado, o entregador nao tem
+    // parte nisso. Pagamento na entrega nao tem teto — o cliente paga o valor
+    // real na porta.
+    if (tetoPago !== null && novoTotal > tetoPago) {
+      const excedente = novoTotal - tetoPago;
+      novoTotal = tetoPago;
+      baseComissionavel = Math.max(baseComissionavel - excedente, 0);
+    }
+    if (pagoOnline) {
+      updatedOrder.onlinePaidTotal = tetoPago;
+    }
+
+    updatedOrder.total = novoTotal;
     updatedOrder.commissionAmount =
       Math.round(
         ((baseComissionavel * Number(updatedOrder.commissionPercent)) / 100) * 100,

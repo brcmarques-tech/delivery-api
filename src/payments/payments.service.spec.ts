@@ -377,6 +377,91 @@ describe('PaymentsService', () => {
       expect(transferCalls[0][1].recipient_id).toBe('rp_vendor_123');
       expect(transferCalls[0][1].amount).toBe(5250); // total - commission
     });
+
+    // ─── Reembolso parcial de peso (onlinePaidTotal > total final) ─────
+    // O ajuste de peso pode baixar o total DEPOIS do PIX pago; a diferenca
+    // ficava em custodia com a plataforma, em silencio. Na liquidacao ela deve
+    // voltar ao cliente via estorno parcial.
+    it('should partially refund customer when paid amount exceeds final total', async () => {
+      const order = makeOrder({
+        paymentMethod: 'PIX',
+        isPickup: true,
+        onlinePaidTotal: 60.0, // pagou 60, peso final derrubou o total para 55
+        mpPreferenceId: 'or_pix_123',
+      });
+
+      httpService.axiosRef.get.mockResolvedValue({
+        data: { charges: [{ id: 'ch_abc', status: 'paid' }] },
+      });
+      httpService.axiosRef.post.mockResolvedValue({
+        data: { id: 'tr_1', status: 'pending' },
+      });
+
+      await service.settlePayment(order);
+
+      const refundCall = httpService.axiosRef.post.mock.calls.find(
+        (c: any) => c[0].includes('/charges/ch_abc/refund'),
+      );
+      expect(refundCall).toBeDefined();
+      expect(refundCall[1].amount).toBe(500); // 6000 - 5500 centavos
+      // Idempotency-Key: um retry de settlement NAO pode estornar em dobro
+      expect(refundCall[2].headers['Idempotency-Key']).toBe('weight-refund-order-1');
+    });
+
+    it('should NOT refund when paid amount equals final total', async () => {
+      const order = makeOrder({
+        paymentMethod: 'PIX',
+        isPickup: true,
+        onlinePaidTotal: 55.0, // igual ao total — nada a devolver
+        mpPreferenceId: 'or_pix_123',
+      });
+
+      httpService.axiosRef.post.mockResolvedValue({
+        data: { id: 'tr_1', status: 'pending' },
+      });
+
+      await service.settlePayment(order);
+
+      const refundCalls = httpService.axiosRef.post.mock.calls.filter(
+        (c: any) => c[0].includes('/refund'),
+      );
+      expect(refundCalls.length).toBe(0);
+    });
+
+    it('should release the refund claim and reopen settlement when the partial refund fails', async () => {
+      const order = makeOrder({
+        paymentMethod: 'PIX',
+        isPickup: true,
+        onlinePaidTotal: 60.0,
+        mpPreferenceId: 'or_pix_123',
+      });
+
+      httpService.axiosRef.get.mockResolvedValue({
+        data: { charges: [{ id: 'ch_abc', status: 'paid' }] },
+      });
+      httpService.axiosRef.post.mockImplementation((url: string) => {
+        if (url.includes('/refund')) {
+          return Promise.reject({ response: { data: { message: 'gateway down' } } });
+        }
+        return Promise.resolve({ data: { id: 'tr_1', status: 'pending' } });
+      });
+
+      await service.settlePayment(order);
+
+      // Claim solto para o retry re-tentar (a Idempotency-Key impede duplicar)
+      expect(mockOrderRepo.update).toHaveBeenCalledWith(
+        'order-1',
+        expect.objectContaining({ overpaidRefundedAt: null }),
+      );
+      // Settlement reaberto com o erro registrado
+      expect(mockOrderRepo.update).toHaveBeenCalledWith(
+        'order-1',
+        expect.objectContaining({
+          isSettled: false,
+          notes: expect.stringContaining('weight_refund'),
+        }),
+      );
+    });
   });
 
   // ─── handleWebhook ──────────────────────────────────────────
