@@ -161,6 +161,12 @@ export class ProductsService {
     product.isActive = !product.isActive;
     if (!product.isActive) {
       product.isAvailable = false;
+    } else if (product.store?.id) {
+      // O limite do plano so era checado no create/bulkCreate — reativar nao
+      // contava. FREE com limite 10: cria 10, desativa todos (count 0), cria
+      // mais 10, reativa os primeiros -> 20 ativos. Reativar e a mesma coisa
+      // que criar do ponto de vista do limite.
+      await this.checkProductLimit(product.store.id);
     }
     const saved = await this.productsRepository.save(product);
     this.pubSub.publish('productUpdated', { productUpdated: saved });
@@ -237,6 +243,19 @@ export class ProductsService {
   }
 
   async restore(id: string): Promise<Product> {
+    // Mesmo furo do toggleActive: o count do limite ignora soft-deleted, entao
+    // restaurar um produto ativo aumenta o total sem passar pela checagem.
+    // A checagem vem ANTES do restore — depois seria tarde.
+    const deletado = await this.productsRepository.findOne({
+      where: { id },
+      withDeleted: true,
+      relations: ['store'],
+    });
+    if (!deletado) throw new NotFoundException('Produto nao encontrado');
+    if (deletado.isActive && deletado.store?.id) {
+      await this.checkProductLimit(deletado.store.id);
+    }
+
     await this.productsRepository.restore(id);
     const product = await this.productsRepository.findOne({ where: { id }, relations: ['store', 'category'] });
     if (!product) throw new NotFoundException('Produto nao encontrado');
