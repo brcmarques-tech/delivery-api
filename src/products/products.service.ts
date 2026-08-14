@@ -359,6 +359,13 @@ export class ProductsService {
       }
       const item = input.products[i];
       try {
+        // A importacao em massa nao chamava esta checagem — a mesma que o
+        // create/update fazem. Um lojista importava produto apontando para a
+        // categoria de OUTRA loja e, como a vitrine monta o catalogo por
+        // categoria (categories.service.ts findByStore), o produto dele passava
+        // a aparecer dentro da loja alheia, com o preco que ele quisesse.
+        await this.assertCategoryBelongsToStore(item.categoryId, input.storeId);
+
         const itemIsVariableWeight = item.isVariableWeight ?? false;
         const itemUnit = item.unit ?? (itemIsVariableWeight ? 'kg' : undefined);
         const product = this.productsRepository.create({
