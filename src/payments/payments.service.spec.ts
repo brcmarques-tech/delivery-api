@@ -551,6 +551,83 @@ describe('PaymentsService', () => {
       await service.handleWebhook({ type: 'unknown.event', data: { id: 'test' } });
       expect(paymentsRepo.manager.getRepository).not.toHaveBeenCalled();
     });
+
+    // ─── Pagamento que chega APOS a expiracao ─────────────────
+    // expireAwaitingPaymentOrders expira sem estornar (premissa: nao foi pago).
+    // Se o cliente pagou aos 29:59 e o webhook chegou aos 30:05, o pedido ja
+    // esta EXPIRED — antes o handler retornava em silencio e o dinheiro ficava
+    // com a plataforma sem marcador nenhum.
+    it('should auto-refund a payment that arrives after the order expired', async () => {
+      const mockOrder = {
+        id: 'order-9',
+        orderNumber: '1009',
+        status: OrderStatus.EXPIRED,
+        total: 55.0,
+        notes: '',
+        customer: { id: 'c1', phone: '53999887766' },
+        store: { id: 's1' },
+      };
+      const mockOrderRepo = {
+        findOne: jest.fn().mockResolvedValue(mockOrder),
+        save: jest.fn(),
+        // claim do marcador [PAID_AFTER_EXPIRY] vence
+        manager: { query: jest.fn().mockResolvedValue([{ id: 'order-9' }]) },
+      };
+      paymentsRepo.manager.getRepository.mockReturnValue(mockOrderRepo);
+
+      httpService.axiosRef.get.mockResolvedValue({
+        data: { id: 'ch_late', status: 'paid', amount: 5500 },
+      });
+      httpService.axiosRef.post.mockResolvedValue({ data: { id: 'ref_1' } });
+
+      await service.handleWebhook({
+        type: 'order.paid',
+        data: {
+          id: 'or_late',
+          charges: [{ id: 'ch_late' }],
+          metadata: { order_id: 'order-9' },
+        },
+      });
+
+      const refundCall = httpService.axiosRef.post.mock.calls.find(
+        (c: any) => c[0].includes('/charges/ch_late/refund'),
+      );
+      expect(refundCall).toBeDefined();
+      expect(refundCall[1].amount).toBe(5500); // o valor REAL da cobranca
+      expect(refundCall[2].headers['Idempotency-Key']).toBe('late-refund-order-9');
+    });
+
+    it('should NOT refund late payment when another webhook already claimed it', async () => {
+      const mockOrder = {
+        id: 'order-9',
+        orderNumber: '1009',
+        status: OrderStatus.EXPIRED,
+        notes: '[PAID_AFTER_EXPIRY 2026-01-01] ja assumido',
+        customer: { id: 'c1' },
+        store: { id: 's1' },
+      };
+      const mockOrderRepo = {
+        findOne: jest.fn().mockResolvedValue(mockOrder),
+        save: jest.fn(),
+        // claim perde: outro webhook (order.paid vs charge.paid) chegou antes
+        manager: { query: jest.fn().mockResolvedValue([]) },
+      };
+      paymentsRepo.manager.getRepository.mockReturnValue(mockOrderRepo);
+
+      await service.handleWebhook({
+        type: 'order.paid',
+        data: {
+          id: 'or_late',
+          charges: [{ id: 'ch_late' }],
+          metadata: { order_id: 'order-9' },
+        },
+      });
+
+      const refundCalls = httpService.axiosRef.post.mock.calls.filter(
+        (c: any) => c[0].includes('/refund'),
+      );
+      expect(refundCalls.length).toBe(0);
+    });
   });
 
   // ─── createPlanUpgrade ──────────────────────────────────────

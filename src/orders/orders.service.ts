@@ -1809,42 +1809,55 @@ export class OrdersService {
       OrderStatus.PREPARING,
       OrderStatus.READY,
     ];
-    if (!estornavelPeloVendedor.includes(order.status)) {
+    // Retry de estorno que FALHOU: o pedido ja esta terminal (o claim do
+    // paymentsService cancelou antes de a chamada externa cair) e carrega o
+    // marcador [REFUND_FAILED]. Sem esta excecao, o vendedor ficava
+    // permanentemente travado: o pedido esta CANCELLED, o cliente sem o
+    // dinheiro, e este guard mandava "abrir disputa" — que nao re-estorna.
+    const retryEstornoFalho =
+      [OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED].includes(order.status) &&
+      (order.notes || '').includes('[REFUND_FAILED');
+    if (!estornavelPeloVendedor.includes(order.status) && !retryEstornoFalho) {
       throw new BadRequestException(
         'Este pedido ja saiu para entrega ou foi concluido. Abra uma disputa para resolver o estorno.',
       );
     }
-    if (order.delivery?.deliverer) {
+    if (order.delivery?.deliverer && !retryEstornoFalho) {
       throw new BadRequestException(
         'Um entregador ja aceitou este pedido. Abra uma disputa para resolver o estorno.',
       );
     }
 
-    const result = await this.paymentsService.refundOrder(orderId);
+    let result: { success: boolean; message: string };
+    try {
+      result = await this.paymentsService.refundOrder(orderId);
+    } catch (err: any) {
+      // Se o claim cancelou o pedido mas a chamada externa caiu, o estoque e o
+      // cupom precisam voltar MESMO sem estorno — antes o throw abortava aqui e
+      // a mercadoria ficava presa num pedido cancelado. Identificamos esse caso
+      // pelo marcador que o paymentsService grava so quando foi ELE quem
+      // claimou e falhou (claim perdido para outro fluxo nao grava marcador — e
+      // o outro fluxo devolve o estoque por conta propria).
+      if (!retryEstornoFalho) {
+        const [linha] = await this.ordersRepository.manager.query(
+          `SELECT status, notes FROM orders WHERE id = $1`,
+          [orderId],
+        );
+        const terminal = ['CANCELLED', 'REJECTED', 'EXPIRED'].includes(linha?.status);
+        if (terminal && String(linha?.notes || '').includes('[REFUND_FAILED')) {
+          await this.restoreStockAndCoupon(order);
+          const atualizado = await this.findById(orderId);
+          this.pubSub.publish('orderUpdated', { orderUpdated: atualizado });
+        }
+      }
+      throw err;
+    }
     if (!result.success) throw new BadRequestException(result.message);
 
-    // Restore stock
-    for (const item of order.items) {
-      if (item.product) {
-        await this.productsService.restoreStock(item.product.id, item.quantity);
-      }
-    }
-
-    // Devolve o uso do cupom. refundOrder cancela via paymentsService, que seta
-    // CANCELLED direto no banco — pulando updateStatus, onde o decremento de
-    // cupom vive. Sem isto, um pedido pago com cupom de uso limitado, ao ser
-    // estornado, mantinha o uso consumido para sempre (furava o limite). Mesmo
-    // guard idempotente do updateStatus (couponCredited).
-    if (order.coupon?.id && order.couponCredited) {
-      try {
-        await this.couponsService.decrementUsage(order.coupon.id);
-        await this.ordersRepository.update(order.id, { couponCredited: false });
-      } catch (err: any) {
-        console.error(
-          `Failed to decrement coupon usage for order ${order.id}:`,
-          err?.message,
-        );
-      }
+    // No retry o estoque/cupom JA voltaram na primeira falha (bloco acima) —
+    // repetir devolveria estoque em dobro.
+    if (!retryEstornoFalho) {
+      await this.restoreStockAndCoupon(order);
     }
 
     const updated = await this.findById(orderId);

@@ -2429,7 +2429,96 @@ export class PaymentsService implements OnModuleDestroy {
             `💰 *Pedido pago!*\n\nO pedido #${order.orderNumber} (R$ ${Number(order.total).toFixed(2)}) foi pago e aguarda sua confirmação.\n\nAceite pelo painel para não perder a venda.`,
           ).catch(() => {});
         }
+      } else if (
+        order &&
+        [OrderStatus.EXPIRED, OrderStatus.CANCELLED, OrderStatus.REJECTED].includes(
+          order.status as OrderStatus,
+        )
+      ) {
+        // PAGAMENTO APOS A EXPIRACAO. expireAwaitingPaymentOrders expira aos 30
+        // min SEM estornar (premissa: nao foi pago). Cliente que paga aos 29:59
+        // com o webhook chegando aos 30:05 caia aqui — e o codigo retornava em
+        // SILENCIO: pedido "expirado", dinheiro com a plataforma, nenhum
+        // marcador, nenhuma query capaz de achar o caso. Agora: estorno
+        // automatico + marcador.
+        await this.refundLatePayment(order, data, orderRepo);
       }
+    }
+  }
+
+  /**
+   * Estorna um pagamento que chegou com o pedido ja terminal (expirado ou
+   * cancelado antes do webhook). Claim atomico via marcador em notes:
+   * order.paid e charge.paid chegam quase juntos e nao se anulam no dedup
+   * (chaves distintas), entao so o primeiro pode estornar.
+   */
+  private async refundLatePayment(order: Order, data: any, orderRepo: any): Promise<void> {
+    const claim = await orderRepo.manager.query(
+      `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2), "updatedAt" = NOW()
+        WHERE id = $1 AND COALESCE(notes, '') NOT LIKE '%[PAID_AFTER_EXPIRY%' RETURNING id`,
+      [order.id, `\n[PAID_AFTER_EXPIRY ${new Date().toISOString()}] pagamento chegou com o pedido ${order.status}; estorno automatico em andamento.`],
+    );
+    if (!claim || claim.length === 0) return; // outro webhook ja assumiu
+
+    try {
+      // Localiza a cobranca REAL e confirma que esta paga antes de estornar.
+      let chargeId: string | null = data.charges?.[0]?.id || null;
+      if (!chargeId && data.id) {
+        const pagarmeOrder = await this.pagarmeGet(`/orders/${data.id}`);
+        chargeId = pagarmeOrder.charges?.[0]?.id ?? null;
+      }
+      if (!chargeId) throw new Error('cobranca nao localizada no payload nem no Pagar.me');
+
+      const charge = await this.pagarmeGet(`/charges/${chargeId}`);
+      if (charge.status !== 'paid' && charge.status !== 'captured') {
+        throw new Error(`cobranca com status "${charge.status}" nao esta paga`);
+      }
+
+      await this.pagarmePost(
+        `/charges/${chargeId}/refund`,
+        { amount: charge.amount },
+        `late-refund-${order.id}`,
+      );
+      this.logger.warn(
+        `Late payment auto-refunded for ${order.status} order #${order.orderNumber} | charge: ${chargeId} | amount: ${charge.amount} cents`,
+      );
+      await orderRepo.manager.query(
+        `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`,
+        [order.id, `\n[PAID_AFTER_EXPIRY_REFUNDED ${new Date().toISOString()}] ${charge.amount} centavos estornados.`],
+      );
+
+      if (order.customer?.id) {
+        this.notificationsService.sendToAppUser(
+          order.customer.id,
+          'Pagamento estornado',
+          `O pagamento do pedido #${order.orderNumber} chegou depois do prazo e o pedido já havia expirado. O valor será devolvido automaticamente ao seu meio de pagamento.`,
+          { type: 'REFUND_REQUESTED', orderId: order.id },
+        ).catch(() => {});
+      }
+      if (order.customer?.phone) {
+        this.whatsAppService.sendText(
+          order.customer.phone,
+          `⏰ *Pagamento fora do prazo*\n\nO pagamento do pedido #${order.orderNumber} foi confirmado depois do prazo e o pedido já havia expirado.\n\n💰 O valor será devolvido automaticamente ao seu meio de pagamento em até 7 dias úteis.`,
+        ).catch(() => {});
+      }
+    } catch (err: any) {
+      // O claim ja gravou [PAID_AFTER_EXPIRY] — o caso e encontravel:
+      //   SELECT * FROM orders WHERE notes LIKE '%[PAID_AFTER_EXPIRY]%'
+      //     AND notes NOT LIKE '%[PAID_AFTER_EXPIRY_REFUNDED%';
+      // Grava a falha e NAO solta o claim: estorno automatico so tenta uma vez
+      // por webhook; o proximo webhook do mesmo pagamento re-tentaria com outra
+      // Idempotency... nao — fica para reconciliacao manual, que e mais seguro
+      // do que re-tentar as cegas um estorno de dinheiro.
+      const motivo = err?.response?.data?.message || err?.message || 'unknown';
+      this.logger.error(
+        `Late payment refund FAILED for order #${order.orderNumber}: ${motivo}`,
+      );
+      await orderRepo.manager
+        .query(`UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`, [
+          order.id,
+          `\n[PAID_AFTER_EXPIRY_REFUND_FAILED ${new Date().toISOString()}] ${motivo} — requer estorno manual.`,
+        ])
+        .catch(() => {});
     }
   }
 
@@ -2880,7 +2969,16 @@ export class PaymentsService implements OnModuleDestroy {
 
     if (!order) throw new NotFoundException('Pedido não encontrado');
     if (!order.mpPreferenceId && !order.preAuthChargeId) throw new BadRequestException('Este pedido não possui pagamento online para estornar');
-    if ([OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED].includes(order.status as OrderStatus)) {
+
+    // Pedido terminal COM marcador de estorno falho e re-tentavel. Sem isso, um
+    // estorno que caia por timeout/5xx deixava o pedido CANCELLED para sempre:
+    // re-chamar batia neste guard e NENHUM endpoint conseguia re-estornar — o
+    // cliente ficava sem o dinheiro e so uma reconciliacao manual no Pagar.me
+    // resolvia.
+    const jaTerminal = [OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED]
+      .includes(order.status as OrderStatus);
+    const retryDeEstornoFalho = jaTerminal && (order.notes || '').includes('[REFUND_FAILED');
+    if (jaTerminal && !retryDeEstornoFalho) {
       throw new BadRequestException('Este pedido já foi cancelado/rejeitado');
     }
 
@@ -2892,15 +2990,31 @@ export class PaymentsService implements OnModuleDestroy {
     // outro fluxo já assumiu o cancelamento e abortamos.
     const wasCompleted = order.status === OrderStatus.COMPLETED;
     const wasSettled = order.isSettled;
-    const claim = await orderRepo.manager.query(
-      `UPDATE orders SET status = $2, "updatedAt" = NOW()
-         WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
-      [order.id, statusFinal],
-    );
-    if (!claim || claim.length === 0) {
-      throw new BadRequestException('Este pedido já está sendo cancelado/estornado.');
+    if (retryDeEstornoFalho) {
+      // Claim do RETRY: consome o marcador de forma atomica (vira [REFUND_RETRY,
+      // que o guard acima nao reconhece), entao duas re-tentativas concorrentes
+      // nao passam juntas. Se o estorno falhar de novo, o catch grava um
+      // [REFUND_FAILED] novo e o pedido volta a ser re-tentavel.
+      const claim = await orderRepo.manager.query(
+        `UPDATE orders SET notes = replace(notes, '[REFUND_FAILED', '[REFUND_RETRY'), "updatedAt" = NOW()
+           WHERE id = $1 AND notes LIKE '%[REFUND_FAILED%' RETURNING id`,
+        [order.id],
+      );
+      if (!claim || claim.length === 0) {
+        throw new BadRequestException('Este pedido já está sendo re-estornado.');
+      }
+      // status ja e terminal; nao mexe nele.
+    } else {
+      const claim = await orderRepo.manager.query(
+        `UPDATE orders SET status = $2, "updatedAt" = NOW()
+           WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+        [order.id, statusFinal],
+      );
+      if (!claim || claim.length === 0) {
+        throw new BadRequestException('Este pedido já está sendo cancelado/estornado.');
+      }
+      order.status = statusFinal; // reflete o claim no objeto em memória
     }
-    order.status = statusFinal; // reflete o claim no objeto em memória
 
     // C3: If order was COMPLETED and settled, reverse transfers before refunding.
     // A partir daqui o pedido JÁ está CANCELLED no banco: se o estorno externo
@@ -2987,9 +3101,24 @@ export class PaymentsService implements OnModuleDestroy {
 
       return { success: true, message: `Estorno solicitado para o pedido #${order.orderNumber}` };
     } catch (err: any) {
-      if (err instanceof BadRequestException || err instanceof NotFoundException) throw err;
+      // O pedido JA esta terminal (claim acima) e o dinheiro NAO voltou. Sem
+      // este marcador a falha era invisivel: nenhuma query encontrava o pedido e
+      // o guard de re-chamada rejeitava para sempre. Com ele:
+      //   SELECT * FROM orders WHERE notes LIKE '%[REFUND_FAILED%';
+      // e o proprio refundOrder aceita a re-tentativa (guard + claim acima).
       const errorData = err.response?.data;
+      const motivo = errorData?.message || err?.message || 'unknown';
       this.logger.error(`Refund failed: ${JSON.stringify(errorData || err.message)}`);
+      const marker = `\n[REFUND_FAILED ${new Date().toISOString()}] ${motivo} — pedido terminal SEM estorno; re-chamar refundOrder re-tenta.`;
+      await orderRepo.manager
+        .query(`UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`, [
+          order.id,
+          marker,
+        ])
+        .catch((e: any) =>
+          this.logger.error(`Failed to flag refund failure for order ${order.id}: ${e?.message}`),
+        );
+      if (err instanceof BadRequestException || err instanceof NotFoundException) throw err;
       throw new BadRequestException(errorData?.message || 'Erro ao solicitar estorno');
     }
   }
