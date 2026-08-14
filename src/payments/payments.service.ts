@@ -3265,6 +3265,36 @@ export class PaymentsService implements OnModuleDestroy {
     });
   }
 
+  /**
+   * Totais REAIS da tabela inteira, para o cabecalho da tela financeira do
+   * superadmin. Antes o painel somava client-side os 100 pagamentos que a
+   * lista paginada trazia e apresentava o resultado como "Receita aprovada" —
+   * com 900 pagamentos, o numero era uma fracao do real, sem nenhum aviso.
+   */
+  async paymentsSummary(): Promise<{
+    totalCount: number;
+    approvedAmount: number;
+    pendingAmount: number;
+  }> {
+    const row = await this.paymentsRepository
+      .createQueryBuilder('payment')
+      .select('COUNT(*)', 'totalCount')
+      .addSelect(
+        `COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = 'approved'), 0)`,
+        'approvedAmount',
+      )
+      .addSelect(
+        `COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = 'pending'), 0)`,
+        'pendingAmount',
+      )
+      .getRawOne();
+    return {
+      totalCount: parseInt(row?.totalCount ?? '0', 10),
+      approvedAmount: parseFloat(row?.approvedAmount ?? '0'),
+      pendingAmount: parseFloat(row?.pendingAmount ?? '0'),
+    };
+  }
+
   async platformRevenue(): Promise<number> {
     // Revenue from plan upgrades and promotions
     const paymentResult = await this.paymentsRepository

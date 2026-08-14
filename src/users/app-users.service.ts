@@ -1,7 +1,7 @@
 import { Injectable, ConflictException, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { AppUser } from './entities/app-user.entity';
@@ -239,6 +239,22 @@ export class AppUsersService {
   async toggleUserActive(id: string): Promise<AppUser> {
     const user = await this.appUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
+
+    // ULTIMO SUPERADMIN: desativar rotaciona o sessionToken e derruba a sessao
+    // NA HORA — se ele for o unico ativo, ninguem mais entra no painel para
+    // reativar e a recuperacao vira UPDATE manual no banco. Um clique errado na
+    // propria linha travava a administracao da plataforma inteira.
+    if (user.isActive && user.role === UserRole.SUPERADMIN) {
+      const outrosAtivos = await this.appUsersRepository.count({
+        where: { role: UserRole.SUPERADMIN, isActive: true, id: Not(id) },
+      });
+      if (outrosAtivos === 0) {
+        throw new BadRequestException(
+          'Este e o ultimo superadmin ativo — desativa-lo deixaria a plataforma sem administracao. Ative outro superadmin antes.',
+        );
+      }
+    }
+
     user.isActive = !user.isActive;
     // SEGURANCA: ao DESATIVAR, rotaciona o sessionToken para derrubar na hora
     // qualquer sessao ja aberta (o jwt.strategy compara o token da sessao).

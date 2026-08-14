@@ -1,4 +1,4 @@
-import { Resolver, Query, Mutation, Args } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, ObjectType, Field, Int, Float } from '@nestjs/graphql';
 import { UseGuards, BadRequestException } from '@nestjs/common';
 import { Payment } from './entities/payment.entity';
 import { Subscription } from './entities/subscription.entity';
@@ -14,6 +14,20 @@ import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole, VendorPlan } from '../common/enums';
 import { GqlThrottlerGuard } from '../auth/guards/gql-throttler.guard';
 import { Throttle } from '@nestjs/throttler';
+
+// Totais da tabela INTEIRA para o cabecalho da tela financeira — a lista em si
+// segue paginada. Ver paymentsSummary no service.
+@ObjectType()
+export class PaymentsSummary {
+  @Field(() => Int)
+  totalCount: number;
+
+  @Field(() => Float)
+  approvedAmount: number;
+
+  @Field(() => Float)
+  pendingAmount: number;
+}
 
 // M11 / L10: RESOLVIDO — o throttler ja esta instalado e em uso no auth.resolver
 // desde a rodada de seguranca; este TODO ficou desatualizado. Mutations que
@@ -89,6 +103,13 @@ export class PaymentsResolver {
     // M4: Cap limit to prevent excessive queries
     if (limit > 500) limit = 500;
     return this.paymentsService.findAll(limit, offset);
+  }
+
+  @Query(() => PaymentsSummary)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  paymentsSummary(): Promise<PaymentsSummary> {
+    return this.paymentsService.paymentsSummary();
   }
 
   @Mutation(() => Boolean)

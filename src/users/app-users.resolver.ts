@@ -219,8 +219,34 @@ export class AppUsersResolver {
   updateNotificationEmail(
     @CurrentUser() user: AppUser,
     @Args('email') email: string,
+    @Args('userId', { type: () => String, nullable: true }) userId?: string,
   ): Promise<AppUser> {
-    return this.appUsersService.updateNotificationEmail(user.id, email);
+    // O painel edita o email POR LINHA da tabela de admins, mas esta mutation
+    // so gravava no proprio usuario logado: o master clicava na linha da Carla,
+    // digitava o email dela, e o backend sobrescrevia o email de auditoria DELE
+    // — a linha da Carla seguia "Nao configurado" e os emails de acao
+    // administrativa do master passavam a ir para outra pessoa.
+    const alvo = userId || user.id;
+    if (alvo !== user.id) {
+      // Editar o email de OUTRO admin exige a chave que administra superadmins
+      // (mesma regra de updateSuperadminPermissions). null = superadmin pleno.
+      const raw = (user as any).permissions;
+      let permitido = raw === null || raw === undefined;
+      if (!permitido) {
+        try {
+          const mapa = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          permitido = mapa?.settings === true;
+        } catch {
+          permitido = false;
+        }
+      }
+      if (!permitido) {
+        throw new ForbiddenException(
+          'Editar o email de notificacao de outro admin exige a permissao de Configuracoes.',
+        );
+      }
+    }
+    return this.appUsersService.updateNotificationEmail(alvo, email);
   }
 
   @Mutation(() => AppUser)
