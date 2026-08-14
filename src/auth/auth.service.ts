@@ -41,21 +41,27 @@ export class AuthService {
 
   private async signWithSession(userId: string, role: string, userType: 'app' | 'vendor'): Promise<string> {
     const sessionToken = this.generateSessionToken();
+    // KAN-280: sessionActive marca PRESENCA. O sessionToken rotaciona e nunca
+    // volta a null (e o que invalida JWTs), entao ele sozinho nao diz se ha
+    // sessao — logout e reset poem sessionActive=false; so o login poe true.
     if (userType === 'vendor') {
-      await this.vendorUserRepo.update(userId, { sessionToken });
+      await this.vendorUserRepo.update(userId, { sessionToken, sessionActive: true });
     } else {
-      await this.appUserRepo.update(userId, { sessionToken });
+      await this.appUserRepo.update(userId, { sessionToken, sessionActive: true });
     }
     return this.jwtService.sign({ sub: userId, role, userType, sessionToken });
   }
 
   async checkActiveSession(email: string, userType: string): Promise<boolean> {
+    // KAN-280: `!!sessionToken` era permanentemente true apos o primeiro login
+    // (a rotacao nunca devolve null) — esta funcao respondia "sim" para
+    // qualquer conta ja usada, mesmo depois de logout limpo.
     if (userType === 'vendor') {
       const user = await this.vendorUsersService.findByEmail(email);
-      return !!user?.sessionToken;
+      return !!user?.sessionToken && user.sessionActive === true;
     }
     const user = await this.appUsersService.findByEmail(email);
-    return !!user?.sessionToken;
+    return !!user?.sessionToken && user.sessionActive === true;
   }
 
   async validateRegistration(email: string, cpf: string, phone: string, userType: string) {
@@ -118,11 +124,16 @@ export class AuthService {
       throw new UnauthorizedException('Esta conta esta desativada. Fale com o suporte.');
     }
 
-    if (user.sessionToken && !forceLogin) {
+    // KAN-280: a presenca vem de sessionActive, nao do token rotacionado — sem
+    // isso, reset de senha ou logout limpo seguido de login legitimo devolvia
+    // ACTIVE_SESSION de um aparelho inexistente (e o "desconectar" disparava um
+    // sessionKicked fantasma).
+    const temSessaoAtiva = !!user.sessionToken && user.sessionActive === true;
+    if (temSessaoAtiva && !forceLogin) {
       throw new BadRequestException('ACTIVE_SESSION');
     }
 
-    if (user.sessionToken && forceLogin) {
+    if (temSessaoAtiva && forceLogin) {
       this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'app' } });
     }
 
@@ -161,6 +172,19 @@ export class AuthService {
       throw new UnauthorizedException('Esta conta esta desativada. Fale com o suporte.');
     }
 
+    // KAN-280: o forceLogin era recebido e IGNORADO — faltavam os dois blocos
+    // que o loginApp tem. Consequencia: um segundo login na mesma conta
+    // rotacionava o sessionToken e o painel do balcao passava a dar
+    // SESSION_EXPIRED no meio do atendimento, sem aviso e sem o evento
+    // sessionKicked que o front usa para explicar o que houve.
+    const temSessaoAtiva = !!user.sessionToken && user.sessionActive === true;
+    if (temSessaoAtiva && !forceLogin) {
+      throw new BadRequestException('ACTIVE_SESSION');
+    }
+    if (temSessaoAtiva && forceLogin) {
+      this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'vendor' } });
+    }
+
     const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
   }
@@ -172,11 +196,13 @@ export class AuthService {
   // antes casa mais, então todos são invalidados de fato. Um novo login gera um
   // novo sessionToken e um JWT que casa.
   async logoutApp(userId: string): Promise<void> {
-    await this.appUserRepo.update(userId, { sessionToken: this.generateSessionToken() });
+    // KAN-280: alem de rotacionar (invalida JWTs), marca a AUSENCIA de sessao —
+    // senao o proximo login legitimo levava ACTIVE_SESSION.
+    await this.appUserRepo.update(userId, { sessionToken: this.generateSessionToken(), sessionActive: false });
   }
 
   async logoutVendor(userId: string): Promise<void> {
-    await this.vendorUserRepo.update(userId, { sessionToken: this.generateSessionToken() });
+    await this.vendorUserRepo.update(userId, { sessionToken: this.generateSessionToken(), sessionActive: false });
   }
 
   async requestPasswordResetApp(email: string): Promise<string> {
@@ -322,6 +348,12 @@ export class AuthService {
       );
     }
 
+    // KAN-280: o kick so existia para userType 'app' — o painel do lojista era
+    // derrubado em silencio, sem o evento que o front usa para explicar.
+    if (user.sessionToken && user.sessionActive) {
+      this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'vendor' } });
+    }
+
     const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
   }
@@ -383,7 +415,9 @@ export class AuthService {
     }
 
     // Google auth always overrides — notify old session if exists
-    if (user.sessionToken) {
+    // KAN-280: só quando ha sessao DE FATO (sessionActive) — o token rotacionado
+    // e permanentemente truthy e gerava um kick fantasma em todo login Google.
+    if (user.sessionToken && user.sessionActive) {
       this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'app' } });
     }
 
@@ -419,7 +453,9 @@ export class AuthService {
     }
 
     // Google auth always overrides — notify old session if exists
-    if (user.sessionToken) {
+    // KAN-280: só quando ha sessao DE FATO (sessionActive) — o token rotacionado
+    // e permanentemente truthy e gerava um kick fantasma em todo login Google.
+    if (user.sessionToken && user.sessionActive) {
       this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'app' } });
     }
 

@@ -86,6 +86,15 @@ export class AppUsersService {
     }
 
     if (input.cpf) {
+      // NORMALIZA antes de checar E de gravar. isValidCpf ja limpava a mascara
+      // so para validar, mas a busca e o save usavam a string crua: A registra
+      // "11144477735", B registra "111.444.777-35" e o findOne nao casa — dois
+      // usuarios com o mesmo CPF. Downstream, findByCpfWithRecipient busca pelo
+      // CPF LIMPO, nunca acha quem gravou com mascara, e a plataforma criava um
+      // SEGUNDO recipient Pagar.me para o mesmo CPF (fura o anti-fraude de "um
+      // CPF, uma conta de recebimento"). O indice unico parcial no banco fecha
+      // tambem a corrida TOCTOU de dois cadastros simultaneos.
+      input.cpf = input.cpf.replace(/\D/g, '');
       const cpfExists = await this.appUsersRepository.findOne({
         where: { cpf: input.cpf },
       });
@@ -261,6 +270,7 @@ export class AppUsersService {
     // Sem isto o banido continuava usando o app ate o JWT expirar.
     if (!user.isActive) {
       user.sessionToken = crypto.randomBytes(32).toString('hex');
+      user.sessionActive = false; // KAN-280
     }
     return this.appUsersRepository.save(user);
   }
@@ -478,6 +488,9 @@ export class AppUsersService {
     // sessionToken para um novo valor — nenhum JWT emitido antes casa mais, então
     // um atacante com um token pré-reset perde o acesso.
     user.sessionToken = crypto.randomBytes(32).toString('hex');
+    // KAN-280: e marca que NAO ha sessao — sem isto o proximo login do proprio
+    // dono, logo apos o reset, levava ACTIVE_SESSION de um aparelho inexistente.
+    user.sessionActive = false;
     await this.appUsersRepository.save(user);
     return true;
   }

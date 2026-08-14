@@ -83,6 +83,10 @@ export class VendorUsersService {
     }
 
     if (input.cpf) {
+      // NORMALIZA antes de checar e de gravar — mesma correcao do app-users
+      // (ver comentario la): CPF com mascara furava a unicidade e gerava
+      // recipient Pagar.me duplicado para o mesmo documento.
+      input.cpf = input.cpf.replace(/\D/g, '');
       const cpfExists = await this.vendorUsersRepository.findOne({
         where: { cpf: input.cpf },
       });
@@ -410,6 +414,9 @@ export class VendorUsersService {
     // A#2: trocar a senha derruba todas as sessões existentes (rotaciona o
     // sessionToken → JWTs pré-reset deixam de casar).
     user.sessionToken = crypto.randomBytes(32).toString('hex');
+    // KAN-280: sem sessao apos o reset — senao o proximo login levava
+    // ACTIVE_SESSION fantasma.
+    user.sessionActive = false;
     await this.vendorUsersRepository.save(user);
     return true;
   }

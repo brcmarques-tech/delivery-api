@@ -6,6 +6,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
+  Index,
 } from 'typeorm';
 import { UserRole } from '../../common/enums';
 import { Order } from '../../orders/entities/order.entity';
@@ -53,6 +54,10 @@ export class AppUser {
   // próprio dono ou superadmin recebem). Antes qualquer parte de um pedido
   // (entregador via availableDeliveries, vendedor via storeOrders, cliente via
   // order.delivery.deliverer) colhia o CPF alheio. A coluna continua.
+  // Indice unico parcial (KAN-280): a unicidade de CPF era só um findOne antes
+  // do save — TOCTOU puro, e furavel por mascara ("111.444.777-35" vs
+  // "11144477735"). O create normaliza; o indice fecha a corrida.
+  @Index('UQ_app_users_cpf', { unique: true, where: `"cpf" IS NOT NULL` })
   @Column({ nullable: true })
   cpf: string;
 
@@ -122,6 +127,14 @@ export class AppUser {
   // Session token for single-session enforcement
   @Column({ nullable: true })
   sessionToken: string;
+
+  // KAN-280: presenca de sessao SEPARADA da rotacao. O sessionToken rotaciona
+  // (nunca volta a null) para invalidar JWTs no logout/reset — mas o detector
+  // de "sessao ativa" era `sessionToken != null`, permanentemente truthy apos o
+  // primeiro login: reset de senha ou logout limpo seguido de login legitimo
+  // devolvia ACTIVE_SESSION de um aparelho que nao existe.
+  @Column({ default: false })
+  sessionActive: boolean;
 
   // Push notifications
   @Column({ nullable: true })

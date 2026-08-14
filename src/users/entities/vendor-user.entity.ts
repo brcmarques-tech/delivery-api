@@ -6,6 +6,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
+  Index,
 } from 'typeorm';
 import { UserRole, VendorPlan } from '../../common/enums';
 import { Store } from '../../stores/entities/store.entity';
@@ -48,6 +49,9 @@ export class VendorUser {
   @Column({ nullable: true })
   avatarUrl: string;
 
+  // Indice unico parcial (KAN-280) — mesma correcao do app_users: unicidade de
+  // CPF era um findOne furavel por mascara e por corrida.
+  @Index('UQ_vendor_users_cpf', { unique: true, where: `"cpf" IS NOT NULL` })
   @Field({ nullable: true })
   @Column({ nullable: true })
   cpf: string;
@@ -100,6 +104,10 @@ export class VendorUser {
   // Session token for single-session enforcement
   @Column({ nullable: true })
   sessionToken: string;
+
+  // KAN-280: presenca de sessao separada da rotacao (ver app-user.entity).
+  @Column({ default: false })
+  sessionActive: boolean;
 
   // Push notifications
   @Column({ nullable: true })

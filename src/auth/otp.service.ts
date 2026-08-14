@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, Logger, OnModuleDestroy } from '@nestjs/common';
+import { randomInt } from 'crypto';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { MailService } from '../mail/mail.service';
 
@@ -87,7 +88,9 @@ export class OtpService implements OnModuleDestroy {
   }
 
   private generateCode(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    // KAN-280: Math.random nao e criptografico — num espaco de so 10^6 codigos,
+    // previsibilidade do PRNG e risco real. randomInt usa CSPRNG.
+    return randomInt(100000, 1000000).toString();
   }
 
   async sendPhoneCode(phone: string, fallbackEmail?: string): Promise<{ method: 'whatsapp' | 'email' }> {
@@ -186,7 +189,17 @@ export class OtpService implements OnModuleDestroy {
 
     entry.attempts++;
     if (entry.attempts > 5) {
-      this.store.delete(key);
+      // KAN-280: NAO apaga a entrada. O cooldown de reenvio e derivado da
+      // EXISTENCIA dela — apagar zerava o cooldown junto, entao errar 5 vezes e
+      // pedir codigo novo IMEDIATAMENTE virava um loop de forca bruta (~5
+      // palpites + 1 reenvio por rodada) e de bombardeio de WhatsApp/email na
+      // vitima. A entrada fica, com o codigo envenenado (nunca casa) e, na
+      // PRIMEIRA vez que estoura, o cooldown re-armado — so na primeira, senao
+      // um atacante espameando verify bloquearia o reenvio do dono para sempre.
+      if (entry.attempts === 6) {
+        entry.code = '';
+        entry.expiresAt = Date.now() + 10 * 60 * 1000;
+      }
       throw new BadRequestException('Muitas tentativas. Solicite um novo codigo.');
     }
 
