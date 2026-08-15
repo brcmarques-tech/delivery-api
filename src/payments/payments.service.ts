@@ -2368,27 +2368,11 @@ export class PaymentsService implements OnModuleDestroy {
           this.pubSub.publish('orderCreated', { orderCreated: freshOrder });
         }
 
-        // Increment coupon usage now that payment is confirmed (roda uma única vez
-        // por conta do claim atômico acima). Incremento condicional para nunca
-        // ultrapassar maxUses (mesma proteção do C4).
-        if (order.couponCode) {
-          try {
-            await this.paymentsRepository.manager.query(
-              // CRITICO: era `WHERE code = $1` sem escopo de loja. `code` NAO e
-              // unico globalmente (a unicidade e por loja) — entao um pedido pago
-              // com PROMO10 da loja A incrementava o PROMO10 de TODAS as lojas.
-              // Como todo rollback decrementa por ID, o estrago nunca se desfazia:
-              // cupons de lojas alheias batiam maxUses sem uma venda sequer e
-              // paravam de funcionar. Agora escopado pela loja do pedido.
-              `UPDATE coupons SET "usesCount" = "usesCount" + 1
-                 WHERE code = $1 AND "storeId" = $2
-                   AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
-              [order.couponCode, order.store?.id],
-            );
-          } catch (err: any) {
-            this.logger.warn(`Failed to increment coupon usage for ${order.couponCode}: ${err.message}`);
-          }
-        }
+        // Cupom multi-uso (BUGFIX): a reserva do uso do cupom foi MOVIDA para a
+        // criacao do pedido (orders.service.create, dentro da transacao, para
+        // todos os metodos). Incrementar aqui de novo, no webhook, gerava DUPLA
+        // contagem para pagamento online. O couponCredited ja nasce true na
+        // criacao e os fluxos de queda devolvem o uso — nada a fazer aqui.
 
         // Notify customer
         if (order.customer?.id) {

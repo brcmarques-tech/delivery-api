@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, In } from 'typeorm';
+import { Repository, Not, In, EntityManager } from 'typeorm';
 import { OrderStatus } from '../common/enums';
 import { Coupon } from './entities/coupon.entity';
 import { CreateCouponInput } from './dto/create-coupon.input';
@@ -256,18 +256,27 @@ export class CouponsService {
    *    `createOrder`: todo pedido com cupom pago na entrega abortava inteiro.
    *    (Os decrementos ficam em try/catch, então esses apenas logavam.)
    */
-  async incrementUsage(couponId: string): Promise<void> {
-    // C4: incremento atômico-condicional. `validateAndCalculate` checa
-    // `usesCount >= maxUses` e este incremento acontecia depois, fora de lock —
-    // sob concorrência o contador podia ultrapassar `maxUses`. O `WHERE ... AND
-    // (maxUses = 0 OR usesCount < maxUses)` garante que o contador nunca passe do
-    // limite. (Resíduo conhecido: duas compras simultâneas no ÚLTIMO slot ainda
-    // podem ambas receber o desconto — só uma incrementa; travar isso 100% exige
-    // reservar o slot na validação + constraint única por usuário/cupom.)
-    await this.couponsRepository.manager.query(
-      `UPDATE coupons SET "usesCount" = "usesCount" + 1 WHERE id = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
+  /**
+   * Reserva/consome UM uso do cupom de forma atômica-condicional. Retorna
+   * `true` se reservou, `false` se o cupom ja atingiu `maxUses`.
+   *
+   * C4 + cupom multi-uso: a checagem `usesCount >= maxUses` do
+   * `validateAndCalculate` e este incremento nao sao a mesma operacao. A
+   * reserva agora acontece na CRIACAO do pedido (para todos os metodos de
+   * pagamento) — antes, o pagamento online so incrementava no webhook, e na
+   * janela entre criar e pagar (minutos/horas) N clientes passavam no check e
+   * todos ganhavam o desconto de um cupom de uso unico. Chamar dentro da
+   * transacao do pedido (passando `manager`) garante que o rollback do pedido
+   * desfaca a reserva. O `WHERE ... (maxUses=0 OR usesCount<maxUses)` + o
+   * RETURNING dizem se havia slot.
+   */
+  async incrementUsage(couponId: string, manager?: EntityManager): Promise<boolean> {
+    const runner = manager ?? this.couponsRepository.manager;
+    const rows = await runner.query(
+      `UPDATE coupons SET "usesCount" = "usesCount" + 1 WHERE id = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses") RETURNING id`,
       [couponId],
     );
+    return Array.isArray(rows) && rows.length > 0;
   }
 
   /** H2: Decrement usage count when order is cancelled/rejected/expired */

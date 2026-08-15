@@ -373,12 +373,12 @@ export class OrdersService {
           couponCode,
           discount,
           coupon: couponEntity,
-          // KAN-234: `couponCredited` passa a significar "o uso deste cupom ja
-          // foi contabilizado para ESTE pedido". Em ON_DELIVERY o incremento
-          // acontece logo abaixo, na criacao; em pagamento online so depois do
-          // webhook de confirmacao (que ja seta a flag). Sem isso, o decremento
-          // no cancelamento nao tinha como saber se houve incremento.
-          couponCredited: !!couponEntity && !needsPayment,
+          // KAN-234 + cupom multi-uso: `couponCredited` = "o uso deste cupom ja
+          // foi contabilizado para ESTE pedido". Agora a reserva acontece na
+          // criacao para TODOS os metodos (bloco abaixo), entao a flag ja nasce
+          // true havendo cupom. O decremento no cancelamento/expiracao se apoia
+          // nela para devolver o uso.
+          couponCredited: !!couponEntity,
           status: needsPayment
             ? OrderStatus.AWAITING_PAYMENT
             : OrderStatus.PENDING,
@@ -411,10 +411,20 @@ export class OrdersService {
           }
         }
 
-        // Coupon usage: only increment for non-payment orders (ON_DELIVERY).
-        // For online payments, increment after payment is confirmed (handleOrderPaid webhook).
-        if (couponEntity && !needsPayment) {
-          await this.couponsService.incrementUsage(couponEntity.id);
+        // Cupom multi-uso (BUGFIX): reserva o slot do cupom AQUI, na criacao,
+        // dentro da transacao — para TODOS os metodos de pagamento. Antes, o
+        // pagamento online so incrementava no webhook (minutos/horas depois), e
+        // nesse intervalo qualquer numero de clientes criava pedidos que passavam
+        // no check de maxUses e TODOS ganhavam o desconto de um cupom de uso
+        // unico. A reserva e atomica-condicional: se o cupom esgotou entre a
+        // validacao e aqui, aborta a transacao (o pedido nao nasce). Os fluxos de
+        // queda (expira/cancela/rejeita) devolvem via decrementUsage, guardados
+        // por couponCredited — inclusive a expiracao de AWAITING_PAYMENT.
+        if (couponEntity) {
+          const reservado = await this.couponsService.incrementUsage(couponEntity.id, manager);
+          if (!reservado) {
+            throw new BadRequestException('Este cupom atingiu o limite de usos.');
+          }
         }
 
         return saved;
