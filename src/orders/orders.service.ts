@@ -631,6 +631,22 @@ export class OrdersService {
     });
   }
 
+  /**
+   * BUGFIX (resumo diario): o dailySummary usava findByStore (cap dos 500 mais
+   * recentes) e filtrava "hoje" EM MEMORIA. Numa loja que passa de 500 pedidos
+   * desde a abertura, os primeiros do dia caem fora do cap — o resumo reporta
+   * menos pedidos e MENOS receita do que o real (pior justamente nos dias mais
+   * movimentados). Filtrando por data no SQL, o resultado independe do volume
+   * historico. `since` vem do fuso do negocio (businessTodayDate).
+   */
+  async findByStoreSince(storeId: string, since: Date): Promise<Order[]> {
+    return this.ordersRepository.find({
+      where: { store: { id: storeId }, createdAt: MoreThanOrEqual(since) },
+      relations: ['store', 'customer', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
   async getPopularProducts(limit = 12): Promise<any[]> {
     const rows = await this.ordersRepository.query(
       `SELECT p.id, p.name, p.description, p.price, p."promotionalPrice", p."imageUrl",

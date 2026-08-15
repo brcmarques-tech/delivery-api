@@ -129,14 +129,17 @@ export class N8nAgentController {
     @Headers('x-n8n-key') key: string,
   ) {
     this.checkAuth(key);
-    const orders = await this.ordersService.findByStore(storeId);
     // BUGFIX: `setHours(0,0,0,0)` usava o fuso do PROCESSO (UTC em producao), o
     // que corta o dia as 21:00 BRT do dia anterior. O vendedor pedia "resumo de
     // hoje" as 20:00 e recebia pedidos de ontem a noite junto — e os de hoje a
     // noite eram contados de novo amanha. Receita reportada no dia errado todo
     // santo dia. Agora a virada do dia e no fuso do negocio.
     const today = businessTodayDate();
-    const todayOrders = orders.filter((o) => new Date(o.createdAt) >= today);
+    // BUGFIX: o filtro do dia roda no SQL (findByStoreSince). Com o findByStore
+    // anterior (cap dos 500 mais recentes) + filtro em memoria, uma loja que
+    // passava de 500 pedidos no dia perdia os primeiros do dia — resumo com
+    // menos pedidos/receita do que o real, justo nos dias mais movimentados.
+    const todayOrders = await this.ordersService.findByStoreSince(storeId, today);
     // O caminho feliz termina em COMPLETED (DELIVERING -> DELIVERER_CONFIRMED_DELIVERY
     // -> COMPLETED); DELIVERED é um estado alternativo. Filtrar só DELIVERED fazia
     // o agente reportar ~R$0 de receita mesmo em dias cheios de pedidos concluídos.
