@@ -423,6 +423,16 @@ export class AppointmentsService {
     this.validateCustomer(appointment, customerId);
     this.validateTransition(appointment.status, AppointmentStatus.QUOTE_ACCEPTED);
 
+    // BUGFIX: o create() bloqueia loja desativada e teto de 30 dias, mas o
+    // acceptQuote nao — depois de o superadmin banir a loja, o cliente ainda
+    // conseguia aceitar o orcamento e entrar um compromisso numa loja banida; e
+    // sem o teto dava para aceitar um orcamento para centenas de dias a frente.
+    const dateObj = new Date(scheduledDate + 'T00:00:00');
+    if (isNaN(dateObj.getTime())) throw new BadRequestException('Data invalida');
+    const maxDate = new Date();
+    maxDate.setDate(maxDate.getDate() + 30);
+    if (dateObj > maxDate) throw new BadRequestException('Agendamento maximo de 30 dias');
+
     const slots = await this.availableSlots(appointment.storeId, appointment.serviceId, scheduledDate);
     if (!slots.includes(scheduledTime)) {
       throw new BadRequestException('Horario indisponivel');
@@ -448,6 +458,11 @@ export class AppointmentsService {
         .where('store.id = :id', { id: appointment.storeId })
         .getOne();
       if (!lockedStore) throw new NotFoundException('Loja nao encontrada');
+      // BUGFIX: loja banida/desativada nao pode receber compromisso novo (mesma
+      // regra do create). Checado aqui, com a loja ja travada na transacao.
+      if (!lockedStore.isActive) {
+        throw new BadRequestException('Esta loja nao esta disponivel no momento.');
+      }
 
       const conflict = await manager
         .getRepository(Appointment)
@@ -705,6 +720,14 @@ export class AppointmentsService {
     const vencidos = await this.appointmentsRepository.find({
       where: {
         paymentStatus: 'AWAITING_PAYMENT',
+        // BUGFIX: cartao PRE-AUTORIZADO grava paymentStatus 'AWAITING_PAYMENT'
+        // igual ao PIX aguardando scan, mas a pre-auth JA e uma garantia — o
+        // cliente fez a parte dele. A janela de 30 min acompanha a validade do QR
+        // do PIX; aplica-la ao cartao cancelava sozinho, em 30 min, um agendamento
+        // com pagamento garantido so porque o vendedor ainda nao confirmou.
+        // preAuthChargeId IsNull deixa passar so o PIX de fato nao pago. (A
+        // eventual liberacao de pre-auths nunca confirmadas e outra rotina/decisao.)
+        preAuthChargeId: IsNull(),
         status: In([
           AppointmentStatus.PENDING,
           AppointmentStatus.QUOTE_ACCEPTED,
