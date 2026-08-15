@@ -39,15 +39,20 @@ export class CartService {
     });
 
     if (existing) {
+      // BUGFIX: `existing.quantity += n; save()` emite UPDATE ... SET quantity =
+      // <valor absoluto calculado em memoria> — dois double-taps concorrentes leem
+      // o mesmo valor e um sobrescreve o outro (lost update: some uma adicao).
+      // `increment` gera SET quantity = quantity + n no banco (atomico). Peso e
+      // set absoluto (ultimo a escrever vence, que e o esperado para peso).
       if (input.weightGrams !== undefined) {
-        existing.weightGrams = input.weightGrams;
+        await this.cartItemRepo.update(existing.id, { weightGrams: input.weightGrams });
       } else {
-        existing.quantity += input.quantity;
+        await this.cartItemRepo.increment({ id: existing.id }, 'quantity', input.quantity);
       }
       if (input.notes !== undefined) {
-        existing.notes = input.notes;
+        await this.cartItemRepo.update(existing.id, { notes: input.notes });
       }
-      return this.cartItemRepo.save(existing);
+      return this.findById(existing.id);
     }
 
     const cartItem = this.cartItemRepo.create({
@@ -77,15 +82,16 @@ export class CartService {
           relations: ['customer', 'product', 'store'],
         });
         if (concurrent) {
+          // mesmo lost-update do ramo "ja existe": incremento atomico
           if (input.weightGrams !== undefined) {
-            concurrent.weightGrams = input.weightGrams;
+            await this.cartItemRepo.update(concurrent.id, { weightGrams: input.weightGrams });
           } else {
-            concurrent.quantity += input.quantity;
+            await this.cartItemRepo.increment({ id: concurrent.id }, 'quantity', input.quantity);
           }
           if (input.notes !== undefined) {
-            concurrent.notes = input.notes;
+            await this.cartItemRepo.update(concurrent.id, { notes: input.notes });
           }
-          return this.cartItemRepo.save(concurrent);
+          return this.findById(concurrent.id);
         }
       }
       throw err;
