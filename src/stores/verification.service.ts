@@ -77,27 +77,38 @@ export class VerificationService {
     if (store.verificationLevel === VerificationLevel.NONE) return;
     if (store.badgeClaimCount > 0) return;
 
-    const rewards = await this.configService.getBadgeRewards(store.verificationLevel);
     const thresholds = await this.getThresholds();
     const threshold = thresholds[store.verificationLevel] || 0;
 
+    // R#2 (mesmo padrao ja aplicado no claimBadgeReward): claim ATOMICO do
+    // primeiro bonus. Antes era read-modify-write sem lock — dois eventos
+    // concorrentes que levam a loja de NONE a um nivel (dois produtos/vendas
+    // quase juntos, ou produto + recalculo) liam badgeClaimCount=0 e concediam o
+    // bonus DUAS vezes: trial, reducao de comissao e dias de promo em dobro. O
+    // UPDATE condicional garante que so um evento conceda.
+    const claim = await this.storesRepository.manager.query(
+      `UPDATE stores SET "badgeClaimCount" = 1, "lastClaimedScore" = $2
+        WHERE id = $1 AND "badgeClaimCount" = 0
+        RETURNING id`,
+      [store.id, threshold],
+    );
+    if (!claim || claim.length === 0) return; // outro evento ja concedeu
+
+    const rewards = await this.configService.getBadgeRewards(store.verificationLevel);
     this.logger.log(`Auto-granting first badge rewards to store ${store.id} (level: ${store.verificationLevel})`);
 
-    store.freePromoDaysCredit = rewards.freePromoDays || 0;
-
+    // Recompensas que ficam na propria loja — via update direto para NAO
+    // sobrescrever o badgeClaimCount/lastClaimedScore ja gravados no claim.
+    const storeUpdates: any = { freePromoDaysCredit: rewards.freePromoDays || 0 };
     if (rewards.commissionReduction > 0) {
-      store.commissionReductionPercent = rewards.commissionReduction;
-      store.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      storeUpdates.commissionReductionPercent = rewards.commissionReduction;
+      storeUpdates.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     }
+    await this.storesRepository.update(store.id, storeUpdates);
 
     if (rewards.freeTrialDays > 0 && store.owner?.id) {
       await this.grantTrialDays(store.owner.id, rewards.freeTrialDays);
     }
-
-    store.badgeClaimCount = 1;
-    store.lastClaimedScore = threshold;
-
-    await this.storesRepository.save(store);
   }
 
   private async grantTrialDays(userId: string, days: number): Promise<void> {
