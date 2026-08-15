@@ -144,24 +144,36 @@ export class VisionService {
       }
 
       const fullText = (texts[0]?.description || '').toUpperCase();
+      // BUGFIX: o match era por substring (includes) — 'RG' casava dentro de
+      // ORGAO/MARGEM/SERGIO, 'DATA'/'NOME'/'BRASIL' aparecem em qualquer
+      // formulario — e o limiar era 2 termos genericos, entao um papel qualquer
+      // com "NOME" e uma data passava como documento. Agora: match por PALAVRA
+      // INTEIRA e exige (a) pelo menos um termo DISCRIMINANTE de documento e (b)
+      // pelo menos 2 termos no total. (Continua advisorio — o gate real e a
+      // aprovacao manual do superadmin; ver KYC 3.8.)
+      const temPalavra = (kw: string) =>
+        new RegExp(`(^|[^A-Z0-9])${kw}([^A-Z0-9]|$)`).test(fullText);
 
-      const docKeywords = [
-        'REPUBLICA', 'FEDERATIVA', 'BRASIL',
-        'HABILITACAO', 'CNH', 'CARTEIRA',
-        'IDENTIDADE', 'REGISTRO', 'GERAL',
-        'CPF', 'RG', 'NOME', 'NASCIMENTO',
-        'DATA', 'VALIDADE', 'CATEGORIA',
-        'ORGAO', 'EXPEDIDOR', 'SSP',
-        'DETRAN', 'NACIONAL',
+      // termos que so aparecem de fato num documento de identidade/habilitacao
+      const discriminantes = [
+        'HABILITACAO', 'CNH', 'IDENTIDADE', 'FEDERATIVA',
+        'EXPEDIDOR', 'DETRAN', 'SSP',
+      ];
+      // termos de apoio (comuns, mas somam evidencia)
+      const apoio = [
+        'REPUBLICA', 'BRASIL', 'CARTEIRA', 'REGISTRO', 'GERAL',
+        'CPF', 'RG', 'NOME', 'NASCIMENTO', 'DATA', 'VALIDADE',
+        'CATEGORIA', 'ORGAO', 'NACIONAL',
       ];
 
-      const matchedKeywords = docKeywords.filter((kw) => fullText.includes(kw));
+      const temDiscriminante = discriminantes.some(temPalavra);
+      const matched = [...discriminantes, ...apoio].filter(temPalavra);
 
-      if (matchedKeywords.length < 2) {
+      if (!temDiscriminante || matched.length < 2) {
         return { valid: false, message: 'Documento nao reconhecido. Envie uma foto clara da sua CNH ou RG.' };
       }
 
-      this.logger.log(`Documento validado - palavras-chave: ${matchedKeywords.join(', ')}`);
+      this.logger.log(`Documento validado - palavras-chave: ${matched.join(', ')}`);
       return { valid: true, message: 'Documento reconhecido com sucesso' };
     } catch (error) {
       this.logger.error('Erro na validacao do documento', error);

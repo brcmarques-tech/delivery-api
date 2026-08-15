@@ -83,6 +83,12 @@ export class UploadService {
     const result = await cloudinary.uploader.upload(url, {
       folder,
       resource_type: 'image',
+      // BUGFIX: o guard de formato foi aplicado ao uploadBase64 mas o
+      // uploadFromUrl ficou sem — o Cloudinary com resource_type 'image' aceita
+      // SVG, que e servido como imagem e EXECUTA script quando aberto direto
+      // (stored-XSS) alem de virar hospedagem arbitraria na conta paga. Mesma
+      // allowlist do base64.
+      allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
     });
 
     this.logger.log(`Imagem da web salva: ${result.secure_url}`);
