@@ -343,6 +343,12 @@ export class PromotionsService implements OnModuleInit {
       where: { id: productId, store: { id: promotion.store.id } },
     });
     if (!product) throw new NotFoundException('Produto nao encontrado nessa loja.');
+    // BUGFIX: faltava o piso (o create valida `<= 0`). Sem ele, um preco
+    // promocional NEGATIVO passava (—5 < preco) e virava preco unitario negativo
+    // no pedido (subtotal negativo). Mesmo guard do create.
+    if (promotionalPrice <= 0) {
+      throw new BadRequestException('O preco promocional deve ser maior que zero.');
+    }
     if (promotionalPrice >= Number(product.price)) {
       throw new BadRequestException('O preco promocional deve ser menor que o preco original do produto.');
     }
