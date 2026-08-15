@@ -118,19 +118,24 @@ export class OtpService implements OnModuleDestroy {
       return { method: 'whatsapp' };
     }
 
-    // Fallback: enviar por email se WhatsApp falhar
+    // KAN-280 (SEGURANCA): o WhatsApp falhou, entao o codigo gerado para ESTE
+    // telefone NAO chegou a ninguem — descarta a entrada. Antes, o mesmo codigo
+    // (indexado pelo telefone) era reenviado para um `fallbackEmail` ARBITRARIO
+    // e o app seguia verificando pelo TELEFONE: quem pedia o codigo do numero de
+    // outra pessoa, informando o proprio email, recebia o codigo e "verificava"
+    // o telefone alheio — takeover de numero. O fallback continua existindo, mas
+    // passa a verificar o EMAIL (o canal que de fato recebe o codigo): gera um
+    // codigo proprio sob a chave do email. Assim ninguem reivindica um telefone
+    // sem prova de posse via WhatsApp, e quem se cadastra com WhatsApp fora do ar
+    // ainda conclui provando o proprio e-mail.
+    this.store.delete(key);
+
     if (fallbackEmail) {
-      try {
-        await this.mailService.sendVerificationCode(fallbackEmail, code);
-        this.logger.log(`OTP enviado por email (fallback) para ${fallbackEmail}`);
-        return { method: 'email' };
-      } catch {
-        this.store.delete(key);
-        throw new BadRequestException('Nao foi possivel enviar o codigo por WhatsApp nem por email.');
-      }
+      // sendEmailCode gera e grava o codigo sob a chave do email e retorna
+      // { method: 'email' } — a verificacao subsequente e por email.
+      return this.sendEmailCode(fallbackEmail);
     }
 
-    this.store.delete(key);
     throw new BadRequestException('Nao foi possivel enviar o codigo por WhatsApp. Verifique o numero.');
   }
 

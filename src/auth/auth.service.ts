@@ -95,14 +95,23 @@ export class AuthService {
    */
   async registerApp(input: RegisterAppInput): Promise<AppAuthResponse> {
     const phoneVerified = this.otpService.consumePhoneVerification(input.phone);
+    // KAN-280: quando o WhatsApp esta fora, o OTP cai para o e-mail e verifica o
+    // E-MAIL (nunca o telefone — ver otp.service). Entao a prova de contato pode
+    // vir do telefone OU do proprio e-mail do cadastro.
+    const emailVerified = input.email
+      ? this.otpService.consumeEmailVerification(input.email)
+      : false;
 
-    if (process.env.REQUIRE_OTP_ON_REGISTER === 'true' && !phoneVerified) {
+    if (process.env.REQUIRE_OTP_ON_REGISTER === 'true' && !phoneVerified && !emailVerified) {
       throw new BadRequestException(
-        'Verifique seu telefone antes de concluir o cadastro.',
+        'Verifique seu telefone ou e-mail antes de concluir o cadastro.',
       );
     }
 
     const user = await this.appUsersService.create(input, phoneVerified);
+    if (emailVerified) {
+      await this.markEmailVerified(user.id, 'app');
+    }
     const accessToken = await this.signWithSession(user.id, user.role, 'app');
     return { accessToken, user };
   }
@@ -144,14 +153,22 @@ export class AuthService {
   /** KAN-231: mesmo tratamento do registerApp (ver comentario acima). */
   async registerVendor(input: RegisterVendorInput): Promise<VendorAuthResponse> {
     const phoneVerified = this.otpService.consumePhoneVerification(input.phone);
+    // KAN-280: fallback de OTP verifica o e-mail quando o WhatsApp falha (ver
+    // registerApp e otp.service). Prova de contato vem do telefone OU do e-mail.
+    const emailVerified = input.email
+      ? this.otpService.consumeEmailVerification(input.email)
+      : false;
 
-    if (process.env.REQUIRE_OTP_ON_REGISTER === 'true' && !phoneVerified) {
+    if (process.env.REQUIRE_OTP_ON_REGISTER === 'true' && !phoneVerified && !emailVerified) {
       throw new BadRequestException(
-        'Verifique seu telefone antes de concluir o cadastro.',
+        'Verifique seu telefone ou e-mail antes de concluir o cadastro.',
       );
     }
 
     const user = await this.vendorUsersService.create(input, phoneVerified);
+    if (emailVerified) {
+      await this.markEmailVerified(user.id, 'vendor');
+    }
     const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
     return { accessToken, user };
   }
