@@ -131,15 +131,14 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
         if (distToStore < 100 && timeSinceVendorConfirmed > 5 * 60 * 1000) {
           this.logger.log(`Auto-confirming pickup for order #${order.orderNumber} (proximity: ${Math.round(distToStore)}m)`);
           try {
-            const del = await this.deliveriesRepository.findOne({
-              where: { id: delivery.id },
-              relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
-            });
-            if (del) {
-              del.pickedUpAt = new Date();
-              await this.deliveriesRepository.save(del);
-              await this.ordersService.updateStatus(order.id, OrderStatus.PICKED_UP);
-            }
+            // BUGFIX: a transicao valida de VENDOR_CONFIRMED_PICKUP e para
+            // DELIVERING — PICKED_UP nao esta na tabela de transicoes, entao o
+            // updateStatus lançava SEMPRE (erro engolido pelo catch), a
+            // auto-coleta por proximidade nunca avançava o pedido e o pickedUpAt
+            // era reescrito e persistido a cada ciclo de 30s. O updateStatus(
+            // DELIVERING) ja grava pickedUpAt (orders.service ~1935), entao o
+            // save manual saiu.
+            await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERING);
           } catch (err) {
             this.logger.error(`Auto-confirm pickup failed for order ${order.id}:`, err);
           }
