@@ -2646,17 +2646,32 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Extrai o UUID do PEDIDO de um evento de charge, ou null se a cobranca nao e
+   * de pedido (plano/promocao/agendamento) ou se o code nao contem um UUID.
+   *
+   * BUGFIX: a derivacao antiga era `code.replace(/^([a-f0-9-]{36}).*$/, '$1')`,
+   * mas String.replace DEVOLVE A STRING ORIGINAL quando o regex nao casa — entao
+   * um code de plano avulso ("plan-xxxx") virava orderId = "plan-xxxx" e o
+   * findOne por uuid lançava 22P02; como o handleWebhook re-lança, o Pagar.me
+   * re-tentava o MESMO evento para sempre. A guarda de tipo existia so no
+   * handleChargePaid; refunded/chargedback ficaram sem. Centralizado aqui: match
+   * (nao replace) do padrao UUID + guarda de tipo, para os tres handlers.
+   */
+  private extractOrderIdFromCharge(data: any): string | null {
+    const metadata = data.metadata || data.order?.metadata || {};
+    if (['plan_upgrade', 'promotion', 'appointment'].includes(metadata.type)) {
+      return null;
+    }
+    if (metadata.order_id) return metadata.order_id;
+    const code = data.code || data.order?.code || '';
+    const m = code.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    return m ? m[0] : null;
+  }
+
   private async handleChargePaid(data: any): Promise<void> {
     // Fallback: if order.paid webhook doesn't fire, charge.paid confirms the payment
-    const metadata = data.metadata || data.order?.metadata || {};
-    const code = data.code || data.order?.code || '';
-    // Cobrança de PLANO (PIX avulso) é tratada pelo order.paid (ramo
-    // plan_upgrade); aqui só geraria erro (o "orderId" viria do code tipo
-    // "plan-xxx", que não é UUID de pedido → erro de UUID no findOne).
-    if (metadata.type === 'plan_upgrade' || metadata.type === 'promotion' || metadata.type === 'appointment') {
-      return;
-    }
-    const orderId = metadata.order_id || (code ? code.replace(/^([a-f0-9-]{36}).*$/, '$1') : null);
+    const orderId = this.extractOrderIdFromCharge(data);
 
     this.logger.log(`Charge paid: ${data.id} | orderId: ${orderId}`);
 
@@ -2733,28 +2748,28 @@ export class PaymentsService implements OnModuleDestroy {
         ).catch(() => {});
       }
 
-      // Incrementa o cupom (só chega aqui quem venceu o claim atômico acima →
-      // uma única vez). Condicional para nunca ultrapassar maxUses (C4).
-      if (order.couponCode) {
-        try {
-          await this.paymentsRepository.manager.query(
-            // CRITICO: idem handleOrderPaid — escopar pela loja, senao o cupom de
-            // mesmo codigo de outras lojas e consumido junto.
-            `UPDATE coupons SET "usesCount" = "usesCount" + 1
-               WHERE code = $1 AND "storeId" = $2
-                 AND ("maxUses" = 0 OR "usesCount" < "maxUses")`,
-            [order.couponCode, order.store?.id],
-          );
-        } catch (err: any) {
-          this.logger.warn(`Failed to increment coupon usage (charge.paid) for ${order.couponCode}: ${err.message}`);
-        }
-      }
+      // Cupom multi-uso (BUGFIX): a reserva do uso foi movida para a CRIACAO do
+      // pedido (orders.service.create). Incrementar aqui, como o handleOrderPaid
+      // tambem fazia, virou dupla contagem para o caminho de fallback. Removido.
+    } else if (
+      order &&
+      [OrderStatus.EXPIRED, OrderStatus.CANCELLED, OrderStatus.REJECTED].includes(
+        order.status as OrderStatus,
+      )
+    ) {
+      // BUGFIX (fallback tardio): se o charge.paid chega com o pedido JA terminal
+      // — e o order.paid, que trataria isso, nao disparou — estorna
+      // automaticamente, igual ao handleOrderPaid. Sem este ramo o cliente pagava,
+      // o pedido ficava expirado e o dinheiro retido, sem estorno nem marcador.
+      await this.refundLatePayment(order, data, orderRepo);
     }
   }
 
   private async handleChargeRefunded(data: any): Promise<void> {
-    const metadata = data.metadata || data.order?.metadata || {};
-    const orderId = metadata.order_id || (data.code ? data.code.replace(/^([a-f0-9-]{36}).*$/, '$1') : null);
+    // BUGFIX: sem a guarda/extracao segura, um estorno de PLANO avulso PIX
+    // (code "plan-...") virava um findOne com uuid invalido → 22P02 → retry
+    // infinito do Pagar.me. extractOrderIdFromCharge devolve null nesses casos.
+    const orderId = this.extractOrderIdFromCharge(data);
 
     this.logger.log(`Charge refunded: ${data.id} | orderId: ${orderId}`);
 
@@ -2854,8 +2869,9 @@ export class PaymentsService implements OnModuleDestroy {
   }
 
   private async handleChargeChargedback(data: any): Promise<void> {
-    const metadata = data.metadata || data.order?.metadata || {};
-    const orderId = metadata.order_id || (data.code ? data.code.replace(/^([a-f0-9-]{36}).*$/, '$1') : null);
+    // BUGFIX: mesma guarda do refunded — chargeback de plano/promo/agendamento
+    // nao pode virar findOne com uuid invalido (22P02 → retry infinito).
+    const orderId = this.extractOrderIdFromCharge(data);
 
     this.logger.warn(`Chargeback received: ${data.id} | orderId: ${orderId}`);
 
