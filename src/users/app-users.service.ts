@@ -165,6 +165,23 @@ export class AppUsersService {
       throw new BadRequestException('Usuario ja foi aprovado');
     }
 
+    // KYC (3.8): defesa em profundidade — candidaturas antigas criadas antes da
+    // validacao do registerAsDeliverer podem existir sem documento. Aprovar
+    // entregador sem as 3 fotos nao pode ser possivel nem por engano.
+    const viraEntregador = user.pendingRole === 'DELIVERER' || user.role === UserRole.DELIVERER;
+    if (viraEntregador) {
+      const faltando: string[] = [];
+      if (!user.profilePhotoUrl?.trim()) faltando.push('foto do rosto');
+      if (!user.identityPhotoUrl?.trim()) faltando.push('documento (frente)');
+      if (!user.identityPhotoBackUrl?.trim()) faltando.push('documento (verso)');
+      if (faltando.length > 0) {
+        throw new BadRequestException(
+          `Cadastro sem documentos obrigatorios (${faltando.join(', ')}). ` +
+            'Rejeite a candidatura para que o entregador reenvie com os documentos.',
+        );
+      }
+    }
+
     if (user.pendingRole === 'DELIVERER') {
       user.role = UserRole.DELIVERER;
       user.isDeliverer = true;
@@ -290,17 +307,40 @@ export class AppUsersService {
     if (user.isDeliverer) throw new BadRequestException('Usuario ja e entregador');
     if (user.pendingRole === 'DELIVERER') throw new BadRequestException('Cadastro ja enviado, aguarde aprovacao');
 
+    // KYC (3.8): o app exige as 3 fotos e valida cada uma, mas quem chamasse a
+    // mutation direto cadastrava candidatura SEM NENHUM documento — e ela
+    // chegava aprovavel no painel. A exigencia vale no servidor tambem.
+    if (!input.profilePhotoUrl?.trim()) {
+      throw new BadRequestException('Foto do rosto e obrigatoria');
+    }
+    if (!input.identityPhotoUrl?.trim() || !input.identityPhotoBackUrl?.trim()) {
+      throw new BadRequestException('Fotos do documento (frente e verso) sao obrigatorias');
+    }
+    // Mesma regra do app: veiculo motorizado exige CNH.
+    if ((input.vehicleType === 'MOTO' || input.vehicleType === 'CARRO') && !input.cnhNumber?.trim()) {
+      throw new BadRequestException('CNH obrigatoria para veiculos motorizados');
+    }
+
+    // BUGFIX (espelho do app): data invalida virava NaN e `NaN < 18` e false —
+    // a checagem de maioridade PASSAVA. E a divisao por 365.25 errava por um
+    // dia perto do aniversario. Idade agora e por calendario.
     const birth = new Date(input.birthDate);
-    const age = Math.floor((Date.now() - birth.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+    if (Number.isNaN(birth.getTime())) {
+      throw new BadRequestException('Data de nascimento invalida');
+    }
+    const hoje = new Date();
+    let age = hoje.getFullYear() - birth.getFullYear();
+    const mes = hoje.getMonth() - birth.getMonth();
+    if (mes < 0 || (mes === 0 && hoje.getDate() < birth.getDate())) age--;
     if (age < 18) throw new BadRequestException('Entregador deve ter pelo menos 18 anos');
 
     user.birthDate = input.birthDate;
     user.cnhNumber = input.cnhNumber ?? '';
     user.vehicleType = input.vehicleType;
     user.vehiclePlate = input.vehiclePlate ?? '';
-    user.identityPhotoUrl = input.identityPhotoUrl ?? '';
-    user.identityPhotoBackUrl = input.identityPhotoBackUrl ?? '';
-    user.profilePhotoUrl = input.profilePhotoUrl ?? '';
+    user.identityPhotoUrl = input.identityPhotoUrl!;
+    user.identityPhotoBackUrl = input.identityPhotoBackUrl!;
+    user.profilePhotoUrl = input.profilePhotoUrl!;
     user.pendingRole = 'DELIVERER';
     user.rejectedAt = null;
     user.rejectionReason = null;
