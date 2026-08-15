@@ -27,11 +27,13 @@ import { NotificationsModule } from '../notifications/notifications.module';
     // folgado para o Pagar.me e ainda evita o hang.
     HttpModule.register({ timeout: 15000 }),
     forwardRef(() => UsersModule),
-    PlatformConfigModule,
+    // forwardRef: o PlatformConfigModule importa este modulo de volta para o
+    // resolver disparar o syncPlans apos updatePlanConfig (bug 3.7).
+    forwardRef(() => PlatformConfigModule),
     NotificationsModule,
   ],
   providers: [PaymentsService, PaymentsResolver, SubscriptionPlansService, SubscriptionExpiryScheduler],
   controllers: [PaymentsController],
-  exports: [PaymentsService],
+  exports: [PaymentsService, SubscriptionPlansService],
 })
 export class PaymentsModule {}
