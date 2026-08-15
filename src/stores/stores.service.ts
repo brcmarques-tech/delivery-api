@@ -351,7 +351,19 @@ export class StoresService implements OnApplicationBootstrap {
   // Bruno decidir os numeros (em common/plan-config.ts e platform-config.service.ts,
   // que estao duplicados e vao divergir).
 
-  private async sortByPriority(stores: Store[]): Promise<Store[]> {
+  /**
+   * Auditoria (vitrine): o sort era SO por prioridade de plano — o empate (a
+   * imensa maioria das lojas) ficava na ordem arbitraria do plano de execucao
+   * do Postgres, entao a vitrine embaralhava entre refreshes. A prioridade
+   * paga continua mandando (e feature); o `tiebreak` decide DENTRO do mesmo
+   * nivel (distancia no nearbyStores, nome nas demais listas).
+   */
+  private async sortByPriority(
+    stores: Store[],
+    tiebreak?: (a: Store, b: Store) => number,
+  ): Promise<Store[]> {
+    const desempate =
+      tiebreak ?? ((a: Store, b: Store) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
     const storesWithPriority = await Promise.all(
       stores.map(async (store) => {
         const plan = store.owner?.vendorPlan || 'FREE';
@@ -364,9 +376,20 @@ export class StoresService implements OnApplicationBootstrap {
       }),
     );
     storesWithPriority.sort(
-      (a, b) => b.effectivePriority - a.effectivePriority,
+      (a, b) => b.effectivePriority - a.effectivePriority || desempate(a.store, b.store),
     );
     return storesWithPriority.map((s) => s.store);
+  }
+
+  /** Distancia em km entre dois pontos (haversine) — para ordenar o nearby. */
+  private static haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+    const rad = (g: number) => (g * Math.PI) / 180;
+    const dLat = rad(lat2 - lat1);
+    const dLng = rad(lng2 - lng1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
   async findAll(): Promise<Store[]> {
@@ -422,15 +445,20 @@ export class StoresService implements OnApplicationBootstrap {
       .where('p."storeId" = :storeId', { storeId });
     const q = search?.trim();
     if (q) {
-      qb.andWhere('(p.name ILIKE :q OR p.description ILIKE :q)', { q: `%${q}%` });
+      // unaccent: busca interna da loja tambem precisa casar "pao" com "pão"
+      qb.andWhere('(unaccent(p.name) ILIKE unaccent(:q) OR unaccent(p.description) ILIKE unaccent(:q))', { q: `%${q}%` });
     }
     // UX: chips de categoria na tela da loja — filtro no SQL (indexado por
     // categoryId), funciona mesmo com catalogo gigante paginado.
     if (categoryId) {
       qb.andWhere('p."categoryId" = :categoryId', { categoryId });
     }
+    // addOrderBy(id): so por nome, produtos homonimos trocavam de posicao entre
+    // paginas (LIMIT/OFFSET sem ordem total) — item sumia numa pagina e
+    // duplicava na outra.
     return qb
       .orderBy('p.name', 'ASC')
+      .addOrderBy('p.id', 'ASC')
       .take(Math.min(Math.max(limit ?? 100, 1), 200))
       .skip(Math.max(offset ?? 0, 0))
       .getMany();
@@ -475,7 +503,19 @@ export class StoresService implements OnApplicationBootstrap {
         { lat, lng, radius: radiusKm },
       )
       .getMany();
-    return this.sortByPriority(stores);
+    // Auditoria: "perto de voce" vinha sem NENHUMA ordenacao por distancia — a
+    // loja a 9,9km podia aparecer acima da loja da esquina. Prioridade de plano
+    // segue mandando; a distancia desempata dentro do mesmo nivel.
+    const dist = new Map<string, number>(
+      stores.map((s) => [
+        s.id,
+        StoresService.haversineKm(lat, lng, Number(s.latitude), Number(s.longitude)),
+      ]),
+    );
+    return this.sortByPriority(
+      stores,
+      (a, b) => (dist.get(a.id) ?? Infinity) - (dist.get(b.id) ?? Infinity),
+    );
   }
 
   async update(input: UpdateStoreInput, owner: VendorUser): Promise<Store> {

@@ -304,31 +304,36 @@ export class ProductsService {
       .andWhere('product.isAvailable = :available', { available: true })
       .andWhere('product.isActive = :isActive', { isActive: true });
 
+    // Busca insensivel a acento (auditoria): LOWER puro nao casa "pao" com
+    // "pão" — unaccent() nos dois lados do LIKE resolve para qualquer grafia.
     if (terms.length === 1) {
       qb.andWhere(
-        '(LOWER(product.name) LIKE :q OR LOWER(product.description) LIKE :q OR LOWER(category.name) LIKE :q)',
+        '(unaccent(LOWER(product.name)) LIKE unaccent(:q) OR unaccent(LOWER(product.description)) LIKE unaccent(:q) OR unaccent(LOWER(category.name)) LIKE unaccent(:q))',
         { q: `%${terms[0]}%` },
       );
     } else {
       const conditions = terms.map((t, i) =>
-        `(LOWER(product.name) LIKE :t${i} OR LOWER(product.description) LIKE :t${i} OR LOWER(category.name) LIKE :t${i})`
+        `(unaccent(LOWER(product.name)) LIKE unaccent(:t${i}) OR unaccent(LOWER(product.description)) LIKE unaccent(:t${i}) OR unaccent(LOWER(category.name)) LIKE unaccent(:t${i}))`
       ).join(' OR ');
       const params: Record<string, string> = {};
       terms.forEach((t, i) => { params[`t${i}`] = `%${t}%`; });
       qb.andWhere(`(${conditions})`, params);
     }
 
-    return qb.orderBy('product.name').limit(limit).getMany();
+    // Desempate por id: nomes repetidos deixavam a ordem ao acaso do plano de
+    // execucao — resultados "pulavam" entre chamadas iguais.
+    return qb.orderBy('product.name').addOrderBy('product.id').limit(limit).getMany();
   }
 
   async searchCatalog(query: string, limit = 20): Promise<Product[]> {
     if (!query.trim()) return [];
 
     // Get unique product IDs (one per name), preferring oldest entry (catalog)
+    // unaccent: "acucar" precisa achar "açúcar" (auditoria, busca com acento)
     const uniqueIds = await this.productsRepository.query(
       `SELECT DISTINCT ON (LOWER(name)) id
        FROM products
-       WHERE LOWER(name) LIKE $1 OR barcode = $2
+       WHERE unaccent(LOWER(name)) LIKE unaccent($1) OR barcode = $2
        ORDER BY LOWER(name), "createdAt" ASC
        LIMIT $3`,
       [`%${query.toLowerCase()}%`, query.trim(), limit],
