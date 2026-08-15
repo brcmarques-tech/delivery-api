@@ -95,6 +95,12 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       WAHA_API_URL: http://18.231.9.158
       WAHA_API_KEY: ${WAHA_API_KEY}
+      # SEGURANCA: sem esta var, o no "Resolve Phone" do WAHA Router le
+      # $env.WAHA_WEBHOOK_SECRET como undefined e PULA a validacao — o webhook
+      # waha-message fica aberto e o campo `from` (unica identidade do sistema)
+      # pode ser forjado. Estava no servico da API mas faltava aqui no n8n, que e
+      # quem de fato executa o workflow.
+      WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET}
       # KAN-220: usados pelo workflow "Contato Site" (webhook do formulario).
       # RESEND_API_KEY vem do .env (gitignored) por substituicao — nao versionar
       # a chave. CONTACT_WEBHOOK_SECRET e um token nao-sensivel (default abaixo),
