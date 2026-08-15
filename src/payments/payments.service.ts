@@ -2267,6 +2267,22 @@ export class PaymentsService implements OnModuleDestroy {
         await this.paymentsRepository.save(payment);
       }
       if (metadata.user_id && metadata.plan) {
+        // BUGFIX (cobranca dupla): se o vendedor tinha assinatura RECORRENTE de
+        // cartao ativa e agora pagou o plano por PIX (manual), a sub de cartao
+        // seguia cobrando todo ciclo ALEM do plano PIX. O cancelamento so rodava
+        // no caminho de cartao (createPlanUpgrade), depois do `return` do ramo
+        // PIX. Cancelamos AQUI, ao confirmar o PIX (nao ao gerar o QR — senao o
+        // vendedor que desistисse perderia a assinatura). Zera o vinculo para o
+        // webhook de cancelamento nao rebaixar (ver handleSubscriptionCanceled).
+        const vendor = await this.paymentsRepository.manager
+          .getRepository(VendorUser)
+          .findOne({ where: { id: metadata.user_id } });
+        if (vendor?.pagarmeSubscriptionId) {
+          await this.cancelExistingSubscription(vendor);
+          await this.paymentsRepository.manager
+            .getRepository(VendorUser)
+            .update(vendor.id, { pagarmeSubscriptionId: null as any });
+        }
         await this.vendorUsersService.updateVendorPlan(
           metadata.user_id,
           metadata.plan as VendorPlan,
@@ -3827,6 +3843,28 @@ export class PaymentsService implements OnModuleDestroy {
     local.canceledAt = new Date();
     await this.subscriptionsRepository.save(local);
 
+    // BUGFIX: so age no vendor se ESTA for a assinatura ATUAL dele. Numa troca de
+    // plano, cancelExistingSubscription cancela a sub ANTIGA e o vendor ja aponta
+    // para a NOVA (ja cobrando); o webhook subscription.canceled da antiga chegava
+    // aqui e — como nao tinha cancelAtPeriodEnd — rebaixava o vendor para FREE e
+    // zerava o pagarmeSubscriptionId da NOVA. Idem para qualquer webhook tardio de
+    // uma assinatura ja substituida. Recarrega o vendor e compara.
+    const vendorAtual = local.vendorUser
+      ? await this.paymentsRepository.manager
+          .getRepository(VendorUser)
+          .findOne({ where: { id: local.vendorUser.id } })
+      : null;
+    const ehAssinaturaAtual = !!vendorAtual && vendorAtual.pagarmeSubscriptionId === subscriptionId;
+
+    if (!ehAssinaturaAtual) {
+      this.logger.log(
+        `Subscription canceled ${subscriptionId} nao e a atual do vendor ` +
+          `${local.vendorUser?.id} (atual: ${vendorAtual?.pagarmeSubscriptionId}) — ` +
+          `provavel troca de plano; sem rebaixo nem notificacao.`,
+      );
+      return;
+    }
+
     // If cancel_at_period_end, keep plan until period ends; otherwise downgrade immediately
     if (!local.cancelAtPeriodEnd && local.vendorUser) {
       await this.vendorUsersService.updateVendorPlan(local.vendorUser.id, VendorPlan.FREE, 0);
@@ -3892,6 +3930,14 @@ export class PaymentsService implements OnModuleDestroy {
         1,
         local.currentPeriodEnd,
       );
+      // BUGFIX (defesa em profundidade): se um rebaixo na janela de renovacao
+      // (scheduler) chegou a zerar o pagarmeSubscriptionId, o invoice.paid da
+      // renovacao nunca o restaurava — updateSubscriptionCard passava a falhar
+      // ("Nenhuma assinatura ativa") e uma troca de plano futura nao cancelava
+      // esta assinatura (orfa cobrando). Reancora o vinculo na renovacao.
+      await this.paymentsRepository.manager
+        .getRepository(VendorUser)
+        .update(local.vendorUser.id, { pagarmeSubscriptionId: subscriptionId });
     }
 
     // Create renewal payment record

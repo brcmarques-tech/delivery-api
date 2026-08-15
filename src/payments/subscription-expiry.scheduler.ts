@@ -82,10 +82,31 @@ export class SubscriptionExpiryScheduler implements OnModuleInit, OnModuleDestro
           this.logger.debug(`Vendor ${vendor.id} has active subscription, skipping expiry`);
           continue;
         }
-        if (activeSubscription) {
+
+        // BUGFIX: janela de renovacao. Numa renovacao normal de cartao,
+        // planExpiresAt = currentPeriodEnd = fim do ciclo; o Pagar.me so avanca
+        // currentPeriodEnd quando cobra a proxima fatura e envia invoice.paid.
+        // Entre o fim do ciclo e esse webhook (segundos a minutos), o vendor de
+        // cartao EM DIA tinha planExpiresAt < now e currentPeriodEnd <= now →
+        // era rebaixado para FREE e tinha o pagarmeSubscriptionId zerado (que o
+        // invoice.paid nao restaura). Grace de 3 dias para assinaturas de cartao
+        // cobre essa janela e o inicio do dunning, sem pular para sempre um
+        // cartao recusado. PIX manual (sem assinatura no Pagar.me) NAO ganha
+        // grace — nao renova sozinho, entao expira na hora.
+        const GRACE_MS = 3 * 24 * 60 * 60 * 1000;
+        const temAssinaturaCartao = !!activeSubscription && !!vendor.pagarmeSubscriptionId;
+        if (temAssinaturaCartao) {
+          const expiraMs = vendor.planExpiresAt ? new Date(vendor.planExpiresAt).getTime() : 0;
+          if (expiraMs > now.getTime() - GRACE_MS) {
+            this.logger.debug(
+              `Vendor ${vendor.id}: assinatura de cartao no grace de renovacao ` +
+                `(expira ${vendor.planExpiresAt}) — aguardando invoice.paid, skip.`,
+            );
+            continue;
+          }
           this.logger.warn(
-            `Vendor ${vendor.id}: assinatura marcada 'active' mas sem ciclo pago vigente ` +
-              `(currentPeriodEnd=${activeSubscription.currentPeriodEnd ?? 'null'}) — rebaixando.`,
+            `Vendor ${vendor.id}: assinatura de cartao sem ciclo pago vigente e fora do grace ` +
+              `(${GRACE_MS / 86400000}d) — rebaixando (provavel cartao recusado).`,
           );
         }
 
