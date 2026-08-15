@@ -121,14 +121,17 @@ export class StoresService implements OnApplicationBootstrap {
       throw new BadRequestException('Informe storeId ou slug');
     }
 
+    // 'products' junto: produto SEM categoria nao aparece em categories.products
+    // — loja cujo dono nunca criou categorias mostrava "nenhum produto" com o
+    // catalogo inteiro ativo no banco.
     const store = slug
       ? await this.storesRepository.findOne({
           where: { slug },
-          relations: ['categories', 'categories.products'],
+          relations: ['categories', 'categories.products', 'products'],
         })
       : await this.storesRepository.findOne({
           where: { id: storeId },
-          relations: ['categories', 'categories.products'],
+          relations: ['categories', 'categories.products', 'products'],
         });
 
     if (!store) throw new NotFoundException('Loja nao encontrada');
@@ -143,6 +146,22 @@ export class StoresService implements OnApplicationBootstrap {
       this.ratingsService.totalStoreRatings(store.id),
     ]);
 
+    const toStorefrontProduct = (p: Product): StorefrontProduct => ({
+      id: p.id,
+      name: p.name,
+      description: p.description,
+      price: Number(p.price),
+      promotionalPrice: p.promotionalPrice
+        ? Number(p.promotionalPrice)
+        : undefined,
+      imageUrl: p.imageUrl,
+      isAvailable: p.isAvailable,
+      stock: p.stock,
+      unit: p.unit,
+      isVariableWeight: p.isVariableWeight,
+    });
+    const vendavel = (p: Product) => p.isAvailable && p.isActive && !p.deletedAt;
+
     const categories: StorefrontCategory[] = (store.categories || [])
       .filter((c) => c.isActive)
       .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -152,25 +171,28 @@ export class StoresService implements OnApplicationBootstrap {
         imageUrl: c.imageUrl,
         sortOrder: c.sortOrder,
         requiresAgeVerification: c.requiresAgeVerification,
-        products: (c.products || [])
-          .filter((p) => p.isAvailable && p.isActive && !p.deletedAt)
-          .map(
-            (p): StorefrontProduct => ({
-              id: p.id,
-              name: p.name,
-              description: p.description,
-              price: Number(p.price),
-              promotionalPrice: p.promotionalPrice
-                ? Number(p.promotionalPrice)
-                : undefined,
-              imageUrl: p.imageUrl,
-              isAvailable: p.isAvailable,
-              stock: p.stock,
-              unit: p.unit,
-              isVariableWeight: p.isVariableWeight,
-            }),
-          ),
+        products: (c.products || []).filter(vendavel).map(toStorefrontProduct),
       }));
+
+    // Produtos SEM categoria entram numa secao "Outros" no fim — antes
+    // simplesmente nao existiam para o cliente. Produto de categoria INATIVA
+    // continua oculto (desativar a categoria e a forma de esconder o grupo).
+    const idsCategorizados = new Set(
+      (store.categories || []).flatMap((c) => (c.products || []).map((p) => p.id)),
+    );
+    const semCategoria = (store.products || []).filter(
+      (p) => vendavel(p) && !idsCategorizados.has(p.id),
+    );
+    if (semCategoria.length > 0) {
+      categories.push({
+        id: 'sem-categoria',
+        name: 'Outros',
+        imageUrl: '',
+        sortOrder: 999999,
+        requiresAgeVerification: false,
+        products: semCategoria.map(toStorefrontProduct),
+      });
+    }
 
     return {
       id: store.id,
