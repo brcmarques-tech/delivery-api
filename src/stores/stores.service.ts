@@ -35,6 +35,7 @@ import { PUB_SUB } from '../pubsub/pubsub.module';
 import { RatingsService } from '../ratings/ratings.service';
 import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 import { resolvePublicUrl } from '../common/utils/public-url';
+import { brazilPhoneCandidates } from '../common/utils/phone';
 
 @Injectable()
 export class StoresService implements OnApplicationBootstrap {
@@ -496,11 +497,13 @@ export class StoresService implements OnApplicationBootstrap {
     // inerte. O users/by-phone ja tinha sido corrigido assim; este ficou.
     const digits = (number || '').replace(/\D/g, '');
     if (!digits) return null;
-    const semPais = digits.startsWith('55') ? digits.slice(2) : digits;
+    // Candidatos normalizados (com/sem nono digito e com/sem 55), mantendo DDD —
+    // igual ao users/by-phone; o WhatsApp as vezes devolve o numero sem o 9.
+    const cands = brazilPhoneCandidates(number);
+    if (!cands.length) return null;
     return this.storesRepository
       .createQueryBuilder('s')
-      .where("regexp_replace(s.\"whatsappNumber\", '[^0-9]', '', 'g') = :d", { d: digits })
-      .orWhere("regexp_replace(s.\"whatsappNumber\", '[^0-9]', '', 'g') = :nc", { nc: semPais })
+      .where("regexp_replace(s.\"whatsappNumber\", '[^0-9]', '', 'g') IN (:...cands)", { cands })
       .getOne();
   }
 

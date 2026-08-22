@@ -24,6 +24,7 @@ import { CouponsService } from '../coupons/coupons.service';
 import { AppUser } from '../users/entities/app-user.entity';
 import { Store } from '../stores/entities/store.entity';
 import { OrderStatus } from '../common/enums';
+import { brazilPhoneCandidates } from '../common/utils/phone';
 
 @Controller('n8n')
 export class N8nAgentController {
@@ -75,20 +76,17 @@ export class N8nAgentController {
   ) {
     this.checkAuth(key);
     const digits = phone?.replace(/\D/g, '') ?? '';
-    // BUGFIX: a busca casava so os ULTIMOS 8 DIGITOS do telefone. Numeros
-    // brasileiros que diferem apenas no DDD colidem (+55 11 99999-1234 vs
-    // +55 53 99999-1234) e `getOne()` devolvia uma linha ARBITRARIA — o agente
-    // do WhatsApp entao respondia a um cliente com o historico de pedidos de
-    // OUTRA pessoa. Pior ainda: telefone ausente/nao-numerico virava
-    // `LIKE '%'`, que casa TODO MUNDO, prendendo a conversa a uma conta
-    // aleatoria. Como `phone` nao e unico, tambem recusamos ambiguidade.
+    // BUGFIX: casava so os ULTIMOS 8 DIGITOS (numeros de DDDs diferentes
+    // colidiam -> conta arbitraria). Agora usa candidatos normalizados (com/sem
+    // o nono digito do celular e com/sem o 55) MANTENDO o DDD — o WhatsApp as
+    // vezes devolve o numero SEM o 9 e o cadastro tem o 9. Uniqueness mantido:
+    // se casar mais de uma conta, recusa (phone nao e unico).
     if (digits.length < 10) return null;
+    const cands = brazilPhoneCandidates(phone);
+    if (!cands.length) return null;
     const matches = await this.appUsersRepository
       .createQueryBuilder('u')
-      .where("regexp_replace(u.phone, '[^0-9]', '', 'g') = :digits", { digits })
-      .orWhere("regexp_replace(u.phone, '[^0-9]', '', 'g') = :noCountry", {
-        noCountry: digits.startsWith('55') ? digits.slice(2) : digits,
-      })
+      .where("regexp_replace(u.phone, '[^0-9]', '', 'g') IN (:...cands)", { cands })
       .getMany();
     if (matches.length !== 1) return null;
     const user = matches[0];
