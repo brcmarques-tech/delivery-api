@@ -1,6 +1,7 @@
 import { Resolver, Query, Mutation, Args, Int } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { VendorUser } from './entities/vendor-user.entity';
+import { VendorUserPage } from './dto/user-page.output';
 import { VendorUsersService } from './vendor-users.service';
 import { MailService } from '../mail/mail.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
@@ -32,6 +33,22 @@ export class VendorUsersResolver {
   @Roles(UserRole.SUPERADMIN)
   allVendorUsers(): Promise<VendorUser[]> {
     return this.vendorUsersService.findAll();
+  }
+
+  // KAN-292: vendedores paginados no servidor (painel Usuarios / aba Vendedores).
+  @Query(() => VendorUserPage)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  vendorUsersPage(
+    @Args('search', { nullable: true }) search?: string,
+    @Args('limit', { type: () => Int, nullable: true }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true }) offset?: number,
+  ): Promise<VendorUserPage> {
+    return this.vendorUsersService.findAllPaginated(
+      search ?? null,
+      limit ?? 20,
+      offset ?? 0,
+    );
   }
 
   @Query(() => [VendorUser])

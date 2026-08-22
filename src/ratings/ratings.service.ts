@@ -81,11 +81,23 @@ export class RatingsService {
     });
   }
 
-  async serviceRatings(storeId: string): Promise<ServiceRating[]> {
+  async serviceRatings(
+    storeId: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ServiceRating[]> {
+    // Teto de seguranca: query publica que carregava TODAS as avaliacoes da loja
+    // com relations (customer/store/service). Sem limite, uma loja com muitas
+    // avaliacoes fazia um SELECT gigante a cada abertura. Default alto (100) para
+    // nao mudar o comportamento atual; limit/offset permitem paginar depois.
+    const take = Math.min(Math.max(Number(limit) || 100, 1), 200);
+    const skip = Math.max(Number(offset) || 0, 0);
     return this.ratingsRepository.find({
       where: { storeId },
       relations: RELATIONS,
       order: { createdAt: 'DESC' },
+      take,
+      skip,
     });
   }
 

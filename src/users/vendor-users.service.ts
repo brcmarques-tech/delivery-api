@@ -134,6 +134,31 @@ export class VendorUsersService {
     });
   }
 
+  // KAN-292: vendedores paginados + busca (painel de Usuarios / aba Vendedores).
+  // Substitui o allVendorUsers (tabela inteira) filtrado no cliente.
+  async findAllPaginated(
+    search: string | null,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: VendorUser[]; total: number; hasMore: boolean }> {
+    const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const skip = Math.max(Number(offset) || 0, 0);
+    const qb = this.vendorUsersRepository
+      .createQueryBuilder('u')
+      .leftJoinAndSelect('u.stores', 'stores')
+      .orderBy('u.createdAt', 'DESC')
+      .addOrderBy('u.id', 'DESC');
+    if (search && search.trim()) {
+      const like = `%${search.trim()}%`;
+      qb.andWhere(
+        '(u.name ILIKE :like OR u.email ILIKE :like OR u.phone ILIKE :like)',
+        { like },
+      );
+    }
+    const [items, total] = await qb.skip(skip).take(take).getManyAndCount();
+    return { items, total, hasMore: skip + items.length < total };
+  }
+
   async findPendingApprovals(): Promise<VendorUser[]> {
     return this.vendorUsersRepository
       .createQueryBuilder('user')

@@ -2342,6 +2342,18 @@ export class PaymentsService implements OnModuleDestroy {
       if (order && (order.status === OrderStatus.AWAITING_PAYMENT || order.status === OrderStatus.PAYMENT_REVIEW)) {
         // #1: verifica a cobrança no Pagar.me antes de confirmar (gated).
         if (!(await this.webhookChargeConfirms(data.charges?.[0]?.id || null, pagarmeOrderId, order, ['paid', 'captured', 'authorized', 'pending_capture'], true))) return;
+        // BUGFIX (dinheiro): simétrico ao handleChargePaid. Quando o pedido saiu
+        // de PAYMENT_REVIEW (antifraude reprovou mas a adquirente aprovou), o
+        // Pagar.me AUTO-CAPTURA a cobrança no reprocessamento. Só o charge.paid
+        // marcava capturedAt; se o order.paid chegasse PRIMEIRO, o claim atômico
+        // dava a transição a ele (o charge.paid achava PENDING e retornava) e o
+        // capturedAt ficava NULL. Na conclusão, settlePayment via
+        // CREDIT_CARD+preAuthChargeId+!capturedAt e tentava capturar de novo uma
+        // cobrança já capturada → Pagar.me recusa → settlement falha para sempre
+        // e vendedor/entregador nunca recebem. Marcamos capturedAt aqui também,
+        // qualquer que seja a ordem dos webhooks.
+        const wasPaymentReview = order.status === OrderStatus.PAYMENT_REVIEW;
+        const setCaptured = wasPaymentReview && !!order.preAuthChargeId && !order.capturedAt;
         // R#4: confirmação ATÔMICA do pagamento. Os webhooks order.paid e
         // charge.paid chegam quase juntos e o dedup é por (evento:id), então NÃO
         // se anulam entre si. ANTES ambos passavam por este ponto (read-check-save)
@@ -2359,7 +2371,7 @@ export class PaymentsService implements OnModuleDestroy {
           // + estornava um pedido recem-pago, dizendo que a loja nao respondeu.
           `UPDATE orders
               SET status = 'PENDING', "couponCredited" = true, "mpPreferenceId" = $2,
-                  "updatedAt" = NOW()
+                  "updatedAt" = NOW()${setCaptured ? ', "capturedAt" = NOW()' : ''}
             WHERE id = $1 AND status IN ('AWAITING_PAYMENT','PAYMENT_REVIEW')
             RETURNING id`,
           [order.id, newMpPref],
@@ -2368,6 +2380,10 @@ export class PaymentsService implements OnModuleDestroy {
         order.status = OrderStatus.PENDING;
         order.couponCredited = true;
         order.mpPreferenceId = newMpPref;
+        if (setCaptured) {
+          order.capturedAt = new Date();
+          this.logger.log(`Order.paid (antifraud reprocessed): marking capturedAt for order #${order.orderNumber} — charge was auto-captured by Pagar.me`);
+        }
         this.logger.log(`Pagamento aprovado para pedido #${order.orderNumber}`);
 
         // Re-fetch with full relations so subscription filters can access store.id

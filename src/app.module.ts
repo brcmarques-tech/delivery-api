@@ -39,6 +39,7 @@ import { SiteConfigModule } from './site-config/site-config.module';
 // src/whatsapp-agent/ (5 arquivos) foi removida — ficava so confundindo sobre
 // qual agente esta ativo. O agente em uso e o N8nAgentModule abaixo.
 import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
+import { buildPostgresSsl } from './config/db-ssl.config';
 
 @Module({
   providers: [
@@ -89,7 +90,9 @@ import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
           return {
             type: 'postgres' as const,
             url: databaseUrl,
-            ssl: { rejectUnauthorized: false },
+            // KAN-232: valida o certificado do Postgres por padrao (era
+            // rejectUnauthorized:false fixo). Ver src/config/db-ssl.config.ts.
+            ssl: buildPostgresSsl((k) => config.get<string>(k)),
             ...common,
           };
         }

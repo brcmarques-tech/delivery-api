@@ -140,6 +140,142 @@ export class AppUsersService {
     });
   }
 
+  /**
+   * Confirma no banco que o token de SUPERADMIN ainda vale: conta existe, e
+   * SUPERADMIN, esta ativa e (se informado) o sessionToken bate. Usado pelo gate
+   * de PII para nao confiar no `role` congelado do JWT (mesmo padrao do
+   * RatingsService.isActiveSuperadmin).
+   */
+  async isActiveSuperadmin(userId: string, sessionToken?: string): Promise<boolean> {
+    const user = await this.appUsersRepository.findOne({ where: { id: userId } });
+    if (!user || user.role !== UserRole.SUPERADMIN) return false;
+    if (user.isActive === false) return false;
+    if (user.sessionToken && sessionToken !== user.sessionToken) return false;
+    return true;
+  }
+
+  /**
+   * KAN-245: historico de aprovacoes/rejeicoes paginado NO SERVIDOR.
+   *
+   * Une app_users + vendor_users (UNION ALL) para preservar a ordenacao global
+   * por data entre as duas fontes, filtra pelo status (approvedAt/rejectedAt),
+   * aplica busca por nome/email sem acento e devolve so a pagina pedida.
+   * Antes o painel baixava as duas tabelas inteiras (com fotos) e filtrava em
+   * memoria — custo linear no total de usuarios a cada abertura da aba.
+   */
+  async findApprovalUsers(
+    status: 'approved' | 'rejected',
+    search: string | null,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: any[]; total: number; hasMore: boolean }> {
+    // Whitelist: a coluna vai interpolada na SQL, entao NUNCA pode vir do input
+    // sem passar por aqui (o resto e parametrizado).
+    const statusCol = status === 'rejected' ? 'rejectedAt' : 'approvedAt';
+    const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const skip = Math.max(Number(offset) || 0, 0);
+    const like = search && search.trim() ? `%${search.trim()}%` : null;
+
+    const searchClause = like
+      ? ' AND (unaccent(lower(name)) LIKE unaccent(lower($1)) OR unaccent(lower(email)) LIKE unaccent(lower($1)))'
+      : '';
+
+    const combined = `
+      SELECT id, name, email, phone, role::text AS role, "pendingRole",
+             cpf, "vehicleType", "vehiclePlate",
+             "profilePhotoUrl", "identityPhotoUrl", "identityPhotoBackUrl",
+             "approvedAt", "rejectedAt", "rejectionReason", "createdAt",
+             'app'::text AS source
+      FROM app_users
+      UNION ALL
+      SELECT id, name, email, phone, role::text AS role, "pendingRole",
+             cpf, NULL::varchar AS "vehicleType", NULL::varchar AS "vehiclePlate",
+             NULL::varchar AS "profilePhotoUrl", NULL::varchar AS "identityPhotoUrl",
+             NULL::varchar AS "identityPhotoBackUrl",
+             "approvedAt", "rejectedAt", "rejectionReason", "createdAt",
+             'vendor'::text AS source
+      FROM vendor_users
+    `;
+
+    const countSql =
+      `WITH combined AS (${combined}) ` +
+      `SELECT COUNT(*)::int AS total FROM combined ` +
+      `WHERE "${statusCol}" IS NOT NULL${searchClause}`;
+    const countParams = like ? [like] : [];
+    const countRes = await this.appUsersRepository.manager.query(countSql, countParams);
+    const total = countRes[0]?.total ?? 0;
+
+    const limIdx = like ? 2 : 1;
+    const offIdx = like ? 3 : 2;
+    const dataSql =
+      `WITH combined AS (${combined}) ` +
+      `SELECT * FROM combined ` +
+      `WHERE "${statusCol}" IS NOT NULL${searchClause} ` +
+      `ORDER BY "${statusCol}" DESC NULLS LAST ` +
+      `LIMIT $${limIdx} OFFSET $${offIdx}`;
+    const dataParams = like ? [like, take, skip] : [take, skip];
+    const items = await this.appUsersRepository.manager.query(dataSql, dataParams);
+
+    return { items, total, hasMore: skip + items.length < total };
+  }
+
+  /** KAN-245: contagens leves (so COUNT) para os badges das abas. */
+  async approvalCounts(): Promise<{ approved: number; rejected: number }> {
+    const combined = `
+      SELECT "approvedAt", "rejectedAt" FROM app_users
+      UNION ALL
+      SELECT "approvedAt", "rejectedAt" FROM vendor_users
+    `;
+    const res = await this.appUsersRepository.manager.query(
+      `WITH combined AS (${combined}) SELECT ` +
+        `COUNT(*) FILTER (WHERE "approvedAt" IS NOT NULL)::int AS approved, ` +
+        `COUNT(*) FILTER (WHERE "rejectedAt" IS NOT NULL)::int AS rejected ` +
+        `FROM combined`,
+    );
+    return { approved: res[0]?.approved ?? 0, rejected: res[0]?.rejected ?? 0 };
+  }
+
+  // KAN-292: usuarios do app por papel, paginado + busca (painel de Usuarios).
+  // Substitui o allAppUsers (base inteira) filtrado por papel no cliente.
+  async findByRolePaginated(
+    role: UserRole,
+    search: string | null,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: AppUser[]; total: number; hasMore: boolean }> {
+    const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const skip = Math.max(Number(offset) || 0, 0);
+    const qb = this.appUsersRepository
+      .createQueryBuilder('u')
+      .where('u.role = :role', { role })
+      .orderBy('u.createdAt', 'DESC')
+      .addOrderBy('u.id', 'DESC');
+    if (search && search.trim()) {
+      const like = `%${search.trim()}%`;
+      qb.andWhere(
+        '(u.name ILIKE :like OR u.email ILIKE :like OR u.phone ILIKE :like)',
+        { like },
+      );
+    }
+    const [items, total] = await qb.skip(skip).take(take).getManyAndCount();
+    return { items, total, hasMore: skip + items.length < total };
+  }
+
+  // KAN-292: contagens por papel para os badges das abas (app_users).
+  async roleCounts(): Promise<{ customers: number; deliverers: number; admins: number }> {
+    const res = await this.appUsersRepository
+      .createQueryBuilder('u')
+      .select("COUNT(*) FILTER (WHERE u.role = 'CUSTOMER')", 'customers')
+      .addSelect("COUNT(*) FILTER (WHERE u.role = 'DELIVERER')", 'deliverers')
+      .addSelect("COUNT(*) FILTER (WHERE u.role = 'SUPERADMIN')", 'admins')
+      .getRawOne();
+    return {
+      customers: Number(res?.customers ?? 0),
+      deliverers: Number(res?.deliverers ?? 0),
+      admins: Number(res?.admins ?? 0),
+    };
+  }
+
   async findAllDeliverers(): Promise<AppUser[]> {
     return this.appUsersRepository.find({
       where: { isDeliverer: true },

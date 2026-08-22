@@ -12,6 +12,8 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Permission } from '../auth/decorators/permission.decorator';
 import { UserRole } from '../common/enums';
 import { RegisterDelivererInput } from './dto/register-deliverer.input';
+import { ApprovalUserPage, ApprovalCounts } from './dto/approval-user.output';
+import { AppUserPage, UserRoleCounts } from './dto/user-page.output';
 
 @Resolver(() => AppUser)
 export class AppUsersResolver {
@@ -30,7 +32,7 @@ export class AppUsersResolver {
   // Antes eram @Field diretos e vazavam via order.customer / order.delivery.deliverer
   // / storeOrders / availableStore para qualquer parte de um pedido. Padrão do
   // Store.owner (KAN-259). Vale para HTTP (JWT no header) e WS (ctx.wsUser).
-  private canSeePII(user: AppUser, ctx: any): boolean {
+  private async canSeePII(user: AppUser, ctx: any): Promise<boolean> {
     let payload: any = ctx?.wsUser || null;
     if (!payload) {
       const raw: string =
@@ -42,7 +44,21 @@ export class AppUsersResolver {
       }
     }
     if (!payload) return false;
-    return payload.role === 'SUPERADMIN' || (!!payload.sub && payload.sub === user.id);
+    // Dono do proprio dado: nao depende de liveness — o acesso ja passou pelo
+    // guard da query de topo.
+    if (!!payload.sub && payload.sub === user.id) return true;
+    // Elevacao a SUPERADMIN: mesmo furo que o RatingsResolver fechou. O `role` e
+    // um claim congelado no JWT (ate 7 dias) e este caminho NAO passa pela
+    // JwtStrategy — entao isActive/sessionToken nao eram conferidos, e um
+    // superadmin desligado seguia lendo PII com o token antigo. Confere no banco,
+    // com memo por request para nao virar N+1 numa lista.
+    if (payload.role !== 'SUPERADMIN' || !payload.sub) return false;
+    if (ctx.__piiSuperadmin === undefined) {
+      ctx.__piiSuperadmin = this.appUsersService
+        .isActiveSuperadmin(payload.sub, payload.sessionToken)
+        .catch(() => false);
+    }
+    return ctx.__piiSuperadmin;
   }
 
   /** Serializa o jsonb para String — ver o comentario no campo da entity. */
@@ -54,28 +70,28 @@ export class AppUsersResolver {
   }
 
   @ResolveField(() => String, { nullable: true })
-  cpf(@Parent() user: AppUser, @Context() ctx: any): string | null {
-    return this.canSeePII(user, ctx) ? (user.cpf ?? null) : null;
+  async cpf(@Parent() user: AppUser, @Context() ctx: any): Promise<string | null> {
+    return (await this.canSeePII(user, ctx)) ? (user.cpf ?? null) : null;
   }
 
   @ResolveField(() => String, { nullable: true })
-  identityPhotoUrl(@Parent() user: AppUser, @Context() ctx: any): string | null {
-    return this.canSeePII(user, ctx) ? (user.identityPhotoUrl ?? null) : null;
+  async identityPhotoUrl(@Parent() user: AppUser, @Context() ctx: any): Promise<string | null> {
+    return (await this.canSeePII(user, ctx)) ? (user.identityPhotoUrl ?? null) : null;
   }
 
   @ResolveField(() => String, { nullable: true })
-  identityPhotoBackUrl(@Parent() user: AppUser, @Context() ctx: any): string | null {
-    return this.canSeePII(user, ctx) ? (user.identityPhotoBackUrl ?? null) : null;
+  async identityPhotoBackUrl(@Parent() user: AppUser, @Context() ctx: any): Promise<string | null> {
+    return (await this.canSeePII(user, ctx)) ? (user.identityPhotoBackUrl ?? null) : null;
   }
 
   @ResolveField(() => String, { nullable: true })
-  birthDate(@Parent() user: AppUser, @Context() ctx: any): string | null {
-    return this.canSeePII(user, ctx) ? (user.birthDate ?? null) : null;
+  async birthDate(@Parent() user: AppUser, @Context() ctx: any): Promise<string | null> {
+    return (await this.canSeePII(user, ctx)) ? (user.birthDate ?? null) : null;
   }
 
   @ResolveField(() => String, { nullable: true })
-  cnhNumber(@Parent() user: AppUser, @Context() ctx: any): string | null {
-    return this.canSeePII(user, ctx) ? (user.cnhNumber ?? null) : null;
+  async cnhNumber(@Parent() user: AppUser, @Context() ctx: any): Promise<string | null> {
+    return (await this.canSeePII(user, ctx)) ? (user.cnhNumber ?? null) : null;
   }
 
   @Mutation(() => AppUser)
@@ -94,11 +110,73 @@ export class AppUsersResolver {
     return this.appUsersService.findAll();
   }
 
+  // KAN-292: usuarios do app por papel, paginado no servidor (painel Usuarios).
+  @Query(() => AppUserPage)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  appUsersByRole(
+    @Args('role') role: string,
+    @Args('search', { nullable: true }) search?: string,
+    @Args('limit', { nullable: true }) limit?: number,
+    @Args('offset', { nullable: true }) offset?: number,
+  ): Promise<AppUserPage> {
+    // Whitelist do papel (vai para o WHERE parametrizado, mas restringe o dominio).
+    const allowed: Record<string, UserRole> = {
+      CUSTOMER: UserRole.CUSTOMER,
+      DELIVERER: UserRole.DELIVERER,
+      SUPERADMIN: UserRole.SUPERADMIN,
+    };
+    const r = allowed[role] ?? UserRole.CUSTOMER;
+    return this.appUsersService.findByRolePaginated(
+      r,
+      search ?? null,
+      limit ?? 20,
+      offset ?? 0,
+    );
+  }
+
+  @Query(() => UserRoleCounts)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async appUserRoleCounts(): Promise<UserRoleCounts> {
+    const c = await this.appUsersService.roleCounts();
+    // `vendors` e preenchido por uma query separada no cliente (VendorUsersService);
+    // aqui devolvemos 0 e o painel usa o total de vendorUsersPage.
+    return { ...c, vendors: 0 };
+  }
+
   @Query(() => [AppUser])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
   pendingAppApprovals(): Promise<AppUser[]> {
     return this.appUsersService.findPendingApprovals();
+  }
+
+  // KAN-245: historico de aprovacoes/rejeicoes paginado no servidor (une app +
+  // vendor). Substitui o allAppUsers/allVendorUsers no painel de aprovacoes.
+  @Query(() => ApprovalUserPage)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  approvalUsers(
+    @Args('status') status: string,
+    @Args('search', { nullable: true }) search?: string,
+    @Args('limit', { nullable: true }) limit?: number,
+    @Args('offset', { nullable: true }) offset?: number,
+  ): Promise<ApprovalUserPage> {
+    const s = status === 'rejected' ? 'rejected' : 'approved';
+    return this.appUsersService.findApprovalUsers(
+      s,
+      search ?? null,
+      limit ?? 20,
+      offset ?? 0,
+    );
+  }
+
+  @Query(() => ApprovalCounts)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  approvalCounts(): Promise<ApprovalCounts> {
+    return this.appUsersService.approvalCounts();
   }
 
   @Mutation(() => AppUser)

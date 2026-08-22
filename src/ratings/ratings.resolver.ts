@@ -1,4 +1,4 @@
-import { Resolver, Query, Mutation, Args, Float, ResolveField, Parent, Context } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Float, Int, ResolveField, Parent, Context } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { verify as jwtVerify } from 'jsonwebtoken';
 import { ServiceRating } from './entities/service-rating.entity';
@@ -101,8 +101,10 @@ export class RatingsResolver {
   @Query(() => [ServiceRating])
   serviceRatings(
     @Args('storeId') storeId: string,
+    @Args('limit', { type: () => Int, nullable: true }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true }) offset?: number,
   ): Promise<ServiceRating[]> {
-    return this.ratingsService.serviceRatings(storeId);
+    return this.ratingsService.serviceRatings(storeId, limit, offset);
   }
 
   @Query(() => Float)

@@ -2,6 +2,7 @@ import { Resolver, Mutation, Query, Args, Float, Int, Subscription } from '@nest
 import { UseGuards, Inject } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Delivery } from './entities/delivery.entity';
+import { DeliveryPage, DeliveryCounts } from './dto/delivery-page.output';
 import { DeliveriesService } from './deliveries.service';
 import { DelivererTrackerService } from './deliverer-tracker.service';
 import { DeliveriesGateway } from './deliveries.gateway';
@@ -73,11 +74,30 @@ export class DeliveriesResolver {
     return this.deliveriesService.findByDeliverer(user.id, limit, offset);
   }
 
-  @Query(() => [Delivery])
+  // KAN-292: paginado no servidor (status/busca/limit/offset). Antes retornava a
+  // tabela inteira sob polling.
+  @Query(() => DeliveryPage)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  allDeliveries(): Promise<Delivery[]> {
-    return this.deliveriesService.findAllAdmin();
+  allDeliveries(
+    @Args('status', { nullable: true }) status?: string,
+    @Args('search', { nullable: true }) search?: string,
+    @Args('limit', { type: () => Int, nullable: true }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true }) offset?: number,
+  ): Promise<DeliveryPage> {
+    return this.deliveriesService.findAllAdminPaginated(
+      status && status !== 'ALL' ? status : null,
+      search ?? null,
+      limit ?? 20,
+      offset ?? 0,
+    );
+  }
+
+  @Query(() => DeliveryCounts)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  deliveryCounts(): Promise<DeliveryCounts> {
+    return this.deliveriesService.adminCounts();
   }
 
   @Query(() => Int)

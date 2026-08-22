@@ -391,6 +391,68 @@ export class DeliveriesService implements OnModuleInit {
     });
   }
 
+  // KAN-292: versao paginada + filtro (status derivado/busca) do painel admin.
+  // O "status" da entrega e derivado de deliveredAt/pickedUpAt (nao ha coluna):
+  //   DELIVERED  = deliveredAt IS NOT NULL
+  //   DELIVERING = deliveredAt IS NULL AND pickedUpAt IS NOT NULL
+  //   PICKED_UP  = deliveredAt IS NULL AND pickedUpAt IS NULL
+  async findAllAdminPaginated(
+    status: string | null,
+    search: string | null,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: Delivery[]; total: number; hasMore: boolean }> {
+    const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const skip = Math.max(Number(offset) || 0, 0);
+    const qb = this.deliveriesRepository
+      .createQueryBuilder('delivery')
+      .leftJoinAndSelect('delivery.order', 'order')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .orderBy('delivery.createdAt', 'DESC')
+      .addOrderBy('delivery.id', 'DESC');
+
+    if (status === 'DELIVERED') {
+      qb.andWhere('delivery.deliveredAt IS NOT NULL');
+    } else if (status === 'DELIVERING') {
+      qb.andWhere('delivery.deliveredAt IS NULL AND delivery.pickedUpAt IS NOT NULL');
+    } else if (status === 'PICKED_UP') {
+      qb.andWhere('delivery.deliveredAt IS NULL AND delivery.pickedUpAt IS NULL');
+    }
+    if (search && search.trim()) {
+      const like = `%${search.trim()}%`;
+      qb.andWhere(
+        '(deliverer.name ILIKE :like OR order.orderNumber ILIKE :like OR store.name ILIKE :like OR customer.name ILIKE :like)',
+        { like },
+      );
+    }
+
+    const [items, total] = await qb.skip(skip).take(take).getManyAndCount();
+    return { items, total, hasMore: skip + items.length < total };
+  }
+
+  // KAN-292: contagens globais para os cards de resumo (independem do filtro).
+  async adminCounts(): Promise<{ total: number; active: number; completed: number }> {
+    const res = await this.deliveriesRepository
+      .createQueryBuilder('delivery')
+      .select('COUNT(*)', 'total')
+      .addSelect(
+        'COUNT(*) FILTER (WHERE delivery."deliveredAt" IS NOT NULL)',
+        'completed',
+      )
+      .addSelect(
+        'COUNT(*) FILTER (WHERE delivery."deliveredAt" IS NULL)',
+        'active',
+      )
+      .getRawOne();
+    return {
+      total: Number(res?.total ?? 0),
+      active: Number(res?.active ?? 0),
+      completed: Number(res?.completed ?? 0),
+    };
+  }
+
   async totalCount(): Promise<number> {
     return this.deliveriesRepository.count();
   }

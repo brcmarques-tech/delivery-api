@@ -804,6 +804,44 @@ export class OrdersService {
     });
   }
 
+  // KAN-292: versao paginada + filtro (status/busca) do painel admin. Antes o
+  // findAllAdmin acima trazia a tabela inteira com 6 relations, sob polling.
+  async findAllAdminPaginated(
+    status: string | null,
+    search: string | null,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: Order[]; total: number; hasMore: boolean }> {
+    const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const skip = Math.max(Number(offset) || 0, 0);
+    const qb = this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('order.items', 'items')
+      .leftJoinAndSelect('items.product', 'product')
+      .leftJoinAndSelect('order.delivery', 'delivery')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .orderBy('order.createdAt', 'DESC')
+      .addOrderBy('order.id', 'DESC');
+
+    if (status) {
+      qb.andWhere('order.status = :status', { status });
+    }
+    if (search && search.trim()) {
+      const like = `%${search.trim()}%`;
+      qb.andWhere(
+        '(order.orderNumber ILIKE :like OR customer.name ILIKE :like OR store.name ILIKE :like)',
+        { like },
+      );
+    }
+
+    // take/skip com leftJoinAndSelect de relacao to-many: o TypeORM pagina pelos
+    // ids do pedido (subquery distinta), entao o limite conta PEDIDOS, nao linhas.
+    const [items, total] = await qb.skip(skip).take(take).getManyAndCount();
+    return { items, total, hasMore: skip + items.length < total };
+  }
+
   async totalCount(): Promise<number> {
     return this.ordersRepository.count();
   }
@@ -1122,6 +1160,40 @@ export class OrdersService {
     if (jaTerminouVendor) return this.findById(order.id);
 
     return this.updateStatus(order.id, OrderStatus.CANCELLED);
+  }
+
+  // ─── Cancelar/rejeitar vindo do agente n8n (WhatsApp) ─────────────────
+  // BUGFIX (dinheiro): o endpoint POST /n8n/orders/status chamava updateStatus
+  // cru para CANCELLED/REJECTED — que so devolve estoque/cupom e NAO estorna
+  // nem cancela a pre-autorizacao. Um pedido ja pago (PIX ou cartao capturado)
+  // rejeitado/cancelado pelo atendimento deixava o cliente SEM o dinheiro de
+  // volta (plataforma retendo o valor sem contrapartida). Aqui roteamos para os
+  // mesmos metodos da UI (rejectOrder/vendorCancelOrder/cancelByCustomer), que
+  // passam por handlePaymentCancellation e estornam, e ainda aplicam as guardas
+  // de negocio (status cancelavel, sem entregador ja designado, etc). A posse ja
+  // foi validada no controller (storeId/customerId conferem com o pedido).
+  async cancelOrRejectFromAgent(
+    orderId: string,
+    terminal: OrderStatus,
+    by: { storeId?: string; customerId?: string },
+    reason = 'Cancelado pelo atendimento',
+  ): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (by.storeId) {
+      const ownerId = order.store?.owner?.id;
+      if (!ownerId) {
+        throw new BadRequestException(
+          'Loja sem responsavel para cancelar o pedido',
+        );
+      }
+      return terminal === OrderStatus.REJECTED
+        ? this.rejectOrder(order.id, ownerId, reason)
+        : this.vendorCancelOrder(order.id, ownerId, reason);
+    }
+    if (by.customerId) {
+      return this.cancelByCustomer(order.id, by.customerId);
+    }
+    throw new BadRequestException('Informe storeId ou customerId');
   }
 
   // ─── Vendedor confirma coleta pelo entregador ─────────────────────────

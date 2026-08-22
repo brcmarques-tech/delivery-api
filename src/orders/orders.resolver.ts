@@ -5,6 +5,7 @@ import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrdersService } from './orders.service';
 import { CreateOrderInput } from './dto/create-order.input';
+import { OrderPage } from './dto/order-page.output';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -193,11 +194,23 @@ export class OrdersResolver {
     return this.ordersService.findPendingForDelivery();
   }
 
-  @Query(() => [Order])
+  // KAN-292: paginado no servidor (status/busca/limit/offset). Antes retornava a
+  // tabela inteira; a tela ainda fazia polling em cima disso.
+  @Query(() => OrderPage)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  allOrders(): Promise<Order[]> {
-    return this.ordersService.findAllAdmin();
+  allOrders(
+    @Args('status', { nullable: true }) status?: string,
+    @Args('search', { nullable: true }) search?: string,
+    @Args('limit', { type: () => Int, nullable: true }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true }) offset?: number,
+  ): Promise<OrderPage> {
+    return this.ordersService.findAllAdminPaginated(
+      status ?? null,
+      search ?? null,
+      limit ?? 20,
+      offset ?? 0,
+    );
   }
 
   @Mutation(() => Order)

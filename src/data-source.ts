@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { DataSource } from 'typeorm';
+import { buildPostgresSsl } from './config/db-ssl.config';
 
 /**
  * KAN-261: DataSource usado APENAS pelo CLI do TypeORM (gerar e rodar
@@ -22,7 +23,12 @@ const databaseUrl = process.env.DATABASE_URL;
 export default new DataSource({
   type: 'postgres',
   ...(databaseUrl
-    ? { url: databaseUrl, ssl: { rejectUnauthorized: false } }
+    ? {
+        url: databaseUrl,
+        // KAN-232: valida o certificado do Postgres por padrao (era
+        // rejectUnauthorized:false fixo). Espelha app.module.ts.
+        ssl: buildPostgresSsl((k) => process.env[k]),
+      }
     : {
         host: process.env.DB_HOST,
         port: Number(process.env.DB_PORT) || 5432,

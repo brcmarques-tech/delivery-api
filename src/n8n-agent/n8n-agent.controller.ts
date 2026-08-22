@@ -444,11 +444,25 @@ export class N8nAgentController {
     });
     if (!actor) throw new NotFoundException('Usuario agente nao encontrado');
 
-    const updated = await this.ordersService.updateStatus(
-      order.id,
-      body.status as OrderStatus,
-      actor,
-    );
+    // BUGFIX (dinheiro): CANCELLED/REJECTED NAO podem ir por updateStatus cru —
+    // ele so devolve estoque/cupom e nao estorna. Um pedido ja pago (PIX/cartao
+    // capturado) cancelado pelo atendimento deixava o cliente sem o dinheiro de
+    // volta. cancelOrRejectFromAgent roteia pelo fluxo que estorna (mesmos
+    // rejectOrder/vendorCancelOrder/cancelByCustomer da UI).
+    const isTerminal =
+      body.status === OrderStatus.CANCELLED ||
+      body.status === OrderStatus.REJECTED;
+    const updated = isTerminal
+      ? await this.ordersService.cancelOrRejectFromAgent(
+          order.id,
+          body.status as OrderStatus,
+          { storeId: body.storeId, customerId: body.customerId },
+        )
+      : await this.ordersService.updateStatus(
+          order.id,
+          body.status as OrderStatus,
+          actor,
+        );
     return {
       success: true,
       orderNumber: updated.orderNumber,

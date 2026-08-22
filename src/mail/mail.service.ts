@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, IsNull, LessThanOrEqual } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { NotificationLog } from './entities/notification-log.entity';
@@ -355,14 +355,25 @@ export class MailService {
 
   async retryFailedEmails(): Promise<void> {
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    // BUGFIX: filtros movidos para o SQL. Antes o WHERE trazia TODO log com
+    // success=false e filtrava retryCount/data em memoria — logs permanentemente
+    // falhos (success=false, retryCount=1) ficam para sempre e eram relidos a
+    // cada hora, num conjunto que so cresce. Pior: ignorava o soft-delete.
+    // `deletedAt` e um @Column comum (nao @DeleteDateColumn), entao o TypeORM
+    // NAO o exclui sozinho; deleteNotification/clearAllNotifications so setam
+    // deletedAt. Um e-mail falho que o admin apagou era reenviado uma hora
+    // depois. Agora: so os que faltam tentar (retryCount 0), fora da janela de
+    // 1h e nao apagados — coerente com o filtro do resolver (deletedAt IsNull).
     const failedLogs = await this.logRepository.find({
-      where: { success: false },
+      where: {
+        success: false,
+        retryCount: 0,
+        deletedAt: IsNull(),
+        createdAt: LessThanOrEqual(oneHourAgo),
+      },
     });
 
     for (const log of failedLogs) {
-      if (log.retryCount >= 1) continue;
-      if (log.createdAt > oneHourAgo) continue;
-
       this.logger.log(`Auto-retry email para ${log.to}`);
       await this.resendEmail(log);
     }

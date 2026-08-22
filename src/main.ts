@@ -13,6 +13,15 @@ Sentry.init({
 });
 
 async function bootstrap() {
+  // Falha segura no boot: sem JWT_SECRET em producao a verificacao de token nao
+  // tem como validar assinaturas — melhor abortar do que subir inseguro. O
+  // bootstrap().catch abaixo registra no Sentry e encerra com codigo 1.
+  if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+    throw new Error(
+      'JWT_SECRET obrigatorio em producao e nao foi definido. Abortando o boot.',
+    );
+  }
+
   const app = await NestFactory.create(AppModule);
 
   app.use(json({ limit: '10mb' }));
