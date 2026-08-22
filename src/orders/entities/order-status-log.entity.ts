@@ -5,6 +5,7 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 import { Order } from './order.entity';
 import { OrderStatus } from '../../common/enums';
@@ -16,6 +17,7 @@ export class OrderStatusLog {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Order)
   @ManyToOne(() => Order, { onDelete: 'CASCADE' })
   order: Order;

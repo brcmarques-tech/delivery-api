@@ -1,12 +1,14 @@
 import { Resolver, Query, Mutation, Args, Int } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { VendorUser } from './entities/vendor-user.entity';
+import { VendorUserPage } from './dto/user-page.output';
 import { VendorUsersService } from './vendor-users.service';
 import { MailService } from '../mail/mail.service';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Permission } from '../auth/decorators/permission.decorator';
 import { UserRole, VendorPlan } from '../common/enums';
 import { PlanInfo } from '../common/plan-info.type';
 import { AppUser } from './entities/app-user.entity';
@@ -33,6 +35,22 @@ export class VendorUsersResolver {
     return this.vendorUsersService.findAll();
   }
 
+  // KAN-292: vendedores paginados no servidor (painel Usuarios / aba Vendedores).
+  @Query(() => VendorUserPage)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  vendorUsersPage(
+    @Args('search', { nullable: true }) search?: string,
+    @Args('limit', { type: () => Int, nullable: true }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true }) offset?: number,
+  ): Promise<VendorUserPage> {
+    return this.vendorUsersService.findAllPaginated(
+      search ?? null,
+      limit ?? 20,
+      offset ?? 0,
+    );
+  }
+
   @Query(() => [VendorUser])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
@@ -43,6 +61,7 @@ export class VendorUsersResolver {
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('approvals')
   async approveVendorUser(@Args('id') id: string, @CurrentUser() admin: any): Promise<VendorUser> {
     const result = await this.vendorUsersService.approveUser(id);
     const adminEmail = admin.notificationEmail || admin.email;
@@ -53,6 +72,7 @@ export class VendorUsersResolver {
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('approvals')
   async rejectVendorUser(
     @Args('id') id: string,
     @Args('reason') reason: string,
@@ -67,6 +87,7 @@ export class VendorUsersResolver {
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('users')
   async toggleVendorUserActive(@Args('id') id: string, @CurrentUser() admin: any): Promise<VendorUser> {
     const result = await this.vendorUsersService.toggleUserActive(id);
     const adminEmail = admin.notificationEmail || admin.email;
@@ -77,6 +98,7 @@ export class VendorUsersResolver {
   @Mutation(() => VendorUser)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('plans')
   async updateVendorPlan(
     @Args('id') id: string,
     @Args('plan', { type: () => VendorPlan }) plan: VendorPlan,
@@ -98,8 +120,9 @@ export class VendorUsersResolver {
     @Args('currentPassword', { nullable: true }) currentPassword?: string,
     @Args('newPassword', { nullable: true }) newPassword?: string,
     @Args('email', { nullable: true }) email?: string,
+    @Args('cpf', { nullable: true }) cpf?: string,
   ): Promise<VendorUser> {
-    return this.vendorUsersService.updateProfile(user.id, name, phone, currentPassword, newPassword, email);
+    return this.vendorUsersService.updateProfile(user.id, name, phone, currentPassword, newPassword, email, cpf);
   }
 
   @Mutation(() => VendorUser)

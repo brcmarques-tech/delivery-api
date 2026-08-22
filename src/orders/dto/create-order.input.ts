@@ -1,5 +1,5 @@
 import { InputType, Field, Float, Int } from '@nestjs/graphql';
-import { IsOptional, IsInt, Min, ValidateNested } from 'class-validator';
+import { IsOptional, IsInt, Min, ValidateNested, ArrayMinSize } from 'class-validator';
 import { Type } from 'class-transformer';
 
 @InputType()
@@ -31,7 +31,12 @@ export class CreateOrderInput {
 
   // @ValidateNested + @Type sao obrigatorios para o ValidationPipe descer nos
   // itens do array — sem eles, as regras de OrderItemInput acima nao rodam.
+  // BUGFIX: @ValidateNested valida os ELEMENTOS — um array VAZIO passava. Numa
+  // loja com minimo 0 e entrega propria, dava para criar pedido sem item nenhum
+  // (subtotal 0, total = so o frete) e o vendedor recebia push de "Novo pedido!"
+  // para nada.
   @Field(() => [OrderItemInput])
+  @ArrayMinSize(1, { message: 'O pedido precisa ter pelo menos um item.' })
   @ValidateNested({ each: true })
   @Type(() => OrderItemInput)
   items: OrderItemInput[];

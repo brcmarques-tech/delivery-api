@@ -7,6 +7,7 @@ import {
   OneToMany,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { VendorUser } from '../../users/entities/vendor-user.entity';
 import { Product } from '../../products/entities/product.entity';
@@ -174,7 +175,12 @@ export class Store {
   @Column({ type: 'timestamp', nullable: true })
   deleteTokenExpires: Date;
 
-  @Field(() => VendorUser)
+  // KAN-259: `owner` era exposto sem restricao nas queries publicas `stores` e
+  // `store(id)`. Como VendorUser publica email, telefone e CPF, qualquer um sem
+  // token baixava os dados pessoais de todos os lojistas. Agora e nullable e o
+  // conteudo passa pelo ResolveField protegido em StoresResolver.
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
+  @Field(() => VendorUser, { nullable: true })
   @ManyToOne(() => VendorUser, (user) => user.stores)
   owner: VendorUser;
 

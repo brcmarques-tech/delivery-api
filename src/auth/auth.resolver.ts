@@ -13,6 +13,8 @@ import { ValidationResult } from './dto/validation-result';
 import { SendCodeInput } from './dto/send-code.input';
 import { VerifyCodeInput } from './dto/verify-code.input';
 import { GqlAuthGuard } from './guards/gql-auth.guard';
+import { GqlThrottlerGuard } from './guards/gql-throttler.guard';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
@@ -25,6 +27,10 @@ class SessionKickedPayload {
   userType: string;
 }
 
+// A#4: rate limiting nas rotas de auth (força-bruta/spam). O guard é ciente do
+// GraphQL e ignora subscriptions (WS). Default 120/min; login e reset ficam mais
+// estritos via @Throttle nos métodos.
+@UseGuards(GqlThrottlerGuard)
 @Resolver()
 export class AuthResolver {
   constructor(
@@ -94,6 +100,7 @@ export class AuthResolver {
   }
 
   @Mutation(() => AppAuthResponse)
+  @Throttle({ default: { limit: 8, ttl: 60_000 } })
   async loginApp(
     @Args('input') input: LoginInput,
     @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
@@ -107,6 +114,7 @@ export class AuthResolver {
   }
 
   @Mutation(() => VendorAuthResponse)
+  @Throttle({ default: { limit: 8, ttl: 60_000 } })
   async loginVendor(
     @Args('input') input: LoginInput,
     @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
@@ -126,11 +134,13 @@ export class AuthResolver {
   }
 
   @Mutation(() => String)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async requestPasswordResetApp(@Args('email') email: string): Promise<string> {
     return this.authService.requestPasswordResetApp(email);
   }
 
   @Mutation(() => String)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async requestPasswordResetVendor(@Args('email') email: string): Promise<string> {
     return this.authService.requestPasswordResetVendor(email);
   }
@@ -182,10 +192,19 @@ export class AuthResolver {
 
   // ---- Subscriptions ----
 
+  // A#5: só o próprio usuário autenticado (context.wsUser, validado no onConnect)
+  // pode assinar seu sessionKicked. ANTES o filtro casava só pelos argumentos, então
+  // qualquer cliente assinava `sessionKicked(userId: <vítima>)` e observava os
+  // eventos de login/expulsão de qualquer conta (canal de enumeração/atividade).
   @Subscription(() => SessionKickedPayload, {
-    filter: (payload, variables) =>
-      payload.sessionKicked.userId === variables.userId &&
-      payload.sessionKicked.userType === variables.userType,
+    filter: (payload, variables, context) => {
+      const user = context?.wsUser;
+      if (!user || user.sub !== variables.userId) return false;
+      return (
+        payload.sessionKicked.userId === variables.userId &&
+        payload.sessionKicked.userType === variables.userType
+      );
+    },
   })
   sessionKicked(
     @Args('userId') userId: string,

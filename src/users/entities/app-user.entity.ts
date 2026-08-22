@@ -6,6 +6,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
+  Index,
 } from 'typeorm';
 import { UserRole } from '../../common/enums';
 import { Order } from '../../orders/entities/order.entity';
@@ -49,7 +50,14 @@ export class AppUser {
   @Column({ nullable: true })
   avatarUrl: string;
 
-  @Field({ nullable: true })
+  // PII#1-3: cpf sai do @Field direto e passa a ser resolvido com gate (só o
+  // próprio dono ou superadmin recebem). Antes qualquer parte de um pedido
+  // (entregador via availableDeliveries, vendedor via storeOrders, cliente via
+  // order.delivery.deliverer) colhia o CPF alheio. A coluna continua.
+  // Indice unico parcial (KAN-280): a unicidade de CPF era só um findOne antes
+  // do save — TOCTOU puro, e furavel por mascara ("111.444.777-35" vs
+  // "11144477735"). O create normaliza; o indice fecha a corrida.
+  @Index('UQ_app_users_cpf', { unique: true, where: `"cpf" IS NOT NULL` })
   @Column({ nullable: true })
   cpf: string;
 
@@ -66,19 +74,18 @@ export class AppUser {
   @Column({ nullable: true })
   profilePhotoUrl: string;
 
-  @Field({ nullable: true })
+  // PII#2: dossiê de identidade do entregador (fotos de documento, CNH, data de
+  // nascimento) — só o próprio ou superadmin. Antes o cliente lia tudo via
+  // order.delivery.deliverer.
   @Column({ nullable: true })
   identityPhotoUrl: string;
 
-  @Field({ nullable: true })
   @Column({ nullable: true })
   identityPhotoBackUrl: string;
 
-  @Field({ nullable: true })
   @Column({ nullable: true })
   birthDate: string;
 
-  @Field({ nullable: true })
   @Column({ nullable: true })
   cnhNumber: string;
 
@@ -121,12 +128,22 @@ export class AppUser {
   @Column({ nullable: true })
   sessionToken: string;
 
+  // KAN-280: presenca de sessao SEPARADA da rotacao. O sessionToken rotaciona
+  // (nunca volta a null) para invalidar JWTs no logout/reset — mas o detector
+  // de "sessao ativa" era `sessionToken != null`, permanentemente truthy apos o
+  // primeiro login: reset de senha ou logout limpo seguido de login legitimo
+  // devolvia ACTIVE_SESSION de um aparelho que nao existe.
+  @Column({ default: false })
+  sessionActive: boolean;
+
   // Push notifications
   @Column({ nullable: true })
   expoPushToken: string;
 
   // Pagar.me recipient ID (for deliverer split payments)
-  @Field({ nullable: true })
+  // PII#4: sem @Field (mesma correção do KAN-259 no VendorUser). É um handle
+  // interno de conta de repasse; consumidores usam `paymentConnected`. Antes
+  // vazava para qualquer parte de um pedido.
   @Column({ nullable: true })
   pagarmeRecipientId: string;
 
@@ -154,6 +171,13 @@ export class AppUser {
   resetPasswordExpires: Date;
 
   // Permissoes do superadmin (null = todas as permissoes)
+  //
+  // A coluna e jsonb, entao o TypeORM devolve um OBJETO — mas o campo GraphQL e
+  // String. Ao pedir `permissions` numa query, o scalar String nao conseguia
+  // serializar o objeto e a query inteira falhava com "String cannot represent
+  // value". Por isso o campo nunca foi pedido pelo painel, e o sistema de
+  // permissoes granulares ficou inteiro sem efeito. O @ResolveField no
+  // AppUsersResolver serializa antes de devolver.
   @Field(() => String, { nullable: true })
   @Column({ type: 'jsonb', nullable: true })
   permissions: string | null;

@@ -60,12 +60,28 @@ export class CategoriesService {
     return this.categoriesRepository.save(category);
   }
 
+  // As CATEGORIAS ja eram filtradas por loja, mas `relations: ['products']`
+  // trazia TODOS os produtos da categoria, de qualquer loja. Isso transformava um
+  // categoryId cruzado num vazamento de catalogo: o produto do vendedor A
+  // aparecia no catalogo publico da loja B, com o preco que A quisesse.
+  //
+  // A origem do categoryId cruzado (a importacao em massa, que pulava
+  // assertCategoryBelongsToStore) foi fechada, mas o filtro fica aqui tambem de
+  // proposito: e a ultima porta antes da vitrine, e cobre tanto as linhas ja
+  // gravadas assim quanto qualquer caminho futuro.
   async findByStore(storeId: string): Promise<Category[]> {
-    return this.categoriesRepository.find({
-      where: { store: { id: storeId }, isActive: true },
-      order: { sortOrder: 'ASC' },
-      relations: ['products'],
-    });
+    return this.categoriesRepository
+      .createQueryBuilder('category')
+      .leftJoinAndSelect(
+        'category.products',
+        'product',
+        'product."storeId" = :storeId',
+        { storeId },
+      )
+      .where('category."storeId" = :storeId', { storeId })
+      .andWhere('category."isActive" = true')
+      .orderBy('category."sortOrder"', 'ASC')
+      .getMany();
   }
 
   async delete(id: string, userId?: string): Promise<boolean> {

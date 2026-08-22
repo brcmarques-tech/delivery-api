@@ -34,7 +34,7 @@
         300
       ],
       "parameters": {
-        "jsCode": "\nconst body = $input.first().json;\nconst payload = body.body || body;\nconst msg = payload.payload || payload;\n\nlet from = msg.from || '';\nif (from.endsWith('@lid')) {\n  const alt = (msg._data && msg._data.key && msg._data.key.remoteJidAlt) || '';\n  if (alt) from = alt.replace(/@.*$/, '');\n} else {\n  from = from.replace(/@.*$/, '');\n}\n\n// normalize: remove country code prefix for lookup\nconst phone = from.replace(/^\\+/, '');\n\nreturn [{\n  json: {\n    phone,\n    text: msg.body || msg.text || '',\n    originalPayload: msg\n  }\n}];\n"
+        "jsCode": "\n// SEGURANCA: este webhook nao tinha autenticacao NENHUMA e a porta do n8n fica\n// publicada. O campo `from` do corpo e a UNICA identidade de todo o sistema —\n// vira storeId ou customerId e e injetado em todas as ferramentas do agente.\n// Bastava um POST com `from` trocado para se passar por qualquer cliente ou\n// lojista: ler pedidos alheios, cancelar pedido de terceiro, fechar a loja do\n// concorrente ou despachar entregador. O WAHA_WEBHOOK_SECRET ja existia no .env\n// e nunca tinha sido ligado. Mesmo padrao que contato_site.json ja usava.\nconst segredoEsperado = $env.WAHA_WEBHOOK_SECRET;\nif (segredoEsperado) {\n  const headers = $input.first().json.headers || {};\n  const recebido =\n    headers['x-webhook-secret'] || headers['X-Webhook-Secret'] ||\n    headers['x-api-key'] || headers['X-Api-Key'] || '';\n  if (recebido !== segredoEsperado) {\n    throw new Error('Webhook nao autorizado');\n  }\n}\n\nconst body = $input.first().json;\nconst payload = body.body || body;\nconst msg = payload.payload || payload;\n\n// Ignora as proprias mensagens do bot (evita laco quando a sessao WAHA escuta\n// message.any) e mensagens de grupo (o id do grupo virava um \"telefone\" que nao\n// casa com ninguem e fazia o bot responder dentro do grupo a cada mensagem).\nif (msg.fromMe || String(msg.from || '').endsWith('@g.us')) {\n  return [];\n}\n\n\nlet from = msg.from || '';\nif (from.endsWith('@lid')) {\n  const alt = (msg._data && msg._data.key && msg._data.key.remoteJidAlt) || '';\n  if (alt) from = alt.replace(/@.*$/, '');\n} else {\n  from = from.replace(/@.*$/, '');\n}\n\n// normalize: remove country code prefix for lookup\nconst phone = from.replace(/^\\+/, '');\n\nreturn [{\n  json: {\n    phone,\n    text: msg.body || msg.text || '',\n    originalPayload: msg\n  }\n}];\n"
       }
     },
     {
@@ -251,7 +251,7 @@
             },
             {
               "name": "text",
-              "value": "Ol\u00e1! Para usar nossos servi\u00e7os, fa\u00e7a seu primeiro pedido pelo aplicativo bcmTech Shopping. \ud83d\udcf1"
+              "value": "Olá! Para usar nossos serviços, faça seu primeiro pedido pelo aplicativo bcmTech Shopping. 📱"
             },
             {
               "name": "session",
@@ -458,7 +458,7 @@
           300
         ],
         "parameters": {
-          "jsCode": "\nconst body = $input.first().json;\nconst payload = body.body || body;\nconst msg = payload.payload || payload;\n\nlet from = msg.from || '';\nif (from.endsWith('@lid')) {\n  const alt = (msg._data && msg._data.key && msg._data.key.remoteJidAlt) || '';\n  if (alt) from = alt.replace(/@.*$/, '');\n} else {\n  from = from.replace(/@.*$/, '');\n}\n\n// normalize: remove country code prefix for lookup\nconst phone = from.replace(/^\\+/, '');\n\nreturn [{\n  json: {\n    phone,\n    text: msg.body || msg.text || '',\n    originalPayload: msg\n  }\n}];\n"
+          "jsCode": "\n// SEGURANCA: este webhook nao tinha autenticacao NENHUMA e a porta do n8n fica\n// publicada. O campo `from` do corpo e a UNICA identidade de todo o sistema —\n// vira storeId ou customerId e e injetado em todas as ferramentas do agente.\n// Bastava um POST com `from` trocado para se passar por qualquer cliente ou\n// lojista: ler pedidos alheios, cancelar pedido de terceiro, fechar a loja do\n// concorrente ou despachar entregador. O WAHA_WEBHOOK_SECRET ja existia no .env\n// e nunca tinha sido ligado. Mesmo padrao que contato_site.json ja usava.\nconst segredoEsperado = $env.WAHA_WEBHOOK_SECRET;\nif (segredoEsperado) {\n  const headers = $input.first().json.headers || {};\n  const recebido =\n    headers['x-webhook-secret'] || headers['X-Webhook-Secret'] ||\n    headers['x-api-key'] || headers['X-Api-Key'] || '';\n  if (recebido !== segredoEsperado) {\n    throw new Error('Webhook nao autorizado');\n  }\n}\n\nconst body = $input.first().json;\nconst payload = body.body || body;\nconst msg = payload.payload || payload;\n\n// Ignora as proprias mensagens do bot (evita laco quando a sessao WAHA escuta\n// message.any) e mensagens de grupo (o id do grupo virava um \"telefone\" que nao\n// casa com ninguem e fazia o bot responder dentro do grupo a cada mensagem).\nif (msg.fromMe || String(msg.from || '').endsWith('@g.us')) {\n  return [];\n}\n\n\nlet from = msg.from || '';\nif (from.endsWith('@lid')) {\n  const alt = (msg._data && msg._data.key && msg._data.key.remoteJidAlt) || '';\n  if (alt) from = alt.replace(/@.*$/, '');\n} else {\n  from = from.replace(/@.*$/, '');\n}\n\n// normalize: remove country code prefix for lookup\nconst phone = from.replace(/^\\+/, '');\n\nreturn [{\n  json: {\n    phone,\n    text: msg.body || msg.text || '',\n    originalPayload: msg\n  }\n}];\n"
         }
       },
       {
@@ -675,7 +675,7 @@
               },
               {
                 "name": "text",
-                "value": "Ol\u00e1! Para usar nossos servi\u00e7os, fa\u00e7a seu primeiro pedido pelo aplicativo bcmTech Shopping. \ud83d\udcf1"
+                "value": "Olá! Para usar nossos serviços, faça seu primeiro pedido pelo aplicativo bcmTech Shopping. 📱"
               },
               {
                 "name": "session",

@@ -8,13 +8,14 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, In, IsNull, Between } from 'typeorm';
+import { Repository, Not, In, IsNull, Between, LessThanOrEqual } from 'typeorm';
 import { Appointment } from './entities/appointment.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Service } from '../services/entities/service.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { AppointmentStatus } from '../common/enums/appointment-status.enum';
+import { businessMinutes, businessToday, businessTodayDate } from '../common/utils/business-time';
 import { StoreType } from '../common/enums/store-type.enum';
 import { CreateAppointmentInput } from './dto/create-appointment.input';
 import { RequestQuoteInput } from './dto/request-quote.input';
@@ -61,9 +62,20 @@ export class AppointmentsService {
     const dateObj = new Date(date + 'T00:00:00');
     if (isNaN(dateObj.getTime())) throw new BadRequestException('Data invalida');
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (dateObj < today) return [];
+    // BUGFIX: `new Date()` + setHours usava o fuso do PROCESSO, que em producao
+    // e UTC. Depois das 21:00 BRT a data UTC ja e o dia seguinte, entao "hoje"
+    // era tratado como passado e a agenda do proprio dia retornava vazia. E o
+    // nowMinutes em UTC descartava ~3h de horarios ainda validos (a manha
+    // inteira sumia da grade). Agora tudo no fuso do negocio.
+    const today = businessTodayDate();
+    const dateOnly = new Date(date + 'T00:00:00.000Z');
+    if (dateOnly < today) return [];
+
+    // BL#2: se a data é HOJE, não oferecer horários que já passaram. Antes só a
+    // data era comparada (à meia-noite), então marcar hoje às 09:00 às 15:00 era
+    // aceito.
+    const isToday = dateOnly.getTime() === today.getTime();
+    const nowMinutes = isToday ? businessMinutes() : -1;
 
     const dayOfWeek = dateObj.getDay();
 
@@ -108,6 +120,8 @@ export class AppointmentsService {
     return slots.filter((slot) => {
       const [slotH, slotM] = slot.split(':').map(Number);
       const slotStart = slotH * 60 + slotM;
+      // BL#2: descarta horários já passados quando a data é hoje.
+      if (isToday && slotStart < nowMinutes) return false;
       const slotEnd = slotStart + duration;
 
       return !existing.some((apt) => {
@@ -128,6 +142,14 @@ export class AppointmentsService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    // A loja desativada pelo superadmin some da vitrine, mas o storeId continua
+    // valido: quem tinha o id salvo (historico, deep link, cache do app) seguia
+    // criando agendamento normalmente — inclusive gerando cobranca PIX/cartao e
+    // notificando um lojista banido. Desativar precisa impedir a entrada de
+    // dinheiro e de compromissos novos, nao so esconder a loja.
+    if (!store.isActive) {
+      throw new BadRequestException('Esta loja nao esta disponivel no momento.');
+    }
     if (store.storeType !== StoreType.SERVICES) {
       throw new BadRequestException('Esta loja nao aceita agendamentos');
     }
@@ -147,9 +169,11 @@ export class AppointmentsService {
     const dateObj = new Date(input.scheduledDate + 'T00:00:00');
     if (isNaN(dateObj.getTime())) throw new BadRequestException('Data invalida');
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (dateObj < today) throw new BadRequestException('Data nao pode ser no passado');
+    // BUGFIX: idem availableSlots — comparacao de data no fuso do negocio.
+    // Em UTC, depois das 21:00 BRT o proprio dia virava "passado".
+    const today = businessTodayDate();
+    const dateOnlyUtc = new Date(input.scheduledDate + 'T00:00:00.000Z');
+    if (dateOnlyUtc < today) throw new BadRequestException('Data nao pode ser no passado');
 
     const maxDate = new Date();
     maxDate.setDate(maxDate.getDate() + 30);
@@ -178,7 +202,10 @@ export class AppointmentsService {
     let commissionAmount = 0;
     if (isOnlinePayment) {
       const planConfig = await this.platformConfigService.getPlanConfig(store.owner?.vendorPlan as any);
-      const commissionPercent = planConfig?.commissionPercent || 5;
+      // `?? 5` (não `|| 5`): PREMIUM/ENTERPRISE/CUSTOM têm commissionPercent 0 —
+      // com `||`, o 0 (falsy) virava 5, cobrando 5% de comissão de quem tem 0%
+      // contratado. Só usa o default 5 quando o valor é realmente ausente.
+      const commissionPercent = planConfig?.commissionPercent ?? 5;
       commissionAmount = Math.round(Number(service.price) * commissionPercent) / 100;
     }
 
@@ -193,20 +220,29 @@ export class AppointmentsService {
 
       if (!lockedStore) throw new NotFoundException('Loja nao encontrada');
 
-      // Re-check availability inside transaction
-      const conflict = await manager.getRepository(Appointment).count({
-        where: {
-          storeId: input.storeId,
-          scheduledDate: input.scheduledDate,
-          scheduledTime: input.scheduledTime,
-          status: Not(In([
+      // BL#3: re-checagem de conflito dentro da transação por SOBREPOSIÇÃO, não
+      // só por horário idêntico. A checagem anterior contava apenas
+      // `scheduledTime = X`; serviços de durações diferentes colidiam (ex.: um de
+      // 60min às 10:00 [10:00–11:00] e um de 30min às 10:30 [10:30–11:00]) e ambos
+      // passavam. `scheduledTime`/`endTime` são 'HH:MM' → comparação lexicográfica
+      // equivale à cronológica. Sobrepõe se: existente.início < novo.fim E
+      // existente.fim > novo.início.
+      const conflict = await manager
+        .getRepository(Appointment)
+        .createQueryBuilder('apt')
+        .where('apt.storeId = :storeId', { storeId: input.storeId })
+        .andWhere('apt.scheduledDate = :date', { date: input.scheduledDate })
+        .andWhere('apt.deletedAt IS NULL')
+        .andWhere('apt.status NOT IN (:...excluded)', {
+          excluded: [
             AppointmentStatus.CANCELLED,
             AppointmentStatus.NO_SHOW,
             AppointmentStatus.QUOTE_REJECTED,
-          ])),
-          deletedAt: IsNull(),
-        },
-      });
+          ],
+        })
+        .andWhere('apt.scheduledTime < :endTime', { endTime })
+        .andWhere('apt.endTime > :startTime', { startTime: input.scheduledTime })
+        .getCount();
       if (conflict > 0) {
         throw new BadRequestException('Horario ja foi reservado. Escolha outro.');
       }
@@ -290,6 +326,14 @@ export class AppointmentsService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    // A loja desativada pelo superadmin some da vitrine, mas o storeId continua
+    // valido: quem tinha o id salvo (historico, deep link, cache do app) seguia
+    // criando agendamento normalmente — inclusive gerando cobranca PIX/cartao e
+    // notificando um lojista banido. Desativar precisa impedir a entrada de
+    // dinheiro e de compromissos novos, nao so esconder a loja.
+    if (!store.isActive) {
+      throw new BadRequestException('Esta loja nao esta disponivel no momento.');
+    }
     if (store.storeType !== StoreType.SERVICES) {
       throw new BadRequestException('Esta loja nao aceita agendamentos');
     }
@@ -379,6 +423,16 @@ export class AppointmentsService {
     this.validateCustomer(appointment, customerId);
     this.validateTransition(appointment.status, AppointmentStatus.QUOTE_ACCEPTED);
 
+    // BUGFIX: o create() bloqueia loja desativada e teto de 30 dias, mas o
+    // acceptQuote nao — depois de o superadmin banir a loja, o cliente ainda
+    // conseguia aceitar o orcamento e entrar um compromisso numa loja banida; e
+    // sem o teto dava para aceitar um orcamento para centenas de dias a frente.
+    const dateObj = new Date(scheduledDate + 'T00:00:00');
+    if (isNaN(dateObj.getTime())) throw new BadRequestException('Data invalida');
+    const maxDate = new Date();
+    maxDate.setDate(maxDate.getDate() + 30);
+    if (dateObj > maxDate) throw new BadRequestException('Agendamento maximo de 30 dias');
+
     const slots = await this.availableSlots(appointment.storeId, appointment.serviceId, scheduledDate);
     if (!slots.includes(scheduledTime)) {
       throw new BadRequestException('Horario indisponivel');
@@ -388,11 +442,55 @@ export class AppointmentsService {
     const endMinutes = h * 60 + m + appointment.service.estimatedDuration;
     const endTime = `${String(Math.floor(endMinutes / 60)).padStart(2, '0')}:${String(endMinutes % 60).padStart(2, '0')}`;
 
-    appointment.scheduledDate = scheduledDate;
-    appointment.scheduledTime = scheduledTime;
-    appointment.endTime = endTime;
-    appointment.status = AppointmentStatus.PENDING;
-    await this.appointmentsRepository.save(appointment);
+    // A checagem acima e um classico check-then-act: `availableSlots` e o `save`
+    // ficavam fora de qualquer transacao, sem lock. Dois clientes com orcamento
+    // na mesma loja aceitando o mesmo horario viam ambos o slot livre e ambos
+    // gravavam. Pior: o lock de `create()` nao protegia nada contra este
+    // caminho, porque este escritor nao o respeitava — dava para `create` e
+    // `acceptQuote` gravarem o mesmo horario um por cima do outro. Agora usamos
+    // a mesma transacao: lock na loja e re-checagem por SOBREPOSICAO (nao so por
+    // horario identico, para cobrir duracoes diferentes).
+    await this.appointmentsRepository.manager.transaction(async (manager) => {
+      const lockedStore = await manager
+        .getRepository(Store)
+        .createQueryBuilder('store')
+        .setLock('pessimistic_write')
+        .where('store.id = :id', { id: appointment.storeId })
+        .getOne();
+      if (!lockedStore) throw new NotFoundException('Loja nao encontrada');
+      // BUGFIX: loja banida/desativada nao pode receber compromisso novo (mesma
+      // regra do create). Checado aqui, com a loja ja travada na transacao.
+      if (!lockedStore.isActive) {
+        throw new BadRequestException('Esta loja nao esta disponivel no momento.');
+      }
+
+      const conflict = await manager
+        .getRepository(Appointment)
+        .createQueryBuilder('apt')
+        .where('apt.storeId = :storeId', { storeId: appointment.storeId })
+        .andWhere('apt.id != :selfId', { selfId: appointment.id })
+        .andWhere('apt.scheduledDate = :date', { date: scheduledDate })
+        .andWhere('apt.deletedAt IS NULL')
+        .andWhere('apt.status NOT IN (:...excluded)', {
+          excluded: [
+            AppointmentStatus.CANCELLED,
+            AppointmentStatus.NO_SHOW,
+            AppointmentStatus.QUOTE_REJECTED,
+          ],
+        })
+        .andWhere('apt.scheduledTime < :endTime', { endTime })
+        .andWhere('apt.endTime > :startTime', { startTime: scheduledTime })
+        .getCount();
+      if (conflict > 0) {
+        throw new BadRequestException('Horario ja foi reservado. Escolha outro.');
+      }
+
+      appointment.scheduledDate = scheduledDate;
+      appointment.scheduledTime = scheduledTime;
+      appointment.endTime = endTime;
+      appointment.status = AppointmentStatus.PENDING;
+      await manager.getRepository(Appointment).save(appointment);
+    });
 
     this.notificationsService.sendToVendorUser(
       appointment.store.owner.id,
@@ -452,6 +550,19 @@ export class AppointmentsService {
     appointment.status = AppointmentStatus.CANCELLED;
     await this.appointmentsRepository.save(appointment);
 
+    // O cancelamento nao mexia no dinheiro: no cartao os R$ ficavam bloqueados
+    // no limite do cliente ate a pre-autorizacao caducar sozinha, e no PIX (ja
+    // pago de verdade) o valor ficava parado na plataforma sem nenhum caminho de
+    // devolucao. Nao bloqueia o cancelamento se o estorno falhar — o erro fica
+    // logado para reprocessamento.
+    await this.paymentsService
+      .releaseAppointmentPayment(appointment)
+      .catch((err) =>
+        this.logger.error(
+          `Falha ao liberar pagamento do agendamento ${appointment.appointmentNumber}: ${err?.message}`,
+        ),
+      );
+
     this.notificationsService.sendToVendorUser(
       appointment.store.owner.id,
       'Agendamento cancelado',
@@ -469,6 +580,19 @@ export class AppointmentsService {
 
     appointment.status = AppointmentStatus.CANCELLED;
     await this.appointmentsRepository.save(appointment);
+
+    // O cancelamento nao mexia no dinheiro: no cartao os R$ ficavam bloqueados
+    // no limite do cliente ate a pre-autorizacao caducar sozinha, e no PIX (ja
+    // pago de verdade) o valor ficava parado na plataforma sem nenhum caminho de
+    // devolucao. Nao bloqueia o cancelamento se o estorno falhar — o erro fica
+    // logado para reprocessamento.
+    await this.paymentsService
+      .releaseAppointmentPayment(appointment)
+      .catch((err) =>
+        this.logger.error(
+          `Falha ao liberar pagamento do agendamento ${appointment.appointmentNumber}: ${err?.message}`,
+        ),
+      );
 
     this.notificationsService.sendToAppUser(
       appointment.customerId,
@@ -518,11 +642,14 @@ export class AppointmentsService {
 
   // ─── Queries ────────────────────────────────────────────
 
-  async myAppointments(customerId: string): Promise<Appointment[]> {
+  // Perf (F6): paginado (limit/offset), teto 100.
+  async myAppointments(customerId: string, limit = 20, offset = 0): Promise<Appointment[]> {
     return this.appointmentsRepository.find({
       where: { customerId, deletedAt: IsNull() },
       relations: RELATIONS,
       order: { createdAt: 'DESC' },
+      take: Math.min(Math.max(limit ?? 20, 1), 100),
+      skip: Math.max(offset ?? 0, 0),
     });
   }
 
@@ -574,14 +701,72 @@ export class AppointmentsService {
     return appointment;
   }
 
+  // ─── Expiracao por falta de pagamento ───────────────────
+
+  /**
+   * Cancela agendamentos que nunca foram pagos, liberando o horario.
+   *
+   * Pedidos ja tinham `expireAwaitingPaymentOrders`; agendamentos NAO tinham
+   * equivalente. O agendamento nasce PENDING antes de o pagamento existir, e
+   * `availableSlots` so ignora CANCELLED/NO_SHOW/QUOTE_REJECTED — entao um
+   * AWAITING_PAYMENT ocupava a grade indefinidamente. Bastava criar uma conta e
+   * chamar `createAppointment(PIX)` para cada slot dos proximos 30 dias, sem
+   * pagar nenhum, para deixar a agenda inteira da loja indisponivel para
+   * clientes reais, de graca, sem nenhuma rotina que limpasse. Os 30 min
+   * acompanham a validade do QR do PIX.
+   */
+  async expireUnpaidAppointments(): Promise<number> {
+    const trintaMinAtras = new Date(Date.now() - 30 * 60 * 1000);
+    const vencidos = await this.appointmentsRepository.find({
+      where: {
+        paymentStatus: 'AWAITING_PAYMENT',
+        // BUGFIX: cartao PRE-AUTORIZADO grava paymentStatus 'AWAITING_PAYMENT'
+        // igual ao PIX aguardando scan, mas a pre-auth JA e uma garantia — o
+        // cliente fez a parte dele. A janela de 30 min acompanha a validade do QR
+        // do PIX; aplica-la ao cartao cancelava sozinho, em 30 min, um agendamento
+        // com pagamento garantido so porque o vendedor ainda nao confirmou.
+        // preAuthChargeId IsNull deixa passar so o PIX de fato nao pago. (A
+        // eventual liberacao de pre-auths nunca confirmadas e outra rotina/decisao.)
+        preAuthChargeId: IsNull(),
+        status: In([
+          AppointmentStatus.PENDING,
+          AppointmentStatus.QUOTE_ACCEPTED,
+        ]),
+        createdAt: LessThanOrEqual(trintaMinAtras),
+        deletedAt: IsNull(),
+      },
+    });
+
+    for (const apt of vencidos) {
+      apt.status = AppointmentStatus.CANCELLED;
+      await this.appointmentsRepository.save(apt);
+      this.logger.log(
+        `Agendamento ${apt.appointmentNumber} cancelado por falta de pagamento — horario liberado`,
+      );
+      this.notificationsService
+        .sendToAppUser(
+          apt.customerId,
+          'Agendamento cancelado',
+          `${apt.appointmentNumber} foi cancelado porque o pagamento nao foi concluido.`,
+          { type: 'APPOINTMENT', appointmentId: apt.id },
+        )
+        .catch(() => {});
+    }
+    return vencidos.length;
+  }
+
   // ─── Reminder ───────────────────────────────────────────
 
   async sendUpcomingReminders(): Promise<number> {
-    // BRT = UTC-3, server runs in BRT but stores as UTC
+    // BUGFIX: o comentario antigo dizia "server runs in BRT" — em producao NAO
+    // roda (TZ=UTC). O lembrete de 1 hora era calculado em UTC contra horarios
+    // de parede brasileiros: disparava ~4h adiantado (e marcava reminderSent,
+    // entao o lembrete de verdade nunca chegava), e agendamento a partir das
+    // ~21:00 BRT nunca era encontrado porque a data UTC ja era a de amanha.
     const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayStr = businessToday(now);
 
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const nowMinutes = businessMinutes(now);
     const targetMin = nowMinutes + 55;
     const targetMax = nowMinutes + 65;
 

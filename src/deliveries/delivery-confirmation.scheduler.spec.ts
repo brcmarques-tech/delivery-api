@@ -11,6 +11,11 @@ describe('DeliveryConfirmationScheduler', () => {
 
   const mockOrdersService = {
     expireAwaitingPaymentOrders: jest.fn(),
+    // KAN-254: a logica de auto-confirmacao saiu do scheduler e virou
+    // `OrdersService.autoConfirmExpiredDeliveries()`. O scheduler hoje so
+    // delega — por isso estes mocks.
+    autoConfirmExpiredDeliveries: jest.fn().mockResolvedValue(0),
+    retryFailedSettlements: jest.fn().mockResolvedValue(0),
   };
 
   const mockOrdersRepo = {
@@ -39,75 +44,38 @@ describe('DeliveryConfirmationScheduler', () => {
   });
 
   // ─── autoConfirmExpiredDeliveries ───────────────────────────
+  //
+  // KAN-254: estes testes exercitavam a implementacao ANTIGA, quando o proprio
+  // scheduler montava a query e salvava os pedidos. Essa logica migrou para
+  // `OrdersService.autoConfirmExpiredDeliveries()` e o scheduler virou um
+  // delegador fino — os testes ficaram batendo em `ordersRepo.save`, que nunca
+  // mais e chamado aqui. Reescritos no mesmo padrao ja usado por
+  // `expireAwaitingPaymentOrders` logo abaixo: verificar a delegacao e a
+  // resiliencia a erro. A regra de negocio em si pertence ao spec do
+  // OrdersService.
   describe('autoConfirmExpiredDeliveries', () => {
-    it('should auto-confirm expired deliveries (set customerConfirmedAt)', async () => {
-      const order = { id: 'order-1', customerConfirmedAt: null };
-      const mockQb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([order]),
-      };
-      mockOrdersRepo.createQueryBuilder.mockReturnValue(mockQb);
+    it('should delegate to OrdersService', async () => {
+      ordersService.autoConfirmExpiredDeliveries.mockResolvedValue(3);
 
       await (scheduler as any).autoConfirmExpiredDeliveries();
 
-      expect(order.customerConfirmedAt).toBeInstanceOf(Date);
-      expect(ordersRepo.save).toHaveBeenCalledWith(order);
+      expect(ordersService.autoConfirmExpiredDeliveries).toHaveBeenCalled();
     });
 
-    it('should process multiple expired deliveries', async () => {
-      const orders = [
-        { id: 'o1', customerConfirmedAt: null },
-        { id: 'o2', customerConfirmedAt: null },
-        { id: 'o3', customerConfirmedAt: null },
-      ];
-      const mockQb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue(orders),
-      };
-      mockOrdersRepo.createQueryBuilder.mockReturnValue(mockQb);
-
-      await (scheduler as any).autoConfirmExpiredDeliveries();
-
-      expect(ordersRepo.save).toHaveBeenCalledTimes(3);
-    });
-
-    it('should continue processing even if one order fails', async () => {
-      const orders = [
-        { id: 'o1', customerConfirmedAt: null },
-        { id: 'o2', customerConfirmedAt: null },
-      ];
-      const mockQb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue(orders),
-      };
-      mockOrdersRepo.createQueryBuilder.mockReturnValue(mockQb);
-      ordersRepo.save
-        .mockRejectedValueOnce(new Error('fail'))
-        .mockResolvedValueOnce(orders[1]);
-
-      await (scheduler as any).autoConfirmExpiredDeliveries();
-
-      expect(ordersRepo.save).toHaveBeenCalledTimes(2);
-    });
-
-    it('should do nothing when no expired deliveries', async () => {
-      const mockQb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([]),
-      };
-      mockOrdersRepo.createQueryBuilder.mockReturnValue(mockQb);
+    it('should not touch the orders repository directly', async () => {
+      ordersService.autoConfirmExpiredDeliveries.mockResolvedValue(2);
 
       await (scheduler as any).autoConfirmExpiredDeliveries();
 
       expect(ordersRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('should swallow errors so the interval keeps running', async () => {
+      ordersService.autoConfirmExpiredDeliveries.mockRejectedValue(new Error('db error'));
+
+      await expect(
+        (scheduler as any).autoConfirmExpiredDeliveries(),
+      ).resolves.not.toThrow();
     });
   });
 

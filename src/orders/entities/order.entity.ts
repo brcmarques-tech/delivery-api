@@ -8,6 +8,7 @@ import {
   OneToOne,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { OrderStatus } from '../../common/enums';
 import { AppUser } from '../../users/entities/app-user.entity';
@@ -28,6 +29,10 @@ export class Order {
   @Column({ unique: true })
   orderNumber: string;
 
+  // Perf (F5): status e o filtro mais quente da tabela — availableDeliveries
+  // (READY), schedulers de expiracao/auto-confirmacao e o painel filtram por ele.
+  // Sem indice era sequential scan crescendo com o volume de pedidos.
+  @Index()
   @Field(() => OrderStatus)
   @Column({ type: 'enum', enum: OrderStatus, default: OrderStatus.PENDING })
   status: OrderStatus;
@@ -93,10 +98,12 @@ export class Order {
   @Column('decimal', { precision: 10, scale: 7, nullable: true })
   deliveryLongitude: number;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => AppUser)
   @ManyToOne(() => AppUser, (user) => user.orders)
   customer: AppUser;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store)
   store: Store;
@@ -117,6 +124,7 @@ export class Order {
   @Column('decimal', { precision: 10, scale: 2, nullable: true })
   discount: number;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Coupon, { nullable: true })
   @ManyToOne(() => Coupon, { nullable: true })
   coupon: Coupon;
@@ -180,6 +188,43 @@ export class Order {
   @Field()
   @Column({ default: false })
   isSettled: boolean;
+
+  // Registra COMO o pedido foi liquidado. Antes isso era inferido de
+  // `capturedAt` — premissa falsa: no caminho do antifraude (PAYMENT_REVIEW
+  // aprovado no painel) o Pagar.me captura sozinho e grava `capturedAt` SEM
+  // nenhum split, e o repasse sai depois por /transfers manual. Na hora do
+  // estorno/chargeback o codigo via `capturedAt` e presumia "split reverte
+  // sozinho", entao NAO revertia os repasses: a plataforma devolvia ao cliente
+  // e perdia tambem o valor ja transferido a vendedor e entregador.
+  @Column({ default: false })
+  settledViaSplit: boolean;
+
+  // Quem JA recebeu, por parte. O booleano `isSettled` sozinho nao distinguia
+  // "nada saiu" de "metade saiu": bastava uma das duas transferencias falhar
+  // para ele voltar a false, mesmo com a outra ja efetivada. Isso fazia o
+  // chargeback pular a reversao do que ja tinha saido (prejuizo direto da
+  // plataforma) e o retry re-enviar a transferencia que ja tinha dado certo.
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  vendorSettledAt: Date;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  delivererSettledAt: Date;
+
+  // Foto do valor que o cliente JA pagou/autorizou online, tirada no PRIMEIRO
+  // ajuste de peso (adjustItemWeight e o unico lugar que muda `total` depois da
+  // criacao — depois do primeiro ajuste o `total` deixa de dizer quanto foi
+  // cobrado). Null = pedido nunca ajustado, ou pago na entrega.
+  // E o teto da captura no cartao e a referencia do reembolso parcial no PIX.
+  @Field(() => Number, { nullable: true })
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  onlinePaidTotal: number | null;
+
+  // Guarda de idempotencia do reembolso parcial de peso (pago > total final).
+  // Mesmo papel dos vendorSettledAt/delivererSettledAt para as transferencias.
+  @Column({ type: 'timestamp', nullable: true })
+  overpaidRefundedAt: Date | null;
 
   @Column({ default: false })
   couponCredited: boolean;

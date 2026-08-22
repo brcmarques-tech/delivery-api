@@ -26,6 +26,7 @@ import { VerificationService } from '../stores/verification.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { MailService } from '../mail/mail.service';
 import { OrderStatus } from '../common/enums';
+import { businessClock } from '../common/utils/business-time';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 
 type OnOrderReadyCallback = (order: Order) => void;
@@ -110,17 +111,33 @@ export class OrdersService {
     const store = await this.storesService.findById(input.storeId);
     const isPickup = input.isPickup || false;
 
+    // BUGFIX: so `isOpen` era checado. Loja DESATIVADA pela plataforma seguia
+    // aceitando pedido por link direto — o pedido entrava e era roteado para uma
+    // loja que nao deveria mais operar.
+    if (!store.isActive) {
+      throw new BadRequestException('Esta loja nao esta disponivel no momento');
+    }
+
     if (!store.isOpen) {
       throw new BadRequestException('Esta loja esta fechada no momento');
     }
 
     if (store.deliveryStartTime && store.deliveryEndTime) {
-      const now = new Date();
-      const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      if (
-        currentTime < store.deliveryStartTime ||
-        currentTime > store.deliveryEndTime
-      ) {
+      // BUGFIX: usava now.getHours() — em producao o processo roda em UTC
+      // (proposital), entao comparava 3h adiantado com o horario de parede que
+      // o vendedor cadastrou. Loja 08:00-18:00 so aceitava pedido das 05:00 as
+      // 15:00 BRT e recusava tudo no pico. Ver common/utils/business-time.ts.
+      const currentTime = businessClock();
+      // Trata janelas que cruzam a meia-noite (ex.: 18:00 as 02:00). Antes a
+      // comparação simples rejeitava o dia inteiro nesse caso, e a loja nunca
+      // recebia pedido.
+      const start = store.deliveryStartTime;
+      const end = store.deliveryEndTime;
+      const withinWindow =
+        start <= end
+          ? currentTime >= start && currentTime <= end
+          : currentTime >= start || currentTime <= end;
+      if (!withinWindow) {
         throw new BadRequestException(
           `Esta loja so aceita pedidos das ${store.deliveryStartTime} as ${store.deliveryEndTime}`,
         );
@@ -136,6 +153,19 @@ export class OrdersService {
 
     for (const itemInput of input.items) {
       const product = await this.productsService.findById(itemInput.productId);
+      // C3: o produto TEM que ser da loja do pedido e estar disponível. Antes o
+      // pedido aceitava produto de outra loja (preço/comissão calculados contra a
+      // loja errada, corrompendo settlement) ou produto oculto/inativo.
+      if (product.store?.id !== input.storeId) {
+        throw new BadRequestException(
+          `O produto "${product.name}" nao pertence a esta loja.`,
+        );
+      }
+      if (!product.isActive || !product.isAvailable) {
+        throw new BadRequestException(
+          `O produto "${product.name}" nao esta disponivel no momento.`,
+        );
+      }
       const unitPrice = Number(product.promotionalPrice || product.price);
 
       let totalPrice: number;
@@ -143,7 +173,19 @@ export class OrdersService {
       let weightGrams: number | undefined;
 
       if (product.isVariableWeight && itemInput.weightGrams) {
-        totalPrice = (unitPrice * itemInput.weightGrams) / 1000;
+        // Arredondar em CENTAVOS aqui e obrigatorio. A coluna e decimal(10,2),
+        // mas a pre-autorizacao usa o objeto EM MEMORIA (nao arredondado) e a
+        // captura usa o pedido relido do banco (arredondado pelo Postgres). Os
+        // dois arredondam de formas diferentes: Math.round opera sobre o binario
+        // IEEE-754 e o Postgres sobre o decimal exato. Com R$ 0,29/kg e 500 g,
+        // 0.145 * 100 da 14.499999999999998 -> a pre-autorizacao sai 14, o banco
+        // grava 0.15 e a captura pede 15 sobre uma autorizacao de 14: o Pagar.me
+        // recusa por valor acima do autorizado. O pedido ficava COMPLETED sem
+        // captura, com retryFailedSettlements repetindo o mesmo calculo errado a
+        // cada 60s por 48h — vendedor e entregador nunca recebiam por uma
+        // entrega ja feita.
+        totalPrice =
+          Math.round((unitPrice * itemInput.weightGrams) / 10) / 100;
         quantity = 1;
         weightGrams = itemInput.weightGrams;
       } else {
@@ -192,7 +234,7 @@ export class OrdersService {
 
     let deliveryFee = 0;
 
-    if (!isPickup && input.deliveryLatitude && input.deliveryLongitude) {
+    if (!isPickup) {
       const storeFreeDelivery = store.freeDelivery;
       const freeAbove = store.freeDeliveryAbove
         ? Number(store.freeDeliveryAbove)
@@ -200,7 +242,7 @@ export class OrdersService {
 
       if (storeFreeDelivery || (freeAbove && subtotal >= freeAbove)) {
         deliveryFee = 0;
-      } else {
+      } else if (input.deliveryLatitude && input.deliveryLongitude) {
         const pricePerKm =
           await this.platformConfigService.getDeliveryPricePerKm();
         const basePrice =
@@ -220,6 +262,13 @@ export class OrdersService {
         const distanceKm = R * c;
         deliveryFee =
           Math.round((basePrice + distanceKm * pricePerKm) * 100) / 100;
+      } else {
+        // C2: pedido de entrega SEM coordenadas (ex.: o checkout do storefront
+        // não envia lat/long) não conseguia calcular a distância e caía em frete
+        // 0 — entrega grátis por omissão, com o entregador do app trabalhando de
+        // graça. Cai no frete FIXO configurado pela própria loja (store.deliveryFee)
+        // como piso, em vez de zerar silenciosamente.
+        deliveryFee = Number(store.deliveryFee) || 0;
       }
     }
 
@@ -324,6 +373,12 @@ export class OrdersService {
           couponCode,
           discount,
           coupon: couponEntity,
+          // KAN-234 + cupom multi-uso: `couponCredited` = "o uso deste cupom ja
+          // foi contabilizado para ESTE pedido". Agora a reserva acontece na
+          // criacao para TODOS os metodos (bloco abaixo), entao a flag ja nasce
+          // true havendo cupom. O decremento no cancelamento/expiracao se apoia
+          // nela para devolver o uso.
+          couponCredited: !!couponEntity,
           status: needsPayment
             ? OrderStatus.AWAITING_PAYMENT
             : OrderStatus.PENDING,
@@ -331,29 +386,45 @@ export class OrdersService {
 
         const saved = await manager.getRepository(Order).save(order);
 
-        // Atomic stock decrement with DB-level check to prevent overselling
+        // Atomic stock decrement with DB-level check to prevent overselling.
+        // ANTES: o decremento só rodava quando a leitura em memória mostrava
+        // `stock > 0`. Um produto que já tinha chegado a 0 (leitura obsoleta ou
+        // esgotado por outra compra) caía FORA do if e o pedido passava sem
+        // decrementar → oversell ilimitado a partir do zero. `stock` é sempre
+        // número (coluna default 0, não-nulável), então o gate agora é só o
+        // `WHERE stock >= $1` do próprio UPDATE — mesma semântica do
+        // productsService.decrementStock, inclusive marcando isAvailable=false
+        // ao zerar.
         for (const item of items) {
-          if (
-            item.product.stock !== null &&
-            item.product.stock !== undefined &&
-            item.product.stock > 0
-          ) {
-            const result = await manager.query(
-              `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING stock`,
-              [item.quantity, item.product.id],
+          const result = await manager.query(
+            `UPDATE products
+                SET stock = stock - $1,
+                    "isAvailable" = CASE WHEN stock - $1 <= 0 THEN false ELSE "isAvailable" END
+              WHERE id = $2 AND stock >= $1
+              RETURNING stock`,
+            [item.quantity, item.product.id],
+          );
+          if (!result || result.length === 0) {
+            throw new BadRequestException(
+              `Estoque insuficiente para "${item.product.name}". Tente novamente.`,
             );
-            if (!result || result.length === 0) {
-              throw new BadRequestException(
-                `Estoque insuficiente para "${item.product.name}". Tente novamente.`,
-              );
-            }
           }
         }
 
-        // Coupon usage: only increment for non-payment orders (ON_DELIVERY).
-        // For online payments, increment after payment is confirmed (handleOrderPaid webhook).
-        if (couponEntity && !needsPayment) {
-          await this.couponsService.incrementUsage(couponEntity.id);
+        // Cupom multi-uso (BUGFIX): reserva o slot do cupom AQUI, na criacao,
+        // dentro da transacao — para TODOS os metodos de pagamento. Antes, o
+        // pagamento online so incrementava no webhook (minutos/horas depois), e
+        // nesse intervalo qualquer numero de clientes criava pedidos que passavam
+        // no check de maxUses e TODOS ganhavam o desconto de um cupom de uso
+        // unico. A reserva e atomica-condicional: se o cupom esgotou entre a
+        // validacao e aqui, aborta a transacao (o pedido nao nasce). Os fluxos de
+        // queda (expira/cancela/rejeita) devolvem via decrementUsage, guardados
+        // por couponCredited — inclusive a expiracao de AWAITING_PAYMENT.
+        if (couponEntity) {
+          const reservado = await this.couponsService.incrementUsage(couponEntity.id, manager);
+          if (!reservado) {
+            throw new BadRequestException('Este cupom atingiu o limite de usos.');
+          }
         }
 
         return saved;
@@ -497,8 +568,12 @@ export class OrdersService {
       this.whatsAppService.sendText(savedOrder.customer.phone, msg).catch(() => {});
     }
 
-    this.pubSub.publish('orderCreated', { orderCreated: savedOrder });
-    this.pubSub.publish('orderUpdated', { orderUpdated: savedOrder });
+    // Publica o pedido COMPLETO (store.owner/customer/delivery.deliverer) para o
+    // filtro de ownership das subscriptions decidir quem é parte, e para os
+    // clientes selecionarem campos aninhados sem 500.
+    const fullNew = await this.findById(savedOrder.id);
+    this.pubSub.publish('orderCreated', { orderCreated: fullNew });
+    this.pubSub.publish('orderUpdated', { orderUpdated: fullNew });
 
     return savedOrder;
   }
@@ -532,11 +607,17 @@ export class OrdersService {
     });
   }
 
-  async findByCustomer(customerId: string): Promise<Order[]> {
+  // Perf (F6): paginado (limit/offset). O cap de 500 vira teto do limit.
+  async findByCustomer(customerId: string, limit = 20, offset = 0): Promise<Order[]> {
     return this.ordersRepository.find({
       where: { customer: { id: customerId } },
-      relations: ['store', 'items', 'items.product', 'delivery'],
+      // 'customer' é @Field(() => AppUser) NÃO-nulável; sem a relation, um
+      // `myOrders { customer { ... } }` 500a a lista toda.
+      relations: ['store', 'items', 'items.product', 'delivery', 'customer'],
       order: { createdAt: 'DESC' },
+      // Error#3: cap de segurança contra carga ilimitada (ver findByStore).
+      take: Math.min(Math.max(limit ?? 20, 1), 500),
+      skip: Math.max(offset ?? 0, 0),
     });
   }
 
@@ -551,6 +632,27 @@ export class OrdersService {
         'delivery',
         'delivery.deliverer',
       ],
+      order: { createdAt: 'DESC' },
+      // Error#3: cap de segurança. Sem limite, uma loja com histórico grande
+      // carregava TODOS os pedidos com relações profundas a cada abertura do painel
+      // (e a cada mensagem no agente n8n) → pico de memória e query lenta. 500 mais
+      // recentes cobre os painéis reais (que filtram por status/data).
+      take: 500,
+    });
+  }
+
+  /**
+   * BUGFIX (resumo diario): o dailySummary usava findByStore (cap dos 500 mais
+   * recentes) e filtrava "hoje" EM MEMORIA. Numa loja que passa de 500 pedidos
+   * desde a abertura, os primeiros do dia caem fora do cap — o resumo reporta
+   * menos pedidos e MENOS receita do que o real (pior justamente nos dias mais
+   * movimentados). Filtrando por data no SQL, o resultado independe do volume
+   * historico. `since` vem do fuso do negocio (businessTodayDate).
+   */
+  async findByStoreSince(storeId: string, since: Date): Promise<Order[]> {
+    return this.ordersRepository.find({
+      where: { store: { id: storeId }, createdAt: MoreThanOrEqual(since) },
+      relations: ['store', 'customer', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
       order: { createdAt: 'DESC' },
     });
   }
@@ -679,6 +781,10 @@ export class OrdersService {
       .leftJoin('order.delivery', 'delivery')
       .where('order.status = :status', { status: OrderStatus.READY })
       .andWhere('(delivery.id IS NULL OR delivery.delivererId IS NULL)')
+      // Pedidos de retirada (pickup) não precisam de entregador — não devem
+      // aparecer na lista de entregas disponíveis (senão um entregador aceita
+      // e ganha um payout de taxa que nunca foi cobrada do cliente).
+      .andWhere('order.isPickup = false')
       .orderBy('order.createdAt', 'ASC')
       .getMany();
     return orders;
@@ -696,6 +802,44 @@ export class OrdersService {
       ],
       order: { createdAt: 'DESC' },
     });
+  }
+
+  // KAN-292: versao paginada + filtro (status/busca) do painel admin. Antes o
+  // findAllAdmin acima trazia a tabela inteira com 6 relations, sob polling.
+  async findAllAdminPaginated(
+    status: string | null,
+    search: string | null,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: Order[]; total: number; hasMore: boolean }> {
+    const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const skip = Math.max(Number(offset) || 0, 0);
+    const qb = this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('order.items', 'items')
+      .leftJoinAndSelect('items.product', 'product')
+      .leftJoinAndSelect('order.delivery', 'delivery')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .orderBy('order.createdAt', 'DESC')
+      .addOrderBy('order.id', 'DESC');
+
+    if (status) {
+      qb.andWhere('order.status = :status', { status });
+    }
+    if (search && search.trim()) {
+      const like = `%${search.trim()}%`;
+      qb.andWhere(
+        '(order.orderNumber ILIKE :like OR customer.name ILIKE :like OR store.name ILIKE :like)',
+        { like },
+      );
+    }
+
+    // take/skip com leftJoinAndSelect de relacao to-many: o TypeORM pagina pelos
+    // ids do pedido (subquery distinta), entao o limite conta PEDIDOS, nao linhas.
+    const [items, total] = await qb.skip(skip).take(take).getManyAndCount();
+    return { items, total, hasMore: skip + items.length < total };
   }
 
   async totalCount(): Promise<number> {
@@ -816,9 +960,36 @@ export class OrdersService {
       throw new BadRequestException('Recebimento ja confirmado');
     }
 
+    // R#7: claim atômico. ANTES o check de `customerConfirmedAt` e o set eram
+    // passos separados; a confirmação do cliente podia rodar junto com a
+    // auto-confirmação do scheduler (10min) e ambas passavam, chamando
+    // completeOrderWithPayment 2x (o dinheiro é seguro — aquele método tem guard
+    // atômico de status — mas gerava "Pedido finalizado" duplicado e trabalho
+    // redundante). Só segue quem gravar a data.
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "customerConfirmedAt" = NOW() WHERE id = $1 AND "customerConfirmedAt" IS NULL RETURNING id`,
+      [order.id],
+    );
+    if (!claim || claim.length === 0) {
+      throw new BadRequestException('Recebimento ja confirmado');
+    }
     order.customerConfirmedAt = new Date();
-    await this.ordersRepository.save(order);
     return this.completeOrderWithPayment(order);
+  }
+
+  /**
+   * Grava a confirmacao de recebimento de forma atomica e diz se ESTE chamador
+   * foi quem a gravou. Usado pelos caminhos automaticos (proximidade por GPS e
+   * expiracao dos 10 min), que precisam persistir a coluna — `customerConfirmedAt`
+   * e a prova de recebimento que autoriza o repasse no modelo de custodia.
+   */
+  async claimCustomerConfirmation(orderId: string): Promise<boolean> {
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "customerConfirmedAt" = NOW()
+        WHERE id = $1 AND "customerConfirmedAt" IS NULL RETURNING id`,
+      [orderId],
+    );
+    return !!claim && claim.length > 0;
   }
 
   // ─── Cliente nega recebimento → DISPUTED ─────────────────────────────
@@ -907,9 +1078,14 @@ export class OrdersService {
     if (order.status !== OrderStatus.DISPUTED) {
       throw new BadRequestException('Este pedido nao esta em disputa');
     }
-    order.disputeReason = undefined as any;
-    order.disputedAt = undefined as any;
-    await this.ordersRepository.save(order);
+    // BUGFIX: era `undefined as any` + save() — o TypeORM IGNORA propriedades
+    // undefined, entao as colunas mantinham o valor antigo e o pedido seguia
+    // marcado como disputado apos a disputa ser cancelada (relatorios e telas
+    // de disputa continuavam listando). `null` grava NULL de verdade.
+    await this.ordersRepository.update(order.id, {
+      disputeReason: null,
+      disputedAt: null,
+    } as any);
     return this.updateStatus(order.id, OrderStatus.COMPLETED);
   }
 
@@ -931,8 +1107,15 @@ export class OrdersService {
     order.rejectionReason = reason;
     await this.ordersRepository.save(order);
 
-    // Cancelar pré-autorização ou estornar PIX
-    await this.handlePaymentCancellation(order);
+    // Cancelar pré-autorização ou estornar PIX. Quando há estorno, ele grava o
+    // status terminal no próprio claim atômico (anti-estorno-duplo) e já devolve
+    // estoque/cupom — chamar `updateStatus` depois disso lançaria, e antes era
+    // exatamente isso que fazia o estoque sumir.
+    const jaTerminou = await this.handlePaymentCancellation(
+      order,
+      OrderStatus.REJECTED,
+    );
+    if (jaTerminou) return this.findById(order.id);
 
     return this.updateStatus(order.id, OrderStatus.REJECTED);
   }
@@ -970,9 +1153,47 @@ export class OrdersService {
     order.rejectionReason = reason;
     await this.ordersRepository.save(order);
 
-    await this.handlePaymentCancellation(order);
+    const jaTerminouVendor = await this.handlePaymentCancellation(
+      order,
+      OrderStatus.CANCELLED,
+    );
+    if (jaTerminouVendor) return this.findById(order.id);
 
     return this.updateStatus(order.id, OrderStatus.CANCELLED);
+  }
+
+  // ─── Cancelar/rejeitar vindo do agente n8n (WhatsApp) ─────────────────
+  // BUGFIX (dinheiro): o endpoint POST /n8n/orders/status chamava updateStatus
+  // cru para CANCELLED/REJECTED — que so devolve estoque/cupom e NAO estorna
+  // nem cancela a pre-autorizacao. Um pedido ja pago (PIX ou cartao capturado)
+  // rejeitado/cancelado pelo atendimento deixava o cliente SEM o dinheiro de
+  // volta (plataforma retendo o valor sem contrapartida). Aqui roteamos para os
+  // mesmos metodos da UI (rejectOrder/vendorCancelOrder/cancelByCustomer), que
+  // passam por handlePaymentCancellation e estornam, e ainda aplicam as guardas
+  // de negocio (status cancelavel, sem entregador ja designado, etc). A posse ja
+  // foi validada no controller (storeId/customerId conferem com o pedido).
+  async cancelOrRejectFromAgent(
+    orderId: string,
+    terminal: OrderStatus,
+    by: { storeId?: string; customerId?: string },
+    reason = 'Cancelado pelo atendimento',
+  ): Promise<Order> {
+    const order = await this.findById(orderId);
+    if (by.storeId) {
+      const ownerId = order.store?.owner?.id;
+      if (!ownerId) {
+        throw new BadRequestException(
+          'Loja sem responsavel para cancelar o pedido',
+        );
+      }
+      return terminal === OrderStatus.REJECTED
+        ? this.rejectOrder(order.id, ownerId, reason)
+        : this.vendorCancelOrder(order.id, ownerId, reason);
+    }
+    if (by.customerId) {
+      return this.cancelByCustomer(order.id, by.customerId);
+    }
+    throw new BadRequestException('Informe storeId ou customerId');
   }
 
   // ─── Vendedor confirma coleta pelo entregador ─────────────────────────
@@ -995,6 +1216,22 @@ export class OrdersService {
     if (!allowed.includes(order.status)) {
       throw new BadRequestException(
         'Pedido precisa estar pronto ou coletado para confirmar coleta',
+      );
+    }
+
+    // BUGFIX: nao havia checagem de que existe entregador atribuido. Confirmar a
+    // coleta a partir de READY sem ninguem designado criava um BECO SEM SAIDA:
+    // o pedido some de findPendingForDelivery (que so lista READY), entao nenhum
+    // entregador pode mais aceita-lo; 5 min depois o scheduler o empurra para
+    // DELIVERING, e de DELIVERING so `confirmDelivery` sai — o que exige uma
+    // entrega com entregador. Pedido travado para sempre com o dinheiro do
+    // cliente retido.
+    //
+    // Confirmar coleta E confirmar a ENTREGA DO PEDIDO A UM ENTREGADOR — exigir
+    // que ele exista e aplicar a regra, nao afrouxa-la.
+    if (!order.delivery?.deliverer) {
+      throw new BadRequestException(
+        'Nenhum entregador aceitou este pedido ainda. Aguarde a atribuicao para confirmar a coleta.',
       );
     }
 
@@ -1056,12 +1293,24 @@ export class OrdersService {
         order.status = OrderStatus.CANCELLED;
         await this.ordersRepository.save(order);
       }
-      // Restore stock (refundOrder doesn't handle this)
-      for (const item of order.items) {
-        if (item.product) {
-          await this.productsService.restoreStock(
-            item.product.id,
-            item.quantity,
+      // O estoque NAO volta aqui. DISPUTED so e alcancavel a partir de
+      // DELIVERER_CONFIRMED_DELIVERY ou COMPLETED (ver STATUS_TRANSITIONS): a
+      // mercadoria ja saiu fisicamente da loja e nao esta na prateleira, esteja
+      // ela com o cliente ou perdida no caminho. Restaurar criava estoque
+      // fantasma e oversell na sequencia — um pedido de 3 unidades disputado
+      // devolvia 3 unidades que nao existem. Os webhooks de estorno e chargeback
+      // ja aplicam essa mesma regra com o guard `!wasCompleted`
+      // (payments.service.ts), e este caminho era a excecao incoerente.
+      // Devolve o uso do cupom (mesmo motivo do refundOrder: o refund seta
+      // CANCELLED direto, pulando o updateStatus que decrementa). Idempotente.
+      if (order.coupon?.id && order.couponCredited) {
+        try {
+          await this.couponsService.decrementUsage(order.coupon.id);
+          await this.ordersRepository.update(order.id, { couponCredited: false });
+        } catch (err: any) {
+          console.error(
+            `Failed to decrement coupon usage for order ${order.id}:`,
+            err?.message,
           );
         }
       }
@@ -1109,14 +1358,18 @@ export class OrdersService {
     }
 
     // Cancelar pré-autorização ou estornar pagamento
-    await this.handlePaymentCancellation(order);
-
-    // updateStatus already restores stock for CANCELLED
-    const saved = await this.updateStatus(
-      order.id,
+    const jaTerminouCliente = await this.handlePaymentCancellation(
+      order,
       OrderStatus.CANCELLED,
-      order.customer,
     );
+
+    const saved = jaTerminouCliente
+      ? await this.findById(order.id)
+      : await this.updateStatus(
+          order.id,
+          OrderStatus.CANCELLED,
+          order.customer,
+        );
 
     // Notificar vendedor
     if (order.store?.owner?.id) {
@@ -1139,7 +1392,47 @@ export class OrdersService {
 
   // ─── Helper: cancelar pagamento (pré-auth ou estorno) ─────────────────
 
-  private async handlePaymentCancellation(order: Order): Promise<void> {
+  /**
+   * Devolve estoque e uso de cupom de um pedido que foi para um estado terminal.
+   *
+   * Esta lógica vivia SÓ dentro do `updateStatus`. Quando o estorno passou a
+   * gravar o status terminal por conta própria (claim atômico anti-estorno-duplo),
+   * o `updateStatus` seguinte passou a lançar — e levava junto a restauração de
+   * estoque. Na prática: TODO cancelamento de pedido pago online perdia o estoque
+   * para sempre, e no `expirePendingOrders` o erro ainda era engolido pelo
+   * try/catch, sumindo em silêncio e sem re-tentativa.
+   *
+   * Idempotente: `couponCredited` é zerado ao devolver, e o chamador só invoca
+   * este método quando GANHOU o claim da transição.
+   */
+  private async restoreStockAndCoupon(order: Order): Promise<void> {
+    for (const item of order.items || []) {
+      if (item.product) {
+        await this.productsService.restoreStock(item.product.id, item.quantity);
+      }
+    }
+    if (order.coupon?.id && order.couponCredited) {
+      try {
+        await this.couponsService.decrementUsage(order.coupon.id);
+        await this.ordersRepository.update(order.id, { couponCredited: false });
+      } catch (err: any) {
+        console.error(
+          `Failed to decrement coupon usage for order ${order.id}:`,
+          err?.message,
+        );
+      }
+    }
+  }
+
+  /**
+   * @returns `true` se o estorno JÁ gravou o status terminal (e portanto já
+   * devolveu estoque/cupom) — nesse caso o chamador NÃO deve chamar
+   * `updateStatus`, que lançaria a partir de um estado sem transições.
+   */
+  private async handlePaymentCancellation(
+    order: Order,
+    statusFinal: OrderStatus = OrderStatus.CANCELLED,
+  ): Promise<boolean> {
     // Cartão com pré-auth não capturada: cancela pré-auth (libera limite)
     if (order.preAuthChargeId && !order.capturedAt) {
       try {
@@ -1147,17 +1440,12 @@ export class OrdersService {
       } catch (err: any) {
         console.error('Cancel pre-auth failed:', err?.message);
       }
-      return;
+      return false; // nao houve claim de status: o chamador segue pelo updateStatus
     }
 
     // Cartão já capturado (com split) ou PIX/Checkout: estorno
     if (order.preAuthChargeId && order.capturedAt) {
-      try {
-        await this.paymentsService.refundOrder(order.id);
-      } catch (err: any) {
-        console.error('Refund captured charge failed:', err?.message);
-      }
-      return;
+      return this.estornarEDecidir(order, statusFinal, 'Refund captured charge');
     }
 
     // PIX ou Checkout já pago (sem pré-auth): estorno
@@ -1165,12 +1453,49 @@ export class OrdersService {
       order.mpPreferenceId &&
       (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD')
     ) {
-      try {
-        await this.paymentsService.refundOrder(order.id);
-      } catch (err: any) {
-        console.error('Refund on cancel failed:', err?.message);
-      }
+      return this.estornarEDecidir(order, statusFinal, 'Refund on cancel');
     }
+    return false;
+  }
+
+  /**
+   * Tenta o estorno e decide o que fazer olhando o ESTADO REAL do pedido no
+   * banco — não o sucesso da chamada externa.
+   *
+   * Isto é o ponto sutil do bug: `refundOrder` grava o status terminal no claim
+   * atômico ANTES de chamar o Pagar.me (de propósito, para impedir estorno
+   * duplo). Se a chamada externa falhar depois disso, a exceção sobe, mas o
+   * pedido JÁ ESTÁ terminal no banco. Tratar isso como "não terminou" fazia o
+   * chamador seguir para `updateStatus`, que lançava por falta de transição — e
+   * levava junto a devolução de estoque e cupom. Era o caminho mais comum de
+   * perda de estoque, e no `expirePendingOrders` sumia em silêncio.
+   */
+  private async estornarEDecidir(
+    order: Order,
+    statusFinal: OrderStatus,
+    rotuloLog: string,
+  ): Promise<boolean> {
+    const TERMINAIS = [
+      OrderStatus.CANCELLED,
+      OrderStatus.REJECTED,
+      OrderStatus.EXPIRED,
+    ];
+    try {
+      await this.paymentsService.refundOrder(order.id, statusFinal);
+    } catch (err: any) {
+      console.error(`${rotuloLog} failed:`, err?.message);
+    }
+
+    const [linha] = await this.ordersRepository.manager.query(
+      `SELECT status FROM orders WHERE id = $1`,
+      [order.id],
+    );
+    const agoraTerminal = TERMINAIS.includes(linha?.status as OrderStatus);
+    if (!agoraTerminal) return false; // o claim não aconteceu: segue pelo updateStatus
+
+    order.status = linha.status;
+    await this.restoreStockAndCoupon(order);
+    return true;
   }
 
   // ─── Expirar pedidos PENDING sem resposta do vendedor (10 min) ────────
@@ -1198,9 +1523,13 @@ export class OrdersService {
 
     for (const order of expiredOrders) {
       try {
-        await this.handlePaymentCancellation(order);
-        // updateStatus handles stock restoration for EXPIRED status
-        await this.updateStatus(order.id, OrderStatus.EXPIRED);
+        const jaTerminouExpiry = await this.handlePaymentCancellation(
+          order,
+          OrderStatus.EXPIRED,
+        );
+        if (!jaTerminouExpiry) {
+          await this.updateStatus(order.id, OrderStatus.EXPIRED);
+        }
 
         // Notify customer
         if (order.customer?.id) {
@@ -1241,6 +1570,11 @@ export class OrdersService {
         statuses: [OrderStatus.VENDOR_CONFIRMED_PICKUP, OrderStatus.PICKED_UP],
       })
       .andWhere('order.updatedAt <= :fiveMinAgo', { fiveMinAgo })
+      // BUGFIX: sem este filtro, o scheduler empurrava para DELIVERING pedidos
+      // SEM entregador atribuido — e de DELIVERING so sai por confirmDelivery,
+      // que exige entregador. Resultado: beco sem saida. Agora so avanca o que
+      // tem entregador de fato.
+      .andWhere('deliverer.id IS NOT NULL')
       .getMany();
 
     for (const order of stuckOrders) {
@@ -1276,11 +1610,60 @@ export class OrdersService {
 
     for (const order of expiredOrders) {
       try {
-        order.customerConfirmedAt = new Date();
-        await this.ordersRepository.save(order);
-        await this.completeOrderWithPayment(order);
+        // CRITICO: era `order.customerConfirmedAt = ...; save(order)` — um save de
+        // ENTIDADE INTEIRA a partir de um snapshot carregado antes do laco. Se o
+        // cliente abrisse disputa (ou confirmasse) nesse meio-tempo, o save
+        // regravava o status antigo POR CIMA do novo, ressuscitando um estado que
+        // o cliente ja tinha deixado. O confirmReceipt manual ja usava claim
+        // atomico exatamente por isso; este caminho ficou de fora.
+        //
+        // Agora: claim atomico (so confirma se ainda estiver aguardando o cliente)
+        // e releitura fresca antes de finalizar.
+        const claim = await this.ordersRepository.manager.query(
+          `UPDATE orders SET "customerConfirmedAt" = NOW(), "updatedAt" = NOW()
+             WHERE id = $1 AND "customerConfirmedAt" IS NULL AND status = $2
+             RETURNING id`,
+          [order.id, OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
+        );
+        if (!claim || claim.length === 0) continue; // cliente agiu antes: nao mexe
+        const fresh = await this.findById(order.id);
+        await this.completeOrderWithPayment(fresh);
       } catch (err) {
         console.error(`Auto-confirm failed for order ${order.id}:`, err);
+      }
+    }
+
+    // Retirada no local e loja com frota propria terminam em DELIVERED, nao em
+    // DELIVERER_CONFIRMED_DELIVERY (nao existe entregador do app nesses casos).
+    // Sem este segundo bloco, o pedido ficava parado em DELIVERED ate o cliente
+    // abrir o app para confirmar — e se ele nunca abrisse, o dinheiro ficava em
+    // custodia indefinidamente e o lojista nunca recebia por uma venda ja
+    // entregue no balcao. Mesma janela de 10 min e mesmo claim atomico do bloco
+    // acima; o cliente segue sendo avisado no momento da entrega e mantem a
+    // janela de disputa de 48h.
+    const pendentesRetirada = await this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .where('order.status = :status', { status: OrderStatus.DELIVERED })
+      .andWhere('order.updatedAt <= :tenMinAgo', { tenMinAgo })
+      .andWhere('order.customerConfirmedAt IS NULL')
+      .getMany();
+
+    for (const order of pendentesRetirada) {
+      try {
+        const claim = await this.ordersRepository.manager.query(
+          `UPDATE orders SET "customerConfirmedAt" = NOW(), "updatedAt" = NOW()
+             WHERE id = $1 AND "customerConfirmedAt" IS NULL AND status = $2
+             RETURNING id`,
+          [order.id, OrderStatus.DELIVERED],
+        );
+        if (!claim || claim.length === 0) continue;
+        const fresh = await this.findById(order.id);
+        await this.completeOrderWithPayment(fresh);
+      } catch (err) {
+        console.error(`Auto-confirm (retirada) failed for order ${order.id}:`, err);
       }
     }
 
@@ -1300,9 +1683,19 @@ export class OrdersService {
       .andWhere('order.updatedAt <= :tenMinAgo', { tenMinAgo })
       .andWhere('delivery.id IS NULL')
       .andWhere('order.isPickup = false')
+      .andWhere("COALESCE(order.notes, '') NOT LIKE '%[NO_DELIVERER_ALERT]%'")
       .getMany();
 
     for (const order of stuckOrders) {
+      // BUGFIX: nada era gravado apos alertar, entao o mesmo pedido re-casava a
+      // cada tick do scheduler — o vendedor recebia UM PUSH POR MINUTO,
+      // indefinidamente, enquanto ninguem aceitasse a entrega. Marca o pedido
+      // (mesmo padrao append-only do flagSettlementFailure, sem migration) e o
+      // filtro da query acima passa a ignora-lo.
+      await this.ordersRepository.manager.query(
+        `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`,
+        [order.id, '\n[NO_DELIVERER_ALERT]'],
+      );
       if (order.store?.owner?.id) {
         this.notificationsService
           .sendToVendorUser(
@@ -1404,13 +1797,32 @@ export class OrdersService {
       return order;
     }
 
-    // DB-level atomic guard: prevents double settlement via concurrent calls
+    // DB-level atomic guard: prevents double settlement via concurrent calls.
+    //
+    // CRITICO: o guard era apenas `status != COMPLETED`, o que deixava este metodo
+    // finalizar um pedido em QUALQUER outro estado. Os chamadores (scheduler de
+    // auto-confirmacao e automacao por geolocalizacao) trabalham sobre um snapshot
+    // carregado antes do laco: se o cliente abrisse disputa nesse meio-tempo, o
+    // pedido DISPUTED era sobrescrito para COMPLETED e o dinheiro liberado —
+    // apagando a disputa. Idem para um pedido ja CANCELLED/estornado, que era
+    // "ressuscitado" e pago uma segunda vez.
+    //
+    // Agora so aceita as origens legitimas da finalizacao (entrega confirmada
+    // pelo entregador, ou marcada como entregue). A regra de negocio continua a
+    // mesma — apenas deixou de ser possivel pular estados.
     const result = await this.ordersRepository.manager.query(
-      `UPDATE orders SET status = $1, "completedAt" = NOW() WHERE id = $2 AND status != $1 RETURNING id`,
-      [OrderStatus.COMPLETED, order.id],
+      `UPDATE orders SET status = $1, "completedAt" = NOW()
+         WHERE id = $2 AND status IN ($3, $4) RETURNING id`,
+      [
+        OrderStatus.COMPLETED,
+        order.id,
+        OrderStatus.DELIVERER_CONFIRMED_DELIVERY,
+        OrderStatus.DELIVERED,
+      ],
     );
     if (!result || result.length === 0) {
-      // Another call already completed this order
+      // Ja finalizado por outra chamada, ou saiu do estado que permite finalizar
+      // (disputa/cancelamento) — devolve o estado real sem tocar em nada.
       return this.findById(order.id);
     }
 
@@ -1477,14 +1889,73 @@ export class OrdersService {
       throw new BadRequestException('Voce nao pode estornar este pedido');
     }
 
-    const result = await this.paymentsService.refundOrder(orderId);
+    // BUGFIX: nao havia NENHUMA checagem de status. O vendedor conseguia estornar
+    // um pedido que ja estava com o entregador (DELIVERING) ou ate ja concluido —
+    // e o codigo abaixo ainda devolvia ao estoque mercadoria que fisicamente saiu
+    // da loja. Pior: o estorno marca o pedido como CANCELLED, e a entrega ficava
+    // orfa (deliveredAt nulo), travando o entregador.
+    //
+    // Estorno direto do vendedor so faz sentido enquanto ninguem pegou a
+    // mercadoria. Depois disso o caminho correto e a DISPUTA, que ja existe e
+    // sabe reverter repasse e acertar o entregador — a regra nao foi afrouxada,
+    // apenas roteada para o fluxo certo.
+    const estornavelPeloVendedor = [
+      OrderStatus.AWAITING_PAYMENT,
+      OrderStatus.PAYMENT_REVIEW,
+      OrderStatus.PENDING,
+      OrderStatus.ACCEPTED,
+      OrderStatus.PREPARING,
+      OrderStatus.READY,
+    ];
+    // Retry de estorno que FALHOU: o pedido ja esta terminal (o claim do
+    // paymentsService cancelou antes de a chamada externa cair) e carrega o
+    // marcador [REFUND_FAILED]. Sem esta excecao, o vendedor ficava
+    // permanentemente travado: o pedido esta CANCELLED, o cliente sem o
+    // dinheiro, e este guard mandava "abrir disputa" — que nao re-estorna.
+    const retryEstornoFalho =
+      [OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED].includes(order.status) &&
+      (order.notes || '').includes('[REFUND_FAILED');
+    if (!estornavelPeloVendedor.includes(order.status) && !retryEstornoFalho) {
+      throw new BadRequestException(
+        'Este pedido ja saiu para entrega ou foi concluido. Abra uma disputa para resolver o estorno.',
+      );
+    }
+    if (order.delivery?.deliverer && !retryEstornoFalho) {
+      throw new BadRequestException(
+        'Um entregador ja aceitou este pedido. Abra uma disputa para resolver o estorno.',
+      );
+    }
+
+    let result: { success: boolean; message: string };
+    try {
+      result = await this.paymentsService.refundOrder(orderId);
+    } catch (err: any) {
+      // Se o claim cancelou o pedido mas a chamada externa caiu, o estoque e o
+      // cupom precisam voltar MESMO sem estorno — antes o throw abortava aqui e
+      // a mercadoria ficava presa num pedido cancelado. Identificamos esse caso
+      // pelo marcador que o paymentsService grava so quando foi ELE quem
+      // claimou e falhou (claim perdido para outro fluxo nao grava marcador — e
+      // o outro fluxo devolve o estoque por conta propria).
+      if (!retryEstornoFalho) {
+        const [linha] = await this.ordersRepository.manager.query(
+          `SELECT status, notes FROM orders WHERE id = $1`,
+          [orderId],
+        );
+        const terminal = ['CANCELLED', 'REJECTED', 'EXPIRED'].includes(linha?.status);
+        if (terminal && String(linha?.notes || '').includes('[REFUND_FAILED')) {
+          await this.restoreStockAndCoupon(order);
+          const atualizado = await this.findById(orderId);
+          this.pubSub.publish('orderUpdated', { orderUpdated: atualizado });
+        }
+      }
+      throw err;
+    }
     if (!result.success) throw new BadRequestException(result.message);
 
-    // Restore stock
-    for (const item of order.items) {
-      if (item.product) {
-        await this.productsService.restoreStock(item.product.id, item.quantity);
-      }
+    // No retry o estoque/cupom JA voltaram na primeira falha (bloco acima) —
+    // repetir devolveria estoque em dobro.
+    if (!retryEstornoFalho) {
+      await this.restoreStockAndCoupon(order);
     }
 
     const updated = await this.findById(orderId);
@@ -1503,6 +1974,24 @@ export class OrdersService {
     if (!allowed.includes(status)) {
       throw new BadRequestException(
         `Nao pode mudar de ${order.status} para ${status}`,
+      );
+    }
+
+    // R#5: claim ATÔMICO da transição. ANTES a validade era checada contra
+    // STATUS_TRANSITIONS[order.status] em memória e o novo status só era gravado
+    // no fim — dois cancelamentos concorrentes (ex.: cliente cancela + scheduler
+    // expira o mesmo pedido) viam o mesmo `fromStatus`, ambos passavam e cada um
+    // restaurava estoque / decrementava cupom (estoque inflado, cupom decrementado
+    // 2x). Este UPDATE condicional garante que só UM caller efetua a transição —
+    // e portanto os efeitos colaterais abaixo rodam uma única vez.
+    const claimFrom = order.status;
+    const transitionClaim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET status = $2 WHERE id = $1 AND status = $3 RETURNING id`,
+      [id, status, claimFrom],
+    );
+    if (!transitionClaim || transitionClaim.length === 0) {
+      throw new BadRequestException(
+        `Nao pode mudar de ${claimFrom} para ${status}`,
       );
     }
 
@@ -1543,9 +2032,15 @@ export class OrdersService {
         }
       }
       // H2: Decrement coupon usage when order is cancelled/rejected/expired
-      if (order.coupon?.id) {
+      // KAN-234: so decrementa se o uso foi REALMENTE contabilizado para este
+      // pedido. Antes decrementava sempre que houvesse cupom — entao cancelar
+      // um pedido de pagamento online que nunca foi pago (e portanto nunca
+      // incrementou) liberava um uso extra do cupom, furando o limite. A flag
+      // e zerada em seguida para o decremento ser idempotente.
+      if (order.coupon?.id && order.couponCredited) {
         try {
           await this.couponsService.decrementUsage(order.coupon.id);
+          await this.ordersRepository.update(order.id, { couponCredited: false });
         } catch (err: any) {
           console.error(
             `Failed to decrement coupon usage for order ${order.id}:`,
@@ -1712,7 +2207,30 @@ export class OrdersService {
       throw new BadRequestException('Este produto nao e de peso variavel');
     }
 
-    item.totalPrice = (Number(item.unitPrice) * actualWeightGrams) / 1000;
+    // BUGFIX: `actualWeightGrams` chegava sem validacao nenhuma — um valor
+    // negativo virava totalPrice negativo e contaminava subtotal/total/comissao.
+    if (!Number.isFinite(actualWeightGrams) || actualWeightGrams <= 0) {
+      throw new BadRequestException('Peso invalido. Informe um valor maior que zero.');
+    }
+
+    // Foto do valor pago/autorizado ANTES do primeiro ajuste. Este metodo e o
+    // unico que muda `total` depois da criacao, entao no primeiro ajuste o
+    // `total` atual ainda E o valor que o cliente pagou (PIX/link) ou autorizou
+    // (pre-auth do cartao). Sem esta foto, o segundo ajuste em diante nao teria
+    // mais como saber quanto foi cobrado.
+    const pagoOnline = order.paymentMethod !== 'ON_DELIVERY';
+    const tetoPago =
+      pagoOnline
+        ? (order.onlinePaidTotal !== null && order.onlinePaidTotal !== undefined
+            ? Number(order.onlinePaidTotal)
+            : Number(order.total))
+        : null;
+
+    // Mesmo arredondamento em centavos da criacao do pedido: sem ele, o valor em
+    // memoria e o que o Postgres grava em decimal(10,2) podem diferir em 1
+    // centavo, e a captura passa a pedir mais do que foi pre-autorizado.
+    item.totalPrice =
+      Math.round((Number(item.unitPrice) * actualWeightGrams) / 10) / 100;
     item.weightGrams = actualWeightGrams;
     await this.orderItemsRepository.save(item);
 
@@ -1721,14 +2239,47 @@ export class OrdersService {
       (sum, i) => sum + Number(i.totalPrice),
       0,
     );
-    const discount = Number(updatedOrder.discount) || 0;
+    // BUGFIX: o desconto ficava CONGELADO do momento do pedido e era reaplicado
+    // sobre um subtotal novo e menor. Ex.: 2 kg a R$50 = R$100 com cupom fixo de
+    // R$100 (valido, pois o cupom e limitado ao subtotal na criacao); o vendedor
+    // pesa 500 g -> subtotal R$25 -> total = 25 - 100 + frete = NEGATIVO, e
+    // comissao negativa junto. Um total negativo ia direto para a captura no
+    // Pagar.me. Agora o desconto e re-limitado ao novo subtotal (mesma regra do
+    // cupom na criacao: nunca desconta mais do que o valor dos itens).
+    const rawDiscount = Number(updatedOrder.discount) || 0;
+    const discount = Math.min(rawDiscount, subtotal);
+    let baseComissionavel = Math.max(subtotal - discount, 0);
+    updatedOrder.discount = discount;
     updatedOrder.subtotal = subtotal;
-    updatedOrder.total = subtotal - discount + Number(updatedOrder.deliveryFee);
+    let novoTotal = Math.max(
+      baseComissionavel + Number(updatedOrder.deliveryFee),
+      0,
+    );
+
+    // TETO DO PAGAMENTO ONLINE: o total nao pode passar do que o cliente ja
+    // pagou (PIX/link) ou autorizou (pre-auth). Sem isto:
+    //  - cartao: a captura pedia MAIS que a pre-autorizacao -> Pagar.me recusa,
+    //    o retry repete a captura invalida por 48h e vendedor/entregador nunca
+    //    recebem;
+    //  - PIX: os repasses saiam sobre o total novo, maior que o valor em
+    //    custodia -> a plataforma pagava a diferenca do proprio bolso.
+    // O excedente sai da base comissionavel (e do repasse do vendedor), nunca do
+    // frete: e o vendedor quem pesou acima do estimado, o entregador nao tem
+    // parte nisso. Pagamento na entrega nao tem teto — o cliente paga o valor
+    // real na porta.
+    if (tetoPago !== null && novoTotal > tetoPago) {
+      const excedente = novoTotal - tetoPago;
+      novoTotal = tetoPago;
+      baseComissionavel = Math.max(baseComissionavel - excedente, 0);
+    }
+    if (pagoOnline) {
+      updatedOrder.onlinePaidTotal = tetoPago;
+    }
+
+    updatedOrder.total = novoTotal;
     updatedOrder.commissionAmount =
       Math.round(
-        (((subtotal - discount) * Number(updatedOrder.commissionPercent)) /
-          100) *
-          100,
+        ((baseComissionavel * Number(updatedOrder.commissionPercent)) / 100) * 100,
       ) / 100;
     const saved = await this.ordersRepository.save(updatedOrder);
 

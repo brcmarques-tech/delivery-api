@@ -11,7 +11,9 @@ import { StoresModule } from '../stores/stores.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([Product, Store]),
-    HttpModule,
+    // Error#1: timeout p/ o lookup de código de barras (OpenFoodFacts) não pinar
+    // a criação de produto se o serviço externo travar.
+    HttpModule.register({ timeout: 8000 }),
     PlatformConfigModule,
     forwardRef(() => StoresModule),
   ],

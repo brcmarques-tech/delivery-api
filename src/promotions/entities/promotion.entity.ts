@@ -6,6 +6,7 @@ import {
   ManyToOne,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { Product } from '../../products/entities/product.entity';
@@ -60,10 +61,12 @@ export class Promotion {
   @Column({ default: false })
   isPaid: boolean;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store)
   store: Store;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Product, { nullable: true })
   @ManyToOne(() => Product, { nullable: true })
   product: Product;

@@ -14,6 +14,7 @@ import { PubSub } from 'graphql-subscriptions';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { Store } from './entities/store.entity';
+import { Product } from '../products/entities/product.entity';
 import { StoreFollow } from './entities/store-follow.entity';
 import { CreateStoreInput } from './dto/create-store.input';
 import { UpdateStoreInput } from './dto/update-store.input';
@@ -28,9 +29,12 @@ import { AppUser } from '../users/entities/app-user.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { MailService } from '../mail/mail.service';
 import { peppered } from '../common/utils/pepper';
+import { businessToday } from '../common/utils/business-time';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { RatingsService } from '../ratings/ratings.service';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
+import { resolvePublicUrl } from '../common/utils/public-url';
 
 @Injectable()
 export class StoresService implements OnApplicationBootstrap {
@@ -117,22 +121,46 @@ export class StoresService implements OnApplicationBootstrap {
       throw new BadRequestException('Informe storeId ou slug');
     }
 
+    // 'products' junto: produto SEM categoria nao aparece em categories.products
+    // — loja cujo dono nunca criou categorias mostrava "nenhum produto" com o
+    // catalogo inteiro ativo no banco.
     const store = slug
       ? await this.storesRepository.findOne({
           where: { slug },
-          relations: ['categories', 'categories.products'],
+          relations: ['categories', 'categories.products', 'products'],
         })
       : await this.storesRepository.findOne({
           where: { id: storeId },
-          relations: ['categories', 'categories.products'],
+          relations: ['categories', 'categories.products', 'products'],
         });
 
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    // BUGFIX: `isActive` era filtrado apenas na LISTAGEM. Uma loja desativada
+    // (fraude, inadimplencia, encerramento) sumia da home mas continuava
+    // servindo o catalogo inteiro pelo link direto /loja/<slug> — ja
+    // compartilhado no Instagram/WhatsApp — e os pedidos eram aceitos.
+    if (!store.isActive) throw new NotFoundException('Loja nao encontrada');
 
     const [avgRating, totalRatings] = await Promise.all([
       this.ratingsService.averageStoreRating(store.id),
       this.ratingsService.totalStoreRatings(store.id),
     ]);
+
+    const toStorefrontProduct = (p: Product): StorefrontProduct => ({
+      id: p.id,
+      name: p.name,
+      description: p.description,
+      price: Number(p.price),
+      promotionalPrice: p.promotionalPrice
+        ? Number(p.promotionalPrice)
+        : undefined,
+      imageUrl: p.imageUrl,
+      isAvailable: p.isAvailable,
+      stock: p.stock,
+      unit: p.unit,
+      isVariableWeight: p.isVariableWeight,
+    });
+    const vendavel = (p: Product) => p.isAvailable && p.isActive && !p.deletedAt;
 
     const categories: StorefrontCategory[] = (store.categories || [])
       .filter((c) => c.isActive)
@@ -143,25 +171,28 @@ export class StoresService implements OnApplicationBootstrap {
         imageUrl: c.imageUrl,
         sortOrder: c.sortOrder,
         requiresAgeVerification: c.requiresAgeVerification,
-        products: (c.products || [])
-          .filter((p) => p.isAvailable && p.isActive && !p.deletedAt)
-          .map(
-            (p): StorefrontProduct => ({
-              id: p.id,
-              name: p.name,
-              description: p.description,
-              price: Number(p.price),
-              promotionalPrice: p.promotionalPrice
-                ? Number(p.promotionalPrice)
-                : undefined,
-              imageUrl: p.imageUrl,
-              isAvailable: p.isAvailable,
-              stock: p.stock,
-              unit: p.unit,
-              isVariableWeight: p.isVariableWeight,
-            }),
-          ),
+        products: (c.products || []).filter(vendavel).map(toStorefrontProduct),
       }));
+
+    // Produtos SEM categoria entram numa secao "Outros" no fim — antes
+    // simplesmente nao existiam para o cliente. Produto de categoria INATIVA
+    // continua oculto (desativar a categoria e a forma de esconder o grupo).
+    const idsCategorizados = new Set(
+      (store.categories || []).flatMap((c) => (c.products || []).map((p) => p.id)),
+    );
+    const semCategoria = (store.products || []).filter(
+      (p) => vendavel(p) && !idsCategorizados.has(p.id),
+    );
+    if (semCategoria.length > 0) {
+      categories.push({
+        id: 'sem-categoria',
+        name: 'Outros',
+        imageUrl: '',
+        sortOrder: 999999,
+        requiresAgeVerification: false,
+        products: semCategoria.map(toStorefrontProduct),
+      });
+    }
 
     return {
       id: store.id,
@@ -204,35 +235,34 @@ export class StoresService implements OnApplicationBootstrap {
       order: { name: 'ASC' },
     });
 
-    const results = await Promise.all(
-      stores.map(async (store) => {
-        const [avgRating, totalRatings] = await Promise.all([
-          this.ratingsService.averageStoreRating(store.id),
-          this.ratingsService.totalStoreRatings(store.id),
-        ]);
-        return {
-          id: store.id,
-          slug: store.slug,
-          name: store.name,
-          description: store.description,
-          logoUrl: store.logoUrl,
-          bannerUrl: store.bannerUrl,
-          city: store.city,
-          state: store.state,
-          isOpen: store.isOpen,
-          storeType: store.storeType,
-          deliveryFee: Number(store.deliveryFee),
-          freeDelivery: store.freeDelivery,
-          estimatedDeliveryMinutes: store.estimatedDeliveryMinutes,
-          minimumOrder: Number(store.minimumOrder),
-          verificationLevel: store.verificationLevel,
-          averageRating: avgRating,
-          totalRatings,
-        };
-      }),
+    // KAN-262: era 2 queries de rating POR loja dentro do Promise.all (N+1).
+    // Agora sao 2 queries agregadas no total, independente do numero de lojas.
+    const stats = await this.ratingsService.statsForStores(
+      stores.map((s) => s.id),
     );
 
-    return results;
+    return stores.map((store) => {
+      const s = stats.get(store.id);
+      return {
+        id: store.id,
+        slug: store.slug,
+        name: store.name,
+        description: store.description,
+        logoUrl: store.logoUrl,
+        bannerUrl: store.bannerUrl,
+        city: store.city,
+        state: store.state,
+        isOpen: store.isOpen,
+        storeType: store.storeType,
+        deliveryFee: Number(store.deliveryFee),
+        freeDelivery: store.freeDelivery,
+        estimatedDeliveryMinutes: store.estimatedDeliveryMinutes,
+        minimumOrder: Number(store.minimumOrder),
+        verificationLevel: store.verificationLevel,
+        averageRating: s?.average ?? 0,
+        totalRatings: s?.total ?? 0,
+      };
+    });
   }
 
   private isInBrazil(lat: number, lng: number): boolean {
@@ -257,7 +287,7 @@ export class StoresService implements OnApplicationBootstrap {
     for (const query of queries) {
       try {
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
-        const res = await fetch(url, {
+        const res = await fetchWithTimeout(url, {
           headers: { 'User-Agent': 'bcmTech-Shopping/1.0' },
         });
         const data = await res.json();
@@ -292,7 +322,12 @@ export class StoresService implements OnApplicationBootstrap {
       where: { owner: { id: owner.id } },
     });
 
-    if (currentStores >= planConfig.maxStores) {
+    // BUGFIX: `0` significa ILIMITADO em maxProductsPerStore (products.service.ts
+    // trata explicitamente), mas aqui era comparado direto — entao o plano
+    // CUSTOM (`maxStores: 0`, a faixa "fale com vendas") deixava justamente o
+    // cliente negociado SEM PODER CRIAR NENHUMA LOJA, com a mensagem "seu plano
+    // permite no maximo 0 loja(s)". Semantica agora consistente.
+    if (planConfig.maxStores > 0 && currentStores >= planConfig.maxStores) {
       throw new BadRequestException(
         `Seu plano permite no maximo ${planConfig.maxStores} loja(s). Faca upgrade para criar mais.`,
       );
@@ -319,11 +354,38 @@ export class StoresService implements OnApplicationBootstrap {
   private isWithinHighlightDays(highlightDaysPerMonth: number): boolean {
     if (highlightDaysPerMonth >= 30) return true;
     if (highlightDaysPerMonth <= 0) return false;
-    const today = new Date().getDate();
+    // BUGFIX: `new Date().getDate()` usa o fuso do PROCESSO (UTC em producao),
+    // entao a virada do mes — que decide se a loja ainda esta na janela de
+    // destaque — acontecia as 21:00 BRT do dia anterior. Agora conta o dia no
+    // fuso do negocio.
+    const today = Number(businessToday().slice(-2));
     return today <= highlightDaysPerMonth;
   }
 
-  private async sortByPriority(stores: Store[]): Promise<Store[]> {
+  // ATENCAO (decisao de negocio, NAO alterada aqui): com os valores padrao
+  // atuais — FREE {prioridade 1, destaque 15d}, PRO {1, 30d},
+  // PREMIUM {2, 15d}, ENTERPRISE {3, 30d} — a ordenacao fica invertida parte do
+  // mes: do dia 16 em diante o PREMIUM (R$ 99,90) sai da janela de destaque e cai
+  // para 0, enquanto o PRO (R$ 49,90) segue em 1 — ou seja, o plano mais barato
+  // aparece ACIMA do mais caro. E do dia 1 ao 15 FREE e PRO empatam em 1, entao
+  // a "prioridade na listagem" que o PRO anuncia nao existe na pratica.
+  // Corrigir isso e mudar precificacao/beneficio de plano, entao fica para o
+  // Bruno decidir os numeros (em common/plan-config.ts e platform-config.service.ts,
+  // que estao duplicados e vao divergir).
+
+  /**
+   * Auditoria (vitrine): o sort era SO por prioridade de plano — o empate (a
+   * imensa maioria das lojas) ficava na ordem arbitraria do plano de execucao
+   * do Postgres, entao a vitrine embaralhava entre refreshes. A prioridade
+   * paga continua mandando (e feature); o `tiebreak` decide DENTRO do mesmo
+   * nivel (distancia no nearbyStores, nome nas demais listas).
+   */
+  private async sortByPriority(
+    stores: Store[],
+    tiebreak?: (a: Store, b: Store) => number,
+  ): Promise<Store[]> {
+    const desempate =
+      tiebreak ?? ((a: Store, b: Store) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
     const storesWithPriority = await Promise.all(
       stores.map(async (store) => {
         const plan = store.owner?.vendorPlan || 'FREE';
@@ -336,9 +398,20 @@ export class StoresService implements OnApplicationBootstrap {
       }),
     );
     storesWithPriority.sort(
-      (a, b) => b.effectivePriority - a.effectivePriority,
+      (a, b) => b.effectivePriority - a.effectivePriority || desempate(a.store, b.store),
     );
     return storesWithPriority.map((s) => s.store);
+  }
+
+  /** Distancia em km entre dois pontos (haversine) — para ordenar o nearby. */
+  private static haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+    const rad = (g: number) => (g * Math.PI) / 180;
+    const dLat = rad(lat2 - lat1);
+    const dLng = rad(lng2 - lng1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
   async findAll(): Promise<Store[]> {
@@ -365,8 +438,70 @@ export class StoresService implements OnApplicationBootstrap {
     return store;
   }
 
+  // Perf (F5): versao leve, SEM o grafo de catalogo. calculateDeliveryFee e
+  // estimatedDeliveryTime (chamados no checkout do app a cada mudanca de
+  // endereco) usavam o findById completo — baixavam todos os produtos +
+  // servicos + categorias da loja so para ler latitude/longitude/hasOwnDelivery.
+  async findByIdBasic(id: string): Promise<Store> {
+    const store = await this.storesRepository.findOne({ where: { id } });
+    if (!store) throw new NotFoundException('Loja nao encontrada');
+    return store;
+  }
+
+  // Perf (F5/F6): catalogo paginado da loja para o app. O `store(id)` carrega
+  // TODOS os produtos de uma vez (loja PREMIUM sem teto = milhares de itens num
+  // JSON so). O app agora busca por paginas e a busca interna roda no servidor
+  // (cobre o catalogo inteiro, nao so o que ja desceu). Soft-deleted (lixeira)
+  // ficam fora automaticamente pelo @DeleteDateColumn.
+  async findStoreProducts(
+    storeId: string,
+    limit = 100,
+    offset = 0,
+    search?: string,
+    categoryId?: string,
+  ): Promise<Product[]> {
+    const qb = this.storesRepository.manager
+      .getRepository(Product)
+      .createQueryBuilder('p')
+      .leftJoinAndSelect('p.category', 'category')
+      .where('p."storeId" = :storeId', { storeId });
+    const q = search?.trim();
+    if (q) {
+      // unaccent: busca interna da loja tambem precisa casar "pao" com "pão"
+      qb.andWhere('(unaccent(p.name) ILIKE unaccent(:q) OR unaccent(p.description) ILIKE unaccent(:q))', { q: `%${q}%` });
+    }
+    // UX: chips de categoria na tela da loja — filtro no SQL (indexado por
+    // categoryId), funciona mesmo com catalogo gigante paginado.
+    if (categoryId) {
+      qb.andWhere('p."categoryId" = :categoryId', { categoryId });
+    }
+    // addOrderBy(id): so por nome, produtos homonimos trocavam de posicao entre
+    // paginas (LIMIT/OFFSET sem ordem total) — item sumia numa pagina e
+    // duplicava na outra.
+    return qb
+      .orderBy('p.name', 'ASC')
+      .addOrderBy('p.id', 'ASC')
+      .take(Math.min(Math.max(limit ?? 100, 1), 200))
+      .skip(Math.max(offset ?? 0, 0))
+      .getMany();
+  }
+
   async findByWhatsappNumber(number: string): Promise<Store | null> {
-    return this.storesRepository.findOne({ where: { whatsappNumber: number } });
+    // BUGFIX: o controller do n8n normaliza o telefone para so digitos
+    // ("5553984424244") e aqui a comparacao era EXATA contra a coluna, que o
+    // vendedor digita livre no painel ("+55 53 8442-4244"). Nunca casava — o
+    // roteador do WhatsApp entao concluia "nao e vendedor" e mandava TODA
+    // mensagem de vendedor para o agente do CLIENTE (ferramentas e prompt
+    // errados) ou para a resposta de desconhecido. O agente do vendedor estava
+    // inerte. O users/by-phone ja tinha sido corrigido assim; este ficou.
+    const digits = (number || '').replace(/\D/g, '');
+    if (!digits) return null;
+    const semPais = digits.startsWith('55') ? digits.slice(2) : digits;
+    return this.storesRepository
+      .createQueryBuilder('s')
+      .where("regexp_replace(s.\"whatsappNumber\", '[^0-9]', '', 'g') = :d", { d: digits })
+      .orWhere("regexp_replace(s.\"whatsappNumber\", '[^0-9]', '', 'g') = :nc", { nc: semPais })
+      .getOne();
   }
 
   async findByOwner(ownerId: string): Promise<Store[]> {
@@ -390,7 +525,19 @@ export class StoresService implements OnApplicationBootstrap {
         { lat, lng, radius: radiusKm },
       )
       .getMany();
-    return this.sortByPriority(stores);
+    // Auditoria: "perto de voce" vinha sem NENHUMA ordenacao por distancia — a
+    // loja a 9,9km podia aparecer acima da loja da esquina. Prioridade de plano
+    // segue mandando; a distancia desempata dentro do mesmo nivel.
+    const dist = new Map<string, number>(
+      stores.map((s) => [
+        s.id,
+        StoresService.haversineKm(lat, lng, Number(s.latitude), Number(s.longitude)),
+      ]),
+    );
+    return this.sortByPriority(
+      stores,
+      (a, b) => (dist.get(a.id) ?? Infinity) - (dist.get(b.id) ?? Infinity),
+    );
   }
 
   async update(input: UpdateStoreInput, owner: VendorUser): Promise<Store> {
@@ -499,7 +646,11 @@ export class StoresService implements OnApplicationBootstrap {
     store.deleteTokenExpires = new Date(Date.now() + 30 * 60 * 1000); // 30 min
     await this.storesRepository.save(store);
 
-    const apiUrl = this.configService.get('APP_URL', 'http://localhost:3000');
+    // KAN-258 (mesma classe do fallback de API_URL nos frontends): este link vai
+    // POR E-MAIL para o lojista. Se APP_URL nao estiver definida em producao, o
+    // fallback antigo mandava um link para `localhost:3000` — inutil para quem
+    // recebe. Agora avisa alto e usa o dominio publico.
+    const apiUrl = resolvePublicUrl(this.configService, 'APP_URL', 'http://localhost:3000');
     const confirmUrl = `${apiUrl}/stores/confirm-delete?token=${token}`;
 
     const emailTo = admin.notificationEmail || admin.email;
@@ -548,7 +699,11 @@ export class StoresService implements OnApplicationBootstrap {
     store.deleteTokenExpires = new Date(Date.now() + 30 * 60 * 1000);
     await this.storesRepository.save(store);
 
-    const apiUrl = this.configService.get('APP_URL', 'http://localhost:3000');
+    // KAN-258 (mesma classe do fallback de API_URL nos frontends): este link vai
+    // POR E-MAIL para o lojista. Se APP_URL nao estiver definida em producao, o
+    // fallback antigo mandava um link para `localhost:3000` — inutil para quem
+    // recebe. Agora avisa alto e usa o dominio publico.
+    const apiUrl = resolvePublicUrl(this.configService, 'APP_URL', 'http://localhost:3000');
     const confirmUrl = `${apiUrl}/stores/confirm-delete?token=${token}`;
 
     await this.mailService.sendStoreDeleteConfirmation(
@@ -644,4 +799,5 @@ export class StoresService implements OnApplicationBootstrap {
       where: { store: { id: storeId } },
     });
   }
+
 }

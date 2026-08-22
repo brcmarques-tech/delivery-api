@@ -5,6 +5,7 @@ import { Address } from './entities/address.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { CreateAddressInput } from './dto/create-address.input';
 import { UpdateAddressInput } from './dto/update-address.input';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 
 @Injectable()
 export class AddressesService {
@@ -32,7 +33,7 @@ export class AddressesService {
     for (const query of queries) {
       try {
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
-        const res = await fetch(url, {
+        const res = await fetchWithTimeout(url, {
           headers: { 'User-Agent': 'bcmTech-Shopping/1.0' },
         });
         const data = await res.json();
@@ -82,11 +83,22 @@ export class AddressesService {
   }
 
   async setDefault(addressId: string, userId: string): Promise<Address> {
+    // Verifica posse ANTES de mexer em qualquer registro: sem isso, um usuario
+    // podia marcar o endereco de outro como default (corrompendo o dado alheio),
+    // zerar o proprio default e ainda receber de volta o endereco da vitima (IDOR).
+    const address = await this.addressesRepository.findOne({
+      where: { id: addressId, user: { id: userId } },
+    });
+    if (!address) throw new NotFoundException('Endereco nao encontrado');
+
     await this.addressesRepository.update(
       { user: { id: userId } },
       { isDefault: false },
     );
-    await this.addressesRepository.update(addressId, { isDefault: true });
+    await this.addressesRepository.update(
+      { id: addressId, user: { id: userId } },
+      { isDefault: true },
+    );
     return this.addressesRepository.findOneOrFail({ where: { id: addressId } });
   }
 

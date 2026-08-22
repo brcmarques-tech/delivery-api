@@ -6,6 +6,7 @@ import { Subscription } from './entities/subscription.entity';
 import { VendorPlan } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { VendorUsersService } from '../users/vendor-users.service';
 
 const CHECK_INTERVAL_MS = 60_000; // 60 seconds
 
@@ -21,10 +22,19 @@ export class SubscriptionExpiryScheduler implements OnModuleInit, OnModuleDestro
     private subscriptionsRepository: Repository<Subscription>,
     private notificationsService: NotificationsService,
     private whatsAppService: WhatsAppService,
+    private vendorUsersService: VendorUsersService,
   ) {}
 
   onModuleInit() {
-    this.intervalRef = setInterval(() => this.checkExpiredPlans(), CHECK_INTERVAL_MS);
+    // KAN-253: a Promise de `checkExpiredPlans()` era descartada. Se algo
+    // escapar do try/catch interno, vira unhandled rejection (que pode derrubar
+    // o processo dependendo da config do Node). Com o `.catch`, uma rodada com
+    // problema apenas loga e o scheduler continua vivo.
+    this.intervalRef = setInterval(() => {
+      this.checkExpiredPlans().catch((err) =>
+        this.logger.error('checkExpiredPlans falhou:', err),
+      );
+    }, CHECK_INTERVAL_MS);
     this.logger.log('Subscription expiry scheduler started (60s interval)');
   }
 
@@ -56,9 +66,48 @@ export class SubscriptionExpiryScheduler implements OnModuleInit, OnModuleDestro
           },
         });
 
-        if (activeSubscription) {
+        // O skip so vale se existe um ciclo PAGO vigente. Antes bastava a string
+        // `status = 'active'`, que e escrita por `handleSubscriptionCreated`
+        // ANTES de qualquer pagamento e reescrita por `handleSubscriptionUpdated`
+        // a cada `subscription.updated` — e no Pagar.me a assinatura segue
+        // `active` mesmo com a fatura recusada, porque o status da fatura e
+        // independente. Resultado: cartao recusado na renovacao, o vendor era
+        // pulado para sempre e mantinha PREMIUM (comissao 0%, 10 lojas, cupons,
+        // analytics) sem pagar mais nada.
+        const cicloVigente =
+          activeSubscription?.currentPeriodEnd != null &&
+          new Date(activeSubscription.currentPeriodEnd).getTime() > now.getTime();
+
+        if (cicloVigente) {
           this.logger.debug(`Vendor ${vendor.id} has active subscription, skipping expiry`);
           continue;
+        }
+
+        // BUGFIX: janela de renovacao. Numa renovacao normal de cartao,
+        // planExpiresAt = currentPeriodEnd = fim do ciclo; o Pagar.me so avanca
+        // currentPeriodEnd quando cobra a proxima fatura e envia invoice.paid.
+        // Entre o fim do ciclo e esse webhook (segundos a minutos), o vendor de
+        // cartao EM DIA tinha planExpiresAt < now e currentPeriodEnd <= now →
+        // era rebaixado para FREE e tinha o pagarmeSubscriptionId zerado (que o
+        // invoice.paid nao restaura). Grace de 3 dias para assinaturas de cartao
+        // cobre essa janela e o inicio do dunning, sem pular para sempre um
+        // cartao recusado. PIX manual (sem assinatura no Pagar.me) NAO ganha
+        // grace — nao renova sozinho, entao expira na hora.
+        const GRACE_MS = 3 * 24 * 60 * 60 * 1000;
+        const temAssinaturaCartao = !!activeSubscription && !!vendor.pagarmeSubscriptionId;
+        if (temAssinaturaCartao) {
+          const expiraMs = vendor.planExpiresAt ? new Date(vendor.planExpiresAt).getTime() : 0;
+          if (expiraMs > now.getTime() - GRACE_MS) {
+            this.logger.debug(
+              `Vendor ${vendor.id}: assinatura de cartao no grace de renovacao ` +
+                `(expira ${vendor.planExpiresAt}) — aguardando invoice.paid, skip.`,
+            );
+            continue;
+          }
+          this.logger.warn(
+            `Vendor ${vendor.id}: assinatura de cartao sem ciclo pago vigente e fora do grace ` +
+              `(${GRACE_MS / 86400000}d) — rebaixando (provavel cartao recusado).`,
+          );
         }
 
         // Also check cancelAtPeriodEnd subscriptions
@@ -70,12 +119,24 @@ export class SubscriptionExpiryScheduler implements OnModuleInit, OnModuleDestro
           },
         });
 
-        // Downgrade to FREE
+        // Downgrade to FREE.
+        // Passa pelo servico em vez de salvar a entity na mao: `updateVendorPlan`
+        // dispara `onPlanChanged`, que recalcula o selo de verificacao. Salvando
+        // direto no repositorio, um lojista ENTERPRISE que tinha piso GOLD
+        // automatico continuava exibindo selo GOLD depois de virar FREE — e
+        // mantinha as recompensas do selo, incluindo desconto permanente numa
+        // reassinatura futura. O outro caminho de downgrade
+        // (`handleSubscriptionCanceled`) ja usava o servico, entao o mesmo
+        // evento de negocio produzia resultados diferentes conforme a rota.
         const previousPlan = vendor.vendorPlan;
-        vendor.vendorPlan = VendorPlan.FREE;
-        vendor.planExpiresAt = null;
-        vendor.pagarmeSubscriptionId = null as any;
-        await this.vendorUsersRepository.save(vendor);
+        await this.vendorUsersService.updateVendorPlan(
+          vendor.id,
+          VendorPlan.FREE,
+          0,
+        );
+        await this.vendorUsersRepository.update(vendor.id, {
+          pagarmeSubscriptionId: null as any,
+        });
 
         // Mark pending cancel subscription as canceled
         if (pendingCancel) {

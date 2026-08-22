@@ -110,7 +110,11 @@ export class PromotionsResolver {
     return this.promotionsService.delete(id, user.id);
   }
 
+  // Exige autenticação: antes qualquer cliente (até anônimo) podia assinar e
+  // colher dados de promoção de todos os lojistas em tempo real. O payload
+  // publicado também não carrega mais checkoutUrl/adCost (ver promotions.service).
   @Subscription(() => Promotion)
+  @UseGuards(GqlAuthGuard)
   promotionUpdated() {
     return this.pubSub.asyncIterableIterator('promotionUpdated');
   }

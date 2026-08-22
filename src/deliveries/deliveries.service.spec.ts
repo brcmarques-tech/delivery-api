@@ -8,6 +8,7 @@ import { DeliveryOfferService } from './delivery-offer.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PlatformConfigService } from '../config/platform-config.service';
 
 describe('DeliveriesService', () => {
   let service: DeliveriesService;
@@ -15,13 +16,37 @@ describe('DeliveriesService', () => {
   let ordersService: any;
   let pubSub: any;
 
+  // KAN-254: `acceptDelivery` passou a rodar numa transacao com lock de linha
+  // (`SELECT ... FOR UPDATE`) para impedir que dois entregadores aceitem a
+  // mesma entrega. O mock nao tinha `manager`, entao o teste morria em
+  // "Cannot read properties of undefined (reading 'transaction')" — mock
+  // desatualizado, nao bug de codigo.
+  //
+  // `transaction(cb)` so executa o callback com um manager fake; `query`
+  // responde conforme o SQL: SELECT do pedido devolve uma linha, SELECT de
+  // delivery existente devolve vazio (caminho "primeira aceitacao") e o INSERT
+  // devolve o id gerado.
+  const mockTxManager = {
+    query: jest.fn(async (sql: string) => {
+      if (/FROM orders/i.test(sql)) return [{ id: 'order-1', status: 'READY' }];
+      if (/FROM deliveries/i.test(sql)) return [];
+      if (/INSERT INTO deliveries/i.test(sql)) return [{ id: 'delivery-1' }];
+      return [];
+    }),
+  };
+
   const mockDeliveriesRepo = {
     create: jest.fn((data) => ({ id: 'delivery-1', ...data })),
     save: jest.fn((data) => Promise.resolve({ id: 'delivery-1', ...data })),
     findOne: jest.fn(),
+    findOneOrFail: jest.fn(),
     find: jest.fn(),
     count: jest.fn(),
     createQueryBuilder: jest.fn(),
+    manager: {
+      transaction: jest.fn(async (cb: any) => cb(mockTxManager)),
+      query: jest.fn().mockResolvedValue([]),
+    },
   };
 
   const mockOrdersService = {
@@ -32,6 +57,9 @@ describe('DeliveriesService', () => {
 
   const mockOfferService = {
     startOffer: jest.fn(),
+    // KAN-254: `acceptDelivery` cancela a cascata de ofertas ao aceitar.
+    // O metodo nao existia no mock e derrubava o teste.
+    cancelOffer: jest.fn(),
   };
 
   const mockPubSub = {
@@ -42,6 +70,12 @@ describe('DeliveriesService', () => {
     sendToVendorUser: jest.fn().mockResolvedValue(undefined),
     sendToAppUser: jest.fn().mockResolvedValue(undefined),
   };
+
+// Comissao de entrega padrao da plataforma (10%): payoutAmount e o LIQUIDO que
+// o entregador recebe, nao a taxa cheia.
+const mockPlatformConfig = {
+  getDeliveryCommissionPercent: jest.fn().mockResolvedValue(10),
+};
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -54,6 +88,7 @@ describe('DeliveriesService', () => {
         { provide: DeliveryOfferService, useValue: mockOfferService },
         { provide: PUB_SUB, useValue: mockPubSub },
         { provide: NotificationsService, useValue: mockNotificationsService },
+        { provide: PlatformConfigService, useValue: mockPlatformConfig },
       ],
     }).compile();
 
@@ -122,13 +157,34 @@ describe('DeliveriesService', () => {
       const deliverer = makeDeliverer();
       const order = makeOrder();
       ordersService.findById.mockResolvedValue(order);
-      deliveriesRepo.save.mockResolvedValue({ id: 'del-1', order, deliverer });
+      // KAN-254: a criacao deixou de ser `repo.create()/save()` e passou a ser
+      // um INSERT em SQL puro DENTRO de uma transacao com `SELECT ... FOR
+      // UPDATE` — necessario para impedir que dois entregadores aceitem a mesma
+      // entrega. Depois o service recarrega o registro com `findOneOrFail`.
+      // O teste ainda checava `create`, que nao e mais chamado.
+      deliveriesRepo.findOneOrFail.mockResolvedValue({ id: 'delivery-1', order, deliverer });
+      // findOne é usado em dois momentos: (1) o pré-check de "entrega ativa" (deve
+      // dar null) e (2) o reload por id do publishDeliveryUpdate, que recarrega o
+      // delivery completo para o payload da subscription. Ramifica pelo `where`.
+      deliveriesRepo.findOne.mockImplementation((opts: any) =>
+        opts?.where?.id === 'delivery-1'
+          ? Promise.resolve({ id: 'delivery-1', order, deliverer })
+          : Promise.resolve(null),
+      );
 
       const result = await service.acceptDelivery('order-1', deliverer as any);
 
-      expect(deliveriesRepo.create).toHaveBeenCalledWith({ order, deliverer });
-      expect(ordersService.updateStatus).toHaveBeenCalledWith('order-1', OrderStatus.VENDOR_CONFIRMED_PICKUP);
+      // A transacao rodou (lock + insert)
+      expect(deliveriesRepo.manager.transaction).toHaveBeenCalled();
+      expect(deliveriesRepo.findOneOrFail).toHaveBeenCalled();
+      expect(result).toBeDefined();
+      // KAN-254: aceitar a entrega NAO muda mais o status do pedido. Aceitar
+      // (entregador) e confirmar a coleta (vendedor) viraram passos distintos —
+      // VENDOR_CONFIRMED_PICKUP acontece em outro fluxo. O que acontece aqui e:
+      // encerrar a cascata de ofertas e publicar as atualizacoes.
+      expect(mockOfferService.cancelOffer).toHaveBeenCalledWith('order-1');
       expect(pubSub.publish).toHaveBeenCalledWith('deliveryUpdated', expect.any(Object));
+      expect(pubSub.publish).toHaveBeenCalledWith('orderUpdated', expect.any(Object));
     });
   });
 
@@ -156,7 +212,7 @@ describe('DeliveriesService', () => {
 
   // ─── confirmPickup ──────────────────────────────────────────
   describe('confirmPickup', () => {
-    it('should set pickedUpAt and update order status to DELIVERING', async () => {
+    it('should set pickedUpAt and update order status to PICKED_UP', async () => {
       const delivery = makeDelivery();
       deliveriesRepo.findOne.mockResolvedValue(delivery);
       deliveriesRepo.save.mockResolvedValue(delivery);
@@ -164,7 +220,10 @@ describe('DeliveriesService', () => {
       const result = await service.confirmPickup('delivery-1', 'deliverer-1');
 
       expect(delivery.pickedUpAt).toBeInstanceOf(Date);
-      expect(ordersService.updateStatus).toHaveBeenCalledWith('order-1', OrderStatus.DELIVERING);
+      // KAN-254: o fluxo ganhou um passo — a coleta agora marca PICKED_UP, e
+      // DELIVERING passou a ser um estado posterior. O teste ainda esperava o
+      // comportamento antigo (ia direto para DELIVERING).
+      expect(ordersService.updateStatus).toHaveBeenCalledWith('order-1', OrderStatus.PICKED_UP);
       expect(pubSub.publish).toHaveBeenCalled();
     });
 
@@ -212,7 +271,10 @@ describe('DeliveriesService', () => {
 
         await service.confirmDelivery('delivery-1', 'deliverer-1');
 
-        expect(delivery.payoutAmount).toBe(5.0);
+        // 5.00 de taxa - 10% de comissao = 4.50 liquido. Antes o teste exigia
+        // 5.00, congelando o bug: o app prometia a taxa cheia e o extrato do
+        // Pagar.me mostrava o liquido.
+        expect(delivery.payoutAmount).toBe(4.5);
         expect(delivery.payoutStatus).toBe('pending_confirmation');
       });
 
@@ -255,7 +317,10 @@ describe('DeliveriesService', () => {
 
         await service.confirmDelivery('delivery-1', 'deliverer-1');
 
-        expect(delivery.payoutAmount).toBe(5.0);
+        // 5.00 de taxa - 10% de comissao = 4.50 liquido. Antes o teste exigia
+        // 5.00, congelando o bug: o app prometia a taxa cheia e o extrato do
+        // Pagar.me mostrava o liquido.
+        expect(delivery.payoutAmount).toBe(4.5);
         expect(delivery.payoutStatus).toBe('pending_confirmation');
       });
     });
@@ -308,14 +373,35 @@ describe('DeliveriesService', () => {
 
   // ─── findByDeliverer ────────────────────────────────────────
   describe('findByDeliverer', () => {
-    it('should query deliveries for given deliverer', async () => {
+    it('should query deliveries for given deliverer (primeira pagina)', async () => {
       deliveriesRepo.find.mockResolvedValue([]);
       await service.findByDeliverer('d1');
       expect(deliveriesRepo.find).toHaveBeenCalledWith({
         where: { deliverer: { id: 'd1' } },
-        relations: ['order', 'order.store', 'order.customer'],
+        // KAN-254: a query passou a carregar tambem os itens do pedido e o
+        // produto de cada item (a tela do entregador precisa listar o que
+        // separar). O teste ainda esperava a lista antiga de relations.
+        relations: ['order', 'order.store', 'order.customer', 'order.items', 'order.items.product'],
         order: { createdAt: 'DESC' },
+        // Perf (F6): a lista passou a ser paginada — antes descia o historico
+        // vitalicio inteiro a cada abertura da aba Entregas.
+        take: 20,
+        skip: 0,
       });
+    });
+
+    it('should respect limit/offset and cap the page size at 100', async () => {
+      deliveriesRepo.find.mockResolvedValue([]);
+      await service.findByDeliverer('d1', 50, 40);
+      expect(deliveriesRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 50, skip: 40 }),
+      );
+
+      deliveriesRepo.find.mockClear();
+      await service.findByDeliverer('d1', 9999, -5);
+      expect(deliveriesRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 100, skip: 0 }),
+      );
     });
   });
 

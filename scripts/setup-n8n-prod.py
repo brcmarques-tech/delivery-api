@@ -40,9 +40,20 @@ def main():
     print("n8n online!")
 
     # 2. Setup owner
+    # A senha do owner do n8n de producao estava LITERAL neste arquivo, que e
+    # rastreado no git. A UI do n8n fica publicada na porta 5678 e o compose de
+    # producao usa N8N_BLOCK_ENV_ACCESS_IN_NODE=false, entao quem loga la le
+    # todas as variaveis de ambiente por dentro de um Code node — incluindo
+    # N8N_AGENT_KEY e WAHA_API_KEY. Agora vem do ambiente.
+    # A SENHA ANTIGA PRECISA SER ROTACIONADA: tirar do arquivo nao apaga o
+    # historico do git.
+    n8n_password = os.environ.get("N8N_OWNER_PASSWORD")
+    if not n8n_password:
+        print("ERRO: defina N8N_OWNER_PASSWORD no ambiente antes de rodar este script.")
+        sys.exit(1)
     print("Configurando admin...")
     r = requests.post(f"{BASE}/rest/owner/setup",
-        json={"email": args.email, "firstName": "Admin", "lastName": "BCM", "password": "Bcmtech2026!"},
+        json={"email": args.email, "firstName": "Admin", "lastName": "BCM", "password": n8n_password},
         headers={"Content-Type": "application/json"})
     if r.status_code not in (200, 400):
         print(f"Aviso setup owner: {r.text[:100]}")
@@ -50,7 +61,7 @@ def main():
     # 3. Login
     session = requests.Session()
     r = session.post(f"{BASE}/rest/login",
-        json={"emailOrLdapLoginId": args.email, "password": "Bcmtech2026!"},
+        json={"emailOrLdapLoginId": args.email, "password": n8n_password},
         headers={"Content-Type": "application/json"})
     if r.status_code != 200:
         print(f"ERRO login: {r.text[:200]}")

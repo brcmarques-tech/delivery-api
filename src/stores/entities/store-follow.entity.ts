@@ -5,6 +5,7 @@ import {
   ManyToOne,
   CreateDateColumn,
   Unique,
+  Index,
 } from 'typeorm';
 import { AppUser } from '../../users/entities/app-user.entity';
 import { Store } from './store.entity';
@@ -17,10 +18,12 @@ export class StoreFollow {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => AppUser)
   @ManyToOne(() => AppUser, { onDelete: 'CASCADE' })
   user: AppUser;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store, { onDelete: 'CASCADE' })
   store: Store;

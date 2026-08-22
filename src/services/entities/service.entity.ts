@@ -7,6 +7,7 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { Category } from '../../categories/entities/category.entity';
@@ -50,6 +51,7 @@ export class Service {
   @Column({ default: false })
   requiresQuote: boolean;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Store)
   @ManyToOne(() => Store, (store) => store.services)
   @JoinColumn({ name: 'storeId' })
@@ -58,6 +60,7 @@ export class Service {
   @Column()
   storeId: string;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Category, { nullable: true })
   @ManyToOne(() => Category, { nullable: true })
   @JoinColumn({ name: 'categoryId' })

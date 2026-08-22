@@ -28,6 +28,25 @@ export class ProductsService {
     private verificationService: VerificationService,
   ) {}
 
+  // SEGURANCA: o dono da LOJA e do PRODUTO ja eram checados, mas o `categoryId`
+  // entrava cru. Um vendedor podia criar/editar um produto da sua loja apontando
+  // para uma categoria de OUTRA loja — e a vitrine publica monta o catalogo por
+  // categoria (store.categories -> c.products), entao o produto dele aparecia
+  // dentro da loja alheia. Injecao de catalogo entre lojas.
+  private async assertCategoryBelongsToStore(
+    categoryId: string | undefined | null,
+    storeId: string,
+  ): Promise<void> {
+    if (!categoryId) return;
+    const rows = await this.productsRepository.manager.query(
+      `SELECT 1 FROM categories WHERE id = $1 AND "storeId" = $2 LIMIT 1`,
+      [categoryId, storeId],
+    );
+    if (!rows || rows.length === 0) {
+      throw new BadRequestException('Categoria invalida para esta loja.');
+    }
+  }
+
   private async checkProductLimit(storeId: string): Promise<void> {
     const store = await this.storeRepository.findOne({
       where: { id: storeId },
@@ -63,6 +82,7 @@ export class ProductsService {
       store: { id: input.storeId } as any,
       category: input.categoryId ? ({ id: input.categoryId } as any) : undefined,
     });
+    await this.assertCategoryBelongsToStore(input.categoryId, input.storeId);
     const saved = await this.productsRepository.save(product);
     this.pubSub.publish('productUpdated', { productUpdated: saved });
     this.verificationService.onProductAdded(input.storeId).catch(() => {});
@@ -72,14 +92,16 @@ export class ProductsService {
   async findByStore(storeId: string): Promise<Product[]> {
     return this.productsRepository.find({
       where: { store: { id: storeId }, isActive: true },
-      relations: ['category'],
+      // 'store' é @Field(() => Store) NÃO-nulável no schema; sem carregar a
+      // relation, selecionar `store { ... }` num product 500a a lista inteira.
+      relations: ['category', 'store'],
     }) as Promise<Product[]>;
   }
 
   async findByStoreAll(storeId: string): Promise<Product[]> {
     return this.productsRepository.find({
       where: { store: { id: storeId } },
-      relations: ['category'],
+      relations: ['category', 'store'],
     }) as Promise<Product[]>;
   }
 
@@ -112,6 +134,10 @@ export class ProductsService {
     if (input.imageUrl !== undefined) product.imageUrl = input.imageUrl;
     if (input.unit !== undefined) product.unit = input.unit;
     if (input.categoryId !== undefined) {
+      await this.assertCategoryBelongsToStore(
+        input.categoryId,
+        (product as any).store?.id ?? (product as any).storeId,
+      );
       product.category = input.categoryId ? ({ id: input.categoryId } as any) : null;
     }
     if (input.stock !== undefined) product.stock = input.stock;
@@ -135,36 +161,74 @@ export class ProductsService {
     product.isActive = !product.isActive;
     if (!product.isActive) {
       product.isAvailable = false;
+    } else if (product.store?.id) {
+      // O limite do plano so era checado no create/bulkCreate — reativar nao
+      // contava. FREE com limite 10: cria 10, desativa todos (count 0), cria
+      // mais 10, reativa os primeiros -> 20 ativos. Reativar e a mesma coisa
+      // que criar do ponto de vista do limite.
+      await this.checkProductLimit(product.store.id);
     }
     const saved = await this.productsRepository.save(product);
     this.pubSub.publish('productUpdated', { productUpdated: saved });
     return saved;
   }
 
+  /**
+   * KAN-260: era ler-modificar-salvar (le o estoque, subtrai em memoria,
+   * salva). Duas chamadas concorrentes liam o MESMO valor, as duas passavam na
+   * validacao e a segunda gravava por cima da primeira — vendia mais do que
+   * havia (e o `save()` da entity inteira ainda podia sobrescrever colunas que
+   * outro processo tivesse alterado no meio, tipo o preco).
+   *
+   * Agora quem valida e o proprio UPDATE: `WHERE stock >= $1` garante que duas
+   * chamadas simultaneas nao passam. Mesmo padrao ja usado na criacao de
+   * pedido (orders.service) e nos estornos (payments.service).
+   */
   async decrementStock(id: string, quantity: number): Promise<void> {
-    const product = await this.findById(id);
-    if (product.stock < quantity) {
+    const rows = await this.productsRepository.query(
+      `UPDATE products
+          SET stock = stock - $1,
+              "isAvailable" = CASE WHEN stock - $1 <= 0 THEN false ELSE "isAvailable" END
+        WHERE id = $2 AND stock >= $1
+        RETURNING id`,
+      [quantity, id],
+    );
+
+    if (!rows.length) {
+      // Nao afetou nenhuma linha: ou o produto sumiu, ou o estoque acabou
+      // entre a leitura do cliente e este UPDATE.
+      const product = await this.findById(id);
       throw new BadRequestException(
         `Estoque insuficiente para "${product.name}". Disponivel: ${product.stock}, solicitado: ${quantity}`,
       );
     }
-    product.stock -= quantity;
-    if (product.stock === 0) {
-      product.isAvailable = false;
+
+    const updated = await this.productsRepository.findOne({ where: { id } });
+    if (updated) {
+      this.pubSub.publish('productUpdated', { productUpdated: updated });
     }
-    const savedProduct = await this.productsRepository.save(product);
-    this.pubSub.publish('productUpdated', { productUpdated: savedProduct });
   }
 
+  /**
+   * KAN-260: mesma correcao. Aqui o risco era perder devolucoes de estoque —
+   * dois cancelamentos simultaneos do mesmo produto liam o mesmo valor e um
+   * dos incrementos sumia, deixando o lojista com menos estoque do que tem.
+   */
   async restoreStock(id: string, quantity: number): Promise<void> {
-    const product = await this.productsRepository.findOne({ where: { id } });
-    if (!product) return;
-    product.stock += quantity;
-    if (product.stock > 0 && !product.isAvailable) {
-      product.isAvailable = true;
+    const rows = await this.productsRepository.query(
+      `UPDATE products
+          SET stock = stock + $1,
+              "isAvailable" = CASE WHEN stock + $1 > 0 THEN true ELSE "isAvailable" END
+        WHERE id = $2
+        RETURNING id`,
+      [quantity, id],
+    );
+    if (!rows.length) return; // produto nao existe mais — mesmo comportamento de antes
+
+    const updated = await this.productsRepository.findOne({ where: { id } });
+    if (updated) {
+      this.pubSub.publish('productUpdated', { productUpdated: updated });
     }
-    const savedProduct = await this.productsRepository.save(product);
-    this.pubSub.publish('productUpdated', { productUpdated: savedProduct });
   }
 
   async findDeletedByStore(storeId: string): Promise<Product[]> {
@@ -179,6 +243,19 @@ export class ProductsService {
   }
 
   async restore(id: string): Promise<Product> {
+    // Mesmo furo do toggleActive: o count do limite ignora soft-deleted, entao
+    // restaurar um produto ativo aumenta o total sem passar pela checagem.
+    // A checagem vem ANTES do restore — depois seria tarde.
+    const deletado = await this.productsRepository.findOne({
+      where: { id },
+      withDeleted: true,
+      relations: ['store'],
+    });
+    if (!deletado) throw new NotFoundException('Produto nao encontrado');
+    if (deletado.isActive && deletado.store?.id) {
+      await this.checkProductLimit(deletado.store.id);
+    }
+
     await this.productsRepository.restore(id);
     const product = await this.productsRepository.findOne({ where: { id }, relations: ['store', 'category'] });
     if (!product) throw new NotFoundException('Produto nao encontrado');
@@ -227,31 +304,36 @@ export class ProductsService {
       .andWhere('product.isAvailable = :available', { available: true })
       .andWhere('product.isActive = :isActive', { isActive: true });
 
+    // Busca insensivel a acento (auditoria): LOWER puro nao casa "pao" com
+    // "pão" — unaccent() nos dois lados do LIKE resolve para qualquer grafia.
     if (terms.length === 1) {
       qb.andWhere(
-        '(LOWER(product.name) LIKE :q OR LOWER(product.description) LIKE :q OR LOWER(category.name) LIKE :q)',
+        '(unaccent(LOWER(product.name)) LIKE unaccent(:q) OR unaccent(LOWER(product.description)) LIKE unaccent(:q) OR unaccent(LOWER(category.name)) LIKE unaccent(:q))',
         { q: `%${terms[0]}%` },
       );
     } else {
       const conditions = terms.map((t, i) =>
-        `(LOWER(product.name) LIKE :t${i} OR LOWER(product.description) LIKE :t${i} OR LOWER(category.name) LIKE :t${i})`
+        `(unaccent(LOWER(product.name)) LIKE unaccent(:t${i}) OR unaccent(LOWER(product.description)) LIKE unaccent(:t${i}) OR unaccent(LOWER(category.name)) LIKE unaccent(:t${i}))`
       ).join(' OR ');
       const params: Record<string, string> = {};
       terms.forEach((t, i) => { params[`t${i}`] = `%${t}%`; });
       qb.andWhere(`(${conditions})`, params);
     }
 
-    return qb.orderBy('product.name').limit(limit).getMany();
+    // Desempate por id: nomes repetidos deixavam a ordem ao acaso do plano de
+    // execucao — resultados "pulavam" entre chamadas iguais.
+    return qb.orderBy('product.name').addOrderBy('product.id').limit(limit).getMany();
   }
 
   async searchCatalog(query: string, limit = 20): Promise<Product[]> {
     if (!query.trim()) return [];
 
     // Get unique product IDs (one per name), preferring oldest entry (catalog)
+    // unaccent: "acucar" precisa achar "açúcar" (auditoria, busca com acento)
     const uniqueIds = await this.productsRepository.query(
       `SELECT DISTINCT ON (LOWER(name)) id
        FROM products
-       WHERE LOWER(name) LIKE $1 OR barcode = $2
+       WHERE unaccent(LOWER(name)) LIKE unaccent($1) OR barcode = $2
        ORDER BY LOWER(name), "createdAt" ASC
        LIMIT $3`,
       [`%${query.toLowerCase()}%`, query.trim(), limit],
@@ -301,6 +383,13 @@ export class ProductsService {
       }
       const item = input.products[i];
       try {
+        // A importacao em massa nao chamava esta checagem — a mesma que o
+        // create/update fazem. Um lojista importava produto apontando para a
+        // categoria de OUTRA loja e, como a vitrine monta o catalogo por
+        // categoria (categories.service.ts findByStore), o produto dele passava
+        // a aparecer dentro da loja alheia, com o preco que ele quisesse.
+        await this.assertCategoryBelongsToStore(item.categoryId, input.storeId);
+
         const itemIsVariableWeight = item.isVariableWeight ?? false;
         const itemUnit = item.unit ?? (itemIsVariableWeight ? 'kg' : undefined);
         const product = this.productsRepository.create({

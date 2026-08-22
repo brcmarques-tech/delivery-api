@@ -8,10 +8,13 @@ import {
   ResolveField,
   Parent,
   Subscription,
+  Context,
 } from '@nestjs/graphql';
 import { UseGuards, Inject } from '@nestjs/common';
+import { verify as jwtVerify } from 'jsonwebtoken'; // KAN-259
 import { PubSub } from 'graphql-subscriptions';
 import { Store } from './entities/store.entity';
+import { Product } from '../products/entities/product.entity';
 import { StoresService } from './stores.service';
 import { StorefrontResult, PublicStoreCard } from './dto/storefront-result';
 import { AppUser } from '../users/entities/app-user.entity';
@@ -23,6 +26,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Permission } from '../auth/decorators/permission.decorator';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { UserRole, VerificationLevel } from '../common/enums';
 import { PlatformConfigService } from '../config/platform-config.service';
@@ -79,6 +83,18 @@ export class StoresResolver {
   @Query(() => Store)
   storeBySlug(@Args('slug') slug: string): Promise<Store> {
     return this.storesService.findBySlug(slug);
+  }
+
+  // Perf (F5/F6): catalogo paginado + busca server-side (tela da loja do app).
+  @Query(() => [Product])
+  storeProducts(
+    @Args('storeId') storeId: string,
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 100 }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true, defaultValue: 0 }) offset?: number,
+    @Args('search', { nullable: true }) search?: string,
+    @Args('categoryId', { nullable: true }) categoryId?: string,
+  ): Promise<Product[]> {
+    return this.storesService.findStoreProducts(storeId, limit, offset, search, categoryId);
   }
 
   @Query(() => StorefrontResult)
@@ -148,7 +164,8 @@ export class StoresResolver {
     @Args('customerLatitude', { type: () => Float }) customerLat: number,
     @Args('customerLongitude', { type: () => Float }) customerLng: number,
   ): Promise<number> {
-    const store = await this.storesService.findById(storeId);
+    // Perf (F5): findByIdBasic — so precisa de lat/lng, nao do catalogo inteiro.
+    const store = await this.storesService.findByIdBasic(storeId);
     const pricePerKm = await this.platformConfigService.getDeliveryPricePerKm();
     const basePrice = await this.platformConfigService.getDeliveryBasePrice();
 
@@ -174,7 +191,8 @@ export class StoresResolver {
     @Args('customerLatitude', { type: () => Float }) customerLat: number,
     @Args('customerLongitude', { type: () => Float }) customerLng: number,
   ): Promise<number> {
-    const store = await this.storesService.findById(storeId);
+    // Perf (F5): findByIdBasic — so precisa de lat/lng/hasOwnDelivery.
+    const store = await this.storesService.findByIdBasic(storeId);
 
     if (store.hasOwnDelivery) {
       return store.estimatedDeliveryMinutes || 30;
@@ -214,6 +232,7 @@ export class StoresResolver {
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('stores')
   async toggleStoreActive(
     @Args('id') id: string,
     @CurrentUser() admin: any,
@@ -234,6 +253,7 @@ export class StoresResolver {
   @Mutation(() => Boolean)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('stores')
   requestStoreDelete(
     @Args('storeId') storeId: string,
     @Args('password') password: string,
@@ -245,8 +265,13 @@ export class StoresResolver {
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  recalculateVerification(@Args('storeId') storeId: string): Promise<Store> {
-    return this.verificationService.recalculateScore(storeId);
+  recalculateVerification(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: VendorUser,
+  ): Promise<Store> {
+    // KAN-253: passa o dono para validar ownership — era IDOR, qualquer vendor
+    // recalculava a verificacao de loja alheia. Mesmo padrao do claimBadgeReward.
+    return this.verificationService.recalculateScore(storeId, user.id);
   }
 
   @Mutation(() => Store)
@@ -263,6 +288,7 @@ export class StoresResolver {
   @Mutation(() => Store)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
+  @Permission('stores')
   async setStoreVerification(
     @Args('storeId') storeId: string,
     @Args('level', { type: () => VerificationLevel }) level: VerificationLevel,
@@ -326,11 +352,42 @@ export class StoresResolver {
     return this.storesService.getFollowerCount(storeId);
   }
 
+  // KAN-259: so devolve o dono para requisicoes autenticadas. Anonimo recebe
+  // null em vez de email/telefone/CPF do lojista. O superadmin (unico consumidor
+  // real de `owner`) segue funcionando porque manda o Bearer token.
+  @ResolveField(() => VendorUser, { nullable: true })
+  owner(@Parent() store: Store, @Context() ctx: any): VendorUser | null {
+    const raw: string =
+      ctx?.req?.headers?.authorization || ctx?.req?.headers?.Authorization || '';
+    const token = raw.replace(/^Bearer\s+/i, '').trim();
+    const secret = process.env.JWT_SECRET;
+    if (!token || !secret) return null;
+    let payload: any;
+    try {
+      payload = jwtVerify(token, secret);
+    } catch {
+      return null;
+    }
+    // `owner` expõe PII do lojista (email, CPF, telefone, googleId). Antes bastava
+    // um token VÁLIDO — qualquer cliente comum logado colhia os dados pessoais de
+    // todos os donos de loja (as queries públicas stores/store/storeBySlug já
+    // carregam a relação owner). Agora só o superadmin ou o próprio dono recebem;
+    // os demais recebem null. (ownerPaymentConnected cobre o dado não-sensível.)
+    const isSuperadmin = payload?.role === 'SUPERADMIN';
+    const isOwner =
+      payload?.sub && store.owner?.id && payload.sub === store.owner.id;
+    if (!isSuperadmin && !isOwner) return null;
+    return store.owner ?? null;
+  }
+
   @ResolveField(() => Boolean)
   ownerPaymentConnected(@Parent() store: Store): boolean {
     return store.owner?.paymentConnected ?? false;
   }
 
+  // I4: exige autenticação para assinar (dado público, mas antes era firehose
+  // anônimo de todas as lojas). Clientes reais já assinam só logados.
+  @UseGuards(GqlAuthGuard)
   @Subscription(() => Store, {
     filter: (payload, variables) =>
       !variables.storeId || payload.storeUpdated.id === variables.storeId,

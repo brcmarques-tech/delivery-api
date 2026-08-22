@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { AppUser } from '../users/entities/app-user.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 
 interface ExpoPushMessage {
   to: string;
@@ -104,28 +105,55 @@ export class NotificationsService {
   }
 
   private async sendPushNotifications(messages: ExpoPushMessage[]): Promise<void> {
-    try {
-      const response = await fetch('https://exp.host/--/api/v2/push/send', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(messages),
-      });
-
-      const result = await response.json();
-      if (result.errors) {
-        this.logger.error('[sendPush] Expo push errors:', JSON.stringify(result.errors));
-      }
-      if (result.data) {
-        result.data.forEach((ticket: any, i: number) => {
-          if (ticket.status === 'error') {
-            this.logger.error(`[sendPush] FAILED for ${messages[i].to}: ${ticket.message}`);
-          }
+    // A API do Expo limita 100 mensagens por request e REJEITA o payload inteiro
+    // se passar disso. Antes, um broadcast para >100 destinatários (ex.: todos os
+    // entregadores offline via notifyAllDeliverers) era rejeitado e NINGUÉM
+    // recebia. Agora envia em lotes de 100.
+    const CHUNK = 100;
+    for (let i = 0; i < messages.length; i += CHUNK) {
+      const batch = messages.slice(i, i + CHUNK);
+      try {
+        const response = await fetchWithTimeout('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(batch),
         });
+
+        const result = await response.json();
+        if (result.errors) {
+          this.logger.error('[sendPush] Expo push errors:', JSON.stringify(result.errors));
+        }
+        if (result.data) {
+          const deadTokens: string[] = [];
+          result.data.forEach((ticket: any, j: number) => {
+            if (ticket.status === 'error') {
+              this.logger.error(`[sendPush] FAILED for ${batch[j].to}: ${ticket.message}`);
+              // DeviceNotRegistered = app desinstalado / token expirado. Marca
+              // para limpeza (senão o token morto fica sendo re-tentado pra sempre).
+              if (ticket.details?.error === 'DeviceNotRegistered') {
+                deadTokens.push(batch[j].to);
+              }
+            }
+          });
+          if (deadTokens.length) await this.pruneDeadTokens(deadTokens);
+        }
+      } catch (error) {
+        this.logger.error('[sendPush] Failed to send push notifications', error);
       }
-    } catch (error) {
-      this.logger.error('[sendPush] Failed to send push notifications', error);
+    }
+  }
+
+  /** Remove tokens de push que o Expo reportou como não registrados. */
+  private async pruneDeadTokens(tokens: string[]): Promise<void> {
+    try {
+      const nulled = { expoPushToken: null as any };
+      await this.appUsersRepository.update({ expoPushToken: In(tokens) }, nulled);
+      await this.vendorUsersRepository.update({ expoPushToken: In(tokens) }, nulled);
+      this.logger.log(`[sendPush] ${tokens.length} token(s) morto(s) removido(s)`);
+    } catch (e: any) {
+      this.logger.error('[sendPush] Falha ao limpar tokens mortos', e?.message);
     }
   }
 }

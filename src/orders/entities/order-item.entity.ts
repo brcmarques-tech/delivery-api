@@ -4,6 +4,7 @@ import {
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
+  Index,
 } from 'typeorm';
 import { Order } from './order.entity';
 import { Product } from '../../products/entities/product.entity';
@@ -35,10 +36,12 @@ export class OrderItem {
   @Column({ nullable: true })
   weightGrams: number;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Order)
   @ManyToOne(() => Order, (order) => order.items)
   order: Order;
 
+  @Index() // KAN-261: FK sem indice fazia scan da tabela inteira
   @Field(() => Product, { nullable: true })
   @ManyToOne(() => Product, { nullable: true, onDelete: 'SET NULL' })
   product: Product;

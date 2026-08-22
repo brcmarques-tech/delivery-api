@@ -14,8 +14,10 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { timingSafeEqual } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { StoresService } from '../stores/stores.service';
+import { businessTodayDate } from '../common/utils/business-time';
 import { OrdersService } from '../orders/orders.service';
 import { ProductsService } from '../products/products.service';
 import { CouponsService } from '../coupons/coupons.service';
@@ -39,7 +41,14 @@ export class N8nAgentController {
 
   private checkAuth(key: string) {
     const expected = this.configService.get<string>('N8N_AGENT_KEY');
-    if (!expected || key !== expected) throw new UnauthorizedException();
+    if (!expected) throw new UnauthorizedException();
+    // #6: comparação em tempo constante (igual ao webhook do Pagar.me), evitando
+    // o vazamento de timing do `!==` que permitiria descobrir a chave byte a byte.
+    const a = Buffer.from(String(key || ''));
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new UnauthorizedException();
+    }
   }
 
   @Get('stores/by-phone')
@@ -66,16 +75,23 @@ export class N8nAgentController {
   ) {
     this.checkAuth(key);
     const digits = phone?.replace(/\D/g, '') ?? '';
-    const user = await this.appUsersRepository
+    // BUGFIX: a busca casava so os ULTIMOS 8 DIGITOS do telefone. Numeros
+    // brasileiros que diferem apenas no DDD colidem (+55 11 99999-1234 vs
+    // +55 53 99999-1234) e `getOne()` devolvia uma linha ARBITRARIA — o agente
+    // do WhatsApp entao respondia a um cliente com o historico de pedidos de
+    // OUTRA pessoa. Pior ainda: telefone ausente/nao-numerico virava
+    // `LIKE '%'`, que casa TODO MUNDO, prendendo a conversa a uma conta
+    // aleatoria. Como `phone` nao e unico, tambem recusamos ambiguidade.
+    if (digits.length < 10) return null;
+    const matches = await this.appUsersRepository
       .createQueryBuilder('u')
-      .where(
-        "REPLACE(REPLACE(REPLACE(u.phone, '+', ''), '-', ''), ' ', '') LIKE :suffix",
-        {
-          suffix: `%${digits.slice(-8)}`,
-        },
-      )
-      .getOne();
-    if (!user) return null;
+      .where("regexp_replace(u.phone, '[^0-9]', '', 'g') = :digits", { digits })
+      .orWhere("regexp_replace(u.phone, '[^0-9]', '', 'g') = :noCountry", {
+        noCountry: digits.startsWith('55') ? digits.slice(2) : digits,
+      })
+      .getMany();
+    if (matches.length !== 1) return null;
+    const user = matches[0];
     return { id: user.id, name: user.name, phone: user.phone };
   }
 
@@ -113,12 +129,22 @@ export class N8nAgentController {
     @Headers('x-n8n-key') key: string,
   ) {
     this.checkAuth(key);
-    const orders = await this.ordersService.findByStore(storeId);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayOrders = orders.filter((o) => new Date(o.createdAt) >= today);
-    const delivered = todayOrders.filter(
-      (o) => o.status === OrderStatus.DELIVERED,
+    // BUGFIX: `setHours(0,0,0,0)` usava o fuso do PROCESSO (UTC em producao), o
+    // que corta o dia as 21:00 BRT do dia anterior. O vendedor pedia "resumo de
+    // hoje" as 20:00 e recebia pedidos de ontem a noite junto — e os de hoje a
+    // noite eram contados de novo amanha. Receita reportada no dia errado todo
+    // santo dia. Agora a virada do dia e no fuso do negocio.
+    const today = businessTodayDate();
+    // BUGFIX: o filtro do dia roda no SQL (findByStoreSince). Com o findByStore
+    // anterior (cap dos 500 mais recentes) + filtro em memoria, uma loja que
+    // passava de 500 pedidos no dia perdia os primeiros do dia — resumo com
+    // menos pedidos/receita do que o real, justo nos dias mais movimentados.
+    const todayOrders = await this.ordersService.findByStoreSince(storeId, today);
+    // O caminho feliz termina em COMPLETED (DELIVERING -> DELIVERER_CONFIRMED_DELIVERY
+    // -> COMPLETED); DELIVERED é um estado alternativo. Filtrar só DELIVERED fazia
+    // o agente reportar ~R$0 de receita mesmo em dias cheios de pedidos concluídos.
+    const delivered = todayOrders.filter((o) =>
+      [OrderStatus.DELIVERED, OrderStatus.COMPLETED].includes(o.status),
     );
     const inProgress = todayOrders.filter((o) =>
       [
@@ -127,6 +153,9 @@ export class N8nAgentController {
         OrderStatus.PREPARING,
         OrderStatus.READY,
         OrderStatus.DELIVERING,
+        OrderStatus.PICKED_UP,
+        OrderStatus.VENDOR_CONFIRMED_PICKUP,
+        OrderStatus.DELIVERER_CONFIRMED_DELIVERY,
       ].includes(o.status),
     );
     const revenue = delivered.reduce((sum, o) => sum + Number(o.total), 0);
@@ -166,7 +195,15 @@ export class N8nAgentController {
     this.checkAuth(key);
     const order = await this.ordersService.findByOrderNumber(orderNumber);
     if (!order) throw new NotFoundException('Pedido nao encontrado');
-    if (customerId && order.customer?.id !== customerId) {
+    // BUGFIX: a checagem era OPCIONAL (`customerId && ...`) — bastava o
+    // workflow omitir o parametro para o agente narrar o pedido de qualquer
+    // pessoa a quem perguntasse pelo numero (numeros de pedido circulam em
+    // mensagens e comprovantes). O endpoint de status ja exigia posse; estes
+    // ficaram para tras. Agora a identificacao e obrigatoria.
+    if (!customerId) {
+      throw new ForbiddenException('Identificacao do cliente obrigatoria');
+    }
+    if (order.customer?.id !== customerId) {
       throw new ForbiddenException('Pedido nao pertence a este cliente');
     }
     return {
@@ -233,8 +270,17 @@ export class N8nAgentController {
   async toggleStoreOpen(
     @Param('id') id: string,
     @Headers('x-n8n-key') key: string,
+    @Query('storeId') storeId?: string,
   ) {
     this.checkAuth(key);
+    // BUGFIX: nao havia NENHUM vinculo entre a loja alvo e a conversa. A chave
+    // do n8n e unica e compartilhada por todos os workflows, entao uma mensagem
+    // contendo o id de outra loja ("feche a loja <uuid>") fazia o agente fechar
+    // a loja de um CONCORRENTE. Agora a loja da conversa (resolvida pelo
+    // telefone via stores/by-phone) precisa bater com o alvo.
+    if (!storeId || storeId !== id) {
+      throw new ForbiddenException('Loja da conversa nao confere com a loja alvo');
+    }
     const store = await this.storesRepository.findOne({ where: { id } });
     if (!store) throw new NotFoundException('Loja nao encontrada');
     store.isOpen = !store.isOpen;
@@ -266,8 +312,18 @@ export class N8nAgentController {
   async toggleProductAvailability(
     @Param('id') id: string,
     @Headers('x-n8n-key') key: string,
+    @Query('storeId') storeId?: string,
   ) {
     this.checkAuth(key);
+    // BUGFIX: mesmo buraco do toggle-open — um id de produto copiado de uma
+    // listagem publica permitia esconder o produto de outro vendedor.
+    if (!storeId) {
+      throw new ForbiddenException('Loja da conversa obrigatoria');
+    }
+    const alvo = await this.productsService.findById(id);
+    if ((alvo as any)?.store?.id !== storeId) {
+      throw new ForbiddenException('Produto nao pertence a esta loja');
+    }
     const product = await this.productsService.toggleAvailability(id);
     return { productName: product.name, isAvailable: product.isAvailable };
   }
@@ -303,7 +359,13 @@ export class N8nAgentController {
     this.checkAuth(key);
     const order = await this.ordersService.findByOrderNumber(orderNumber);
     if (!order) throw new NotFoundException('Pedido nao encontrado');
-    if (customerId && order.customer?.id !== customerId) {
+    // BUGFIX: posse era opcional. Este endpoint devolve NOME, TELEFONE e a
+    // POSICAO GPS AO VIVO do entregador — sem a checagem obrigatoria, qualquer
+    // um com um numero de pedido rastreava o entregador de outra pessoa.
+    if (!customerId) {
+      throw new ForbiddenException('Identificacao do cliente obrigatoria');
+    }
+    if (order.customer?.id !== customerId) {
       throw new ForbiddenException('Pedido nao pertence a este cliente');
     }
     const delivery = order.delivery;
@@ -332,6 +394,32 @@ export class N8nAgentController {
     @Headers('x-n8n-key') key: string,
   ) {
     this.checkAuth(key);
+
+    // #4: exige um identificador de POSSE. ANTES, um corpo só com
+    // {orderNumber,status} pulava as duas checagens abaixo e transicionava
+    // QUALQUER pedido para QUALQUER status — inclusive COMPLETED, que dispara o
+    // repasse (settlePayment). Agora é obrigatório storeId OU customerId.
+    if (!body.storeId && !body.customerId) {
+      throw new ForbiddenException('Informe storeId ou customerId para atualizar o pedido.');
+    }
+
+    // #4: o agente não pode dirigir estados de entrega/liquidação (que movem
+    // dinheiro): PICKED_UP/DELIVERING/DELIVERED/DELIVERER_CONFIRMED_DELIVERY/
+    // COMPLETED/VENDOR_CONFIRMED_PICKUP ficam de fora.
+    // BUGFIX: a allowlist era UNICA para os dois agentes. Como quem se identifica
+    // por `customerId` e o proprio cliente, ele podia empurrar o PROPRIO pedido
+    // por PENDING -> ACCEPTED -> PREPARING -> READY (todas na lista) — e READY e
+    // exatamente o estado que faz o pedido entrar em `availableDeliveries`: um
+    // entregador seria despachado para coletar um pedido que a loja nunca
+    // aceitou nem preparou. Agora o conjunto permitido depende de QUEM se
+    // identificou: vendedor conduz o preparo; cliente so cancela o proprio.
+    const VENDOR_STATUSES = ['ACCEPTED', 'PREPARING', 'READY', 'CANCELLED', 'REJECTED'];
+    const CUSTOMER_STATUSES = ['CANCELLED'];
+    const permitidos = body.storeId ? VENDOR_STATUSES : CUSTOMER_STATUSES;
+    if (!permitidos.includes(body.status)) {
+      throw new ForbiddenException('O agente nao pode definir este status do pedido.');
+    }
+
     const order = await this.ordersService.findByOrderNumber(body.orderNumber);
     if (!order) throw new NotFoundException('Pedido nao encontrado');
 
@@ -356,11 +444,25 @@ export class N8nAgentController {
     });
     if (!actor) throw new NotFoundException('Usuario agente nao encontrado');
 
-    const updated = await this.ordersService.updateStatus(
-      order.id,
-      body.status as OrderStatus,
-      actor,
-    );
+    // BUGFIX (dinheiro): CANCELLED/REJECTED NAO podem ir por updateStatus cru —
+    // ele so devolve estoque/cupom e nao estorna. Um pedido ja pago (PIX/cartao
+    // capturado) cancelado pelo atendimento deixava o cliente sem o dinheiro de
+    // volta. cancelOrRejectFromAgent roteia pelo fluxo que estorna (mesmos
+    // rejectOrder/vendorCancelOrder/cancelByCustomer da UI).
+    const isTerminal =
+      body.status === OrderStatus.CANCELLED ||
+      body.status === OrderStatus.REJECTED;
+    const updated = isTerminal
+      ? await this.ordersService.cancelOrRejectFromAgent(
+          order.id,
+          body.status as OrderStatus,
+          { storeId: body.storeId, customerId: body.customerId },
+        )
+      : await this.ordersService.updateStatus(
+          order.id,
+          body.status as OrderStatus,
+          actor,
+        );
     return {
       success: true,
       orderNumber: updated.orderNumber,

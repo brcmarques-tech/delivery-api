@@ -61,9 +61,13 @@ export class CouponsResolver {
   }
 
   @Query(() => [Coupon])
-  @UseGuards(GqlAuthGuard)
-  storeCoupons(@Args('storeId') storeId: string): Promise<Coupon[]> {
-    return this.couponsService.findByStore(storeId);
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  storeCoupons(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: VendorUser,
+  ): Promise<Coupon[]> {
+    return this.couponsService.findByStore(storeId, user.id);
   }
 
   // ─── Superadmin ───

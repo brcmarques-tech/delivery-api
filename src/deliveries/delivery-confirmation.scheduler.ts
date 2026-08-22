@@ -5,6 +5,13 @@ import { OrdersService } from '../orders/orders.service';
 export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DeliveryConfirmationScheduler.name);
   private intervalId: ReturnType<typeof setInterval>;
+  // R#3: guarda de reentrância. ANTES os 6 jobs disparavam fire-and-forget a cada
+  // 60s; como cada um faz várias chamadas ao Pagar.me e pode passar de 60s, a
+  // rodada seguinte começava sobre as MESMAS linhas ainda sendo mutadas —
+  // amplificando o estorno duplo do refundOrder (R#1) e o restore de estoque em
+  // dobro, sem nenhuma ação do usuário. Agora uma rodada só começa se a anterior
+  // terminou, e os jobs rodam em sequência (cada um já tem seu try/catch).
+  private isRunning = false;
 
   constructor(
     private ordersService: OrdersService,
@@ -13,17 +20,30 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
   onModuleInit() {
     // Check every 60 seconds
     this.intervalId = setInterval(() => {
-      this.expireAwaitingPaymentOrders();
-      this.expirePendingOrders();
-      this.autoAdvanceVendorConfirmedPickup();
-      this.autoConfirmExpiredDeliveries();
-      this.alertNoDeliverer();
-      this.retryFailedSettlements();
+      this.tick().catch((err) => this.logger.error('Tick do scheduler falhou:', err));
     }, 60_000);
   }
 
   onModuleDestroy() {
     if (this.intervalId) clearInterval(this.intervalId);
+  }
+
+  private async tick() {
+    if (this.isRunning) {
+      this.logger.warn('Rodada anterior ainda em execução — pulando esta.');
+      return;
+    }
+    this.isRunning = true;
+    try {
+      await this.expireAwaitingPaymentOrders();
+      await this.expirePendingOrders();
+      await this.autoAdvanceVendorConfirmedPickup();
+      await this.autoConfirmExpiredDeliveries();
+      await this.alertNoDeliverer();
+      await this.retryFailedSettlements();
+    } finally {
+      this.isRunning = false;
+    }
   }
 
   // Expirar pedidos sem pagamento (AWAITING_PAYMENT > 30 min)

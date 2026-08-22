@@ -187,6 +187,11 @@ export class ProductsResolver {
     return this.productsService.searchCatalog(query, limit);
   }
 
+  // I4: exige autenticação para assinar (igual promotionUpdated). Dado de produto
+  // é público, mas antes qualquer conexão anônima abria um firehose de TODAS as
+  // mudanças de produto da plataforma. Os clientes reais (mobile/painel) já só
+  // assinam logados.
+  @UseGuards(GqlAuthGuard)
   @Subscription(() => Product, {
     filter: (payload, variables) =>
       !variables.storeId || payload.productUpdated.store?.id === variables.storeId,
@@ -195,6 +200,7 @@ export class ProductsResolver {
     return this.pubSub.asyncIterableIterator('productUpdated');
   }
 
+  @UseGuards(GqlAuthGuard)
   @Subscription(() => ProductDeletedPayload, {
     filter: (payload, variables) =>
       !variables.storeId || payload.productDeleted.storeId === variables.storeId,

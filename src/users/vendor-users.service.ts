@@ -13,6 +13,8 @@ import { VerificationService } from '../stores/verification.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { peppered } from '../common/utils/pepper';
 
+import { isValidCpf } from '../common/utils/cpf'; // KAN-253
+import { resolvePublicUrl } from '../common/utils/public-url';
 @Injectable()
 export class VendorUsersService {
   constructor(
@@ -27,31 +29,12 @@ export class VendorUsersService {
     private whatsAppService: WhatsAppService,
   ) {}
 
-  private validateCpf(cpf: string): boolean {
-    const digits = cpf.replace(/\D/g, '');
-    if (digits.length !== 11) return false;
-    if (/^(\d)\1{10}$/.test(digits)) return false;
-
-    let sum = 0;
-    for (let i = 0; i < 9; i++) sum += parseInt(digits[i]) * (10 - i);
-    let check = 11 - (sum % 11);
-    if (check >= 10) check = 0;
-    if (parseInt(digits[9]) !== check) return false;
-
-    sum = 0;
-    for (let i = 0; i < 10; i++) sum += parseInt(digits[i]) * (11 - i);
-    check = 11 - (sum % 11);
-    if (check >= 10) check = 0;
-    if (parseInt(digits[10]) !== check) return false;
-
-    return true;
-  }
 
   async validateRegistration(email: string, cpf: string, phone: string): Promise<{ valid: boolean; emailError?: string; cpfError?: string; phoneError?: string }> {
     const result: { valid: boolean; emailError?: string; cpfError?: string; phoneError?: string } = { valid: true };
 
     if (cpf) {
-      if (!this.validateCpf(cpf)) {
+      if (!isValidCpf(cpf)) {
         result.cpfError = 'CPF invalido';
         result.valid = false;
       } else {
@@ -81,9 +64,13 @@ export class VendorUsersService {
     return result;
   }
 
-  async create(input: RegisterVendorInput): Promise<VendorUser> {
+  /**
+   * KAN-231: `phoneVerified` deixou de ser literal `true` (mesmo problema do
+   * cadastro de cliente) — quem chama informa se houve verificacao de fato.
+   */
+  async create(input: RegisterVendorInput, phoneVerified = false): Promise<VendorUser> {
     if (input.cpf) {
-      if (!this.validateCpf(input.cpf)) {
+      if (!isValidCpf(input.cpf)) {
         throw new BadRequestException('CPF invalido');
       }
     }
@@ -96,6 +83,10 @@ export class VendorUsersService {
     }
 
     if (input.cpf) {
+      // NORMALIZA antes de checar e de gravar — mesma correcao do app-users
+      // (ver comentario la): CPF com mascara furava a unicidade e gerava
+      // recipient Pagar.me duplicado para o mesmo documento.
+      input.cpf = input.cpf.replace(/\D/g, '');
       const cpfExists = await this.vendorUsersRepository.findOne({
         where: { cpf: input.cpf },
       });
@@ -112,7 +103,7 @@ export class VendorUsersService {
       password: hashedPassword,
       role: UserRole.CUSTOMER,
       pendingRole: 'VENDOR',
-      phoneVerified: true,
+      phoneVerified,
       acceptedTermsAt: new Date(),
     });
     return this.vendorUsersRepository.save(user);
@@ -141,6 +132,31 @@ export class VendorUsersService {
       relations: ['stores'],
       order: { createdAt: 'DESC' },
     });
+  }
+
+  // KAN-292: vendedores paginados + busca (painel de Usuarios / aba Vendedores).
+  // Substitui o allVendorUsers (tabela inteira) filtrado no cliente.
+  async findAllPaginated(
+    search: string | null,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: VendorUser[]; total: number; hasMore: boolean }> {
+    const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const skip = Math.max(Number(offset) || 0, 0);
+    const qb = this.vendorUsersRepository
+      .createQueryBuilder('u')
+      .leftJoinAndSelect('u.stores', 'stores')
+      .orderBy('u.createdAt', 'DESC')
+      .addOrderBy('u.id', 'DESC');
+    if (search && search.trim()) {
+      const like = `%${search.trim()}%`;
+      qb.andWhere(
+        '(u.name ILIKE :like OR u.email ILIKE :like OR u.phone ILIKE :like)',
+        { like },
+      );
+    }
+    const [items, total] = await qb.skip(skip).take(take).getManyAndCount();
+    return { items, total, hasMore: skip + items.length < total };
   }
 
   async findPendingApprovals(): Promise<VendorUser[]> {
@@ -233,6 +249,12 @@ export class VendorUsersService {
     const user = await this.vendorUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     user.isActive = !user.isActive;
+    // SEGURANCA: ao DESATIVAR, rotaciona o sessionToken para derrubar na hora
+    // qualquer sessao ja aberta (o jwt.strategy compara o token da sessao).
+    // Sem isto o banido continuava usando o app ate o JWT expirar.
+    if (!user.isActive) {
+      user.sessionToken = crypto.randomBytes(32).toString('hex');
+    }
     return this.vendorUsersRepository.save(user);
   }
 
@@ -246,7 +268,12 @@ export class VendorUsersService {
     });
   }
 
-  async updateVendorPlan(id: string, plan: VendorPlan, durationMonths: number): Promise<VendorUser> {
+  async updateVendorPlan(
+    id: string,
+    plan: VendorPlan,
+    durationMonths: number,
+    expiresAt?: Date,
+  ): Promise<VendorUser> {
     const user = await this.vendorUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     if (user.role !== UserRole.VENDOR) {
@@ -255,9 +282,44 @@ export class VendorUsersService {
 
     user.vendorPlan = plan;
     if (plan !== VendorPlan.FREE) {
-      const expiresAt = new Date();
-      expiresAt.setMonth(expiresAt.getMonth() + durationMonths);
-      user.planExpiresAt = expiresAt;
+      // Se veio uma data exata (fim do ciclo pago), usa ela. Antes, o webhook
+      // convertia o período em meses via ceil(dias/30) e reaplicava com setMonth,
+      // arredondando pra cima — um ciclo trimestral (~91d) virava +4 meses (~120d),
+      // dando ~1 mês a mais de plano por ciclo do que foi pago.
+      if (expiresAt) {
+        // ...mas o fim do ciclo do Pagar.me NUNCA pode encurtar o que ja foi
+        // pago. Este ramo (cartao) sobrescrevia direto, enquanto o ramo de baixo
+        // (PIX) empilhava — o mesmo upgrade tirava dias por cartao e dava dias
+        // por PIX. Dois casos concretos de perda: quem tinha PRO anual e subia
+        // para PREMIUM mensal no meio do ciclo ficava com o vencimento do mes
+        // seguinte, perdendo os meses de PRO ja pagos; e os dias de trial do
+        // selo DIAMOND evaporavam na primeira renovacao. Agora vale o MAIOR
+        // entre o ciclo novo e o vencimento atual.
+        const atualCartao = user.planExpiresAt
+          ? new Date(user.planExpiresAt)
+          : null;
+        user.planExpiresAt =
+          atualCartao && atualCartao.getTime() > expiresAt.getTime()
+            ? atualCartao
+            : expiresAt;
+      } else {
+        // BUGFIX: a base era sempre "hoje" — uma renovacao por PIX feita antes do
+        // vencimento DESTRUIA os dias restantes ja pagos (ex.: faltando 40 dias,
+        // comprar +12 meses dava 12 meses a partir de hoje, perdendo os 40).
+        // Agora empilha sobre o que resta: base = max(hoje, vencimento atual).
+        // Continua correto para quem ja venceu (base vira hoje).
+        const atual = user.planExpiresAt ? new Date(user.planExpiresAt) : null;
+        const base = atual && atual.getTime() > Date.now() ? atual : new Date();
+        const e = new Date(base);
+        e.setMonth(e.getMonth() + durationMonths);
+        // setMonth transborda quando o dia nao existe no mes de destino: renovar
+        // mensal em 31/01 pedia "31 de fevereiro" e o JS normalizava para 03/03,
+        // entregando 31 dias em vez de 28. Como o proximo ciclo parte dessa data
+        // deslocada, o erro nunca se corrigia sozinho. Voltar para o ultimo dia
+        // do mes de destino (setDate(0)) mantem o vencimento no fim do mes.
+        if (e.getDate() !== base.getDate()) e.setDate(0);
+        user.planExpiresAt = e;
+      }
     } else {
       user.planExpiresAt = null;
     }
@@ -285,11 +347,23 @@ export class VendorUsersService {
     await this.vendorUsersRepository.update(id, { expoPushToken: token });
   }
 
-  async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string, email?: string): Promise<VendorUser> {
+  async updateProfile(id: string, name?: string, phone?: string, currentPassword?: string, newPassword?: string, email?: string, cpf?: string): Promise<VendorUser> {
     const user = await this.vendorUsersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('Usuario nao encontrado');
     if (name) user.name = name;
     if (phone) user.phone = phone;
+    // CPF: só pode ser PREENCHIDO quando está vazio (não permite trocar um CPF já
+    // cadastrado, por integridade/anti-fraude). Necessário para pagar plano/pedido
+    // com PIX. Valida formato e unicidade.
+    if (cpf && !user.cpf) {
+      const clean = cpf.replace(/\D/g, '');
+      if (!isValidCpf(clean)) throw new BadRequestException('CPF invalido');
+      const existing = await this.vendorUsersRepository.findOne({ where: { cpf: clean } });
+      if (existing) throw new BadRequestException('CPF ja cadastrado');
+      user.cpf = clean;
+    } else if (cpf && user.cpf && cpf.replace(/\D/g, '') !== user.cpf) {
+      throw new BadRequestException('O CPF ja esta cadastrado e nao pode ser alterado. Fale com o suporte.');
+    }
     if (email && email !== user.email) {
       const existing = await this.vendorUsersRepository.findOne({ where: { email } });
       if (existing) throw new BadRequestException('Este email ja esta em uso');
@@ -336,7 +410,8 @@ export class VendorUsersService {
     user.resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000);
     await this.vendorUsersRepository.save(user);
 
-    const vendorUrl = this.configService.get('VENDOR_APP_URL', 'http://localhost:3001');
+    // KAN-258: idem — reset de senha do lojista por e-mail/WhatsApp.
+    const vendorUrl = resolvePublicUrl(this.configService, 'VENDOR_APP_URL', 'http://localhost:3001');
     const resetUrl = `${vendorUrl}/reset-password?token=${token}`;
 
     await this.mailService.sendPasswordResetEmail(user.email, user.name, token, resetUrl);
@@ -361,6 +436,12 @@ export class VendorUsersService {
     user.password = await bcrypt.hash(peppered(newPassword), 10);
     user.resetPasswordToken = null as any;
     user.resetPasswordExpires = null as any;
+    // A#2: trocar a senha derruba todas as sessões existentes (rotaciona o
+    // sessionToken → JWTs pré-reset deixam de casar).
+    user.sessionToken = crypto.randomBytes(32).toString('hex');
+    // KAN-280: sem sessao apos o reset — senao o proximo login levava
+    // ACTIVE_SESSION fantasma.
+    user.sessionActive = false;
     await this.vendorUsersRepository.save(user);
     return true;
   }

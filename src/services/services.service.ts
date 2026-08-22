@@ -88,7 +88,19 @@ export class ServicesService {
     return true;
   }
 
-  async findByStore(storeId: string, includeAll = false): Promise<Service[]> {
+  async findByStore(storeId: string, includeAll = false, ownerId?: string): Promise<Service[]> {
+    // includeAll=true devolve serviços inativos/ocultos — só o dono pode ver.
+    // Antes qualquer VENDOR passava um storeId de concorrente e lia o catálogo
+    // oculto (isActive/isAvailable=false) de outra loja.
+    if (ownerId) {
+      const store = await this.storesRepository.findOne({
+        where: { id: storeId },
+        relations: ['owner'],
+      });
+      if (!store || store.owner?.id !== ownerId) {
+        throw new BadRequestException('Voce nao e dono desta loja');
+      }
+    }
     const where: any = { store: { id: storeId } };
     if (!includeAll) {
       where.isActive = true;

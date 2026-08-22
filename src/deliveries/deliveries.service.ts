@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, IsNull } from 'typeorm';
+import { Repository, Not, In, IsNull } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
 import { Delivery } from './entities/delivery.entity';
 import { AppUser } from '../users/entities/app-user.entity';
@@ -9,6 +9,7 @@ import { DeliveryOfferService } from './delivery-offer.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PlatformConfigService } from '../config/platform-config.service';
 
 @Injectable()
 export class DeliveriesService implements OnModuleInit {
@@ -19,6 +20,7 @@ export class DeliveriesService implements OnModuleInit {
     private ordersService: OrdersService,
     private offerService: DeliveryOfferService,
     private notificationsService: NotificationsService,
+    private platformConfigService: PlatformConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -47,9 +49,34 @@ export class DeliveriesService implements OnModuleInit {
       );
     }
 
-    // Check if deliverer already has an active delivery (not delivered yet)
+    // Check if deliverer already has an active delivery (not delivered yet).
+    //
+    // BUGFIX: a checagem era so `deliveredAt IS NULL`, e existem caminhos que
+    // levam o PEDIDO a um estado terminal sem nunca fechar a ENTREGA — estorno
+    // pelo vendedor/painel do Pagar.me, cancelamento, expiracao. A linha ficava
+    // orfa (deliveredAt nulo pra sempre) e o entregador nao conseguia mais
+    // aceitar NENHUMA entrega: ficava permanentemente fora do trabalho, sem ter
+    // feito nada errado e sem forma de destravar pelo app. (Confirmado em dados
+    // reais: pedido COMPLETED com a entrega ainda sem deliveredAt.)
+    //
+    // A regra continua a mesma — um entregador so leva uma entrega por vez. So
+    // deixamos de contar como "em andamento" a entrega cujo pedido ja acabou.
     const activeDelivery = await this.deliveriesRepository.findOne({
-      where: { deliverer: { id: deliverer.id }, deliveredAt: IsNull() },
+      where: {
+        deliverer: { id: deliverer.id },
+        deliveredAt: IsNull(),
+        order: {
+          status: Not(
+            In([
+              OrderStatus.COMPLETED,
+              OrderStatus.CANCELLED,
+              OrderStatus.REJECTED,
+              OrderStatus.EXPIRED,
+              OrderStatus.DISPUTED,
+            ]),
+          ),
+        },
+      },
       relations: ['order'],
     });
     if (activeDelivery) {
@@ -71,6 +98,43 @@ export class DeliveriesService implements OnModuleInit {
 
       if (!lockedOrder || lockedOrder.length === 0) {
         throw new BadRequestException('Pedido não encontrado.');
+      }
+
+      // A regra "um entregador leva uma entrega por vez" era checada FORA desta
+      // transacao, sem lock no entregador, e nao era revalidada aqui dentro.
+      // Dois `acceptDelivery` em paralelo (dois toques no app, ou reenvio por
+      // timeout) para pedidos DIFERENTES liam ambos zero entregas ativas, e
+      // depois travavam linhas de `orders` distintas — sem conflito entre si.
+      // Resultado: uma pessoa com duas entregas simultaneas, dois pedidos fora
+      // da fila e duas lojas esperando uma coleta que so pode acontecer em
+      // serie. O lock no proprio entregador serializa as duas tentativas.
+      await manager.query(`SELECT id FROM app_users WHERE id = $1 FOR UPDATE`, [
+        deliverer.id,
+      ]);
+      const jaTem = await manager.query(
+        `SELECT d.id
+           FROM deliveries d
+           JOIN orders o ON o.id = d."orderId"
+          WHERE d."delivererId" = $1
+            AND d."deliveredAt" IS NULL
+            AND o.status NOT IN ('COMPLETED','CANCELLED','REJECTED','EXPIRED','DISPUTED')
+          LIMIT 1`,
+        [deliverer.id],
+      );
+      if (jaTem && jaTem.length > 0) {
+        throw new BadRequestException(
+          'Voce ja tem uma entrega em andamento. Finalize-a antes de aceitar outra.',
+        );
+      }
+
+      // O pedido precisa estar READY para ser aceito para entrega. Sem isto, um
+      // entregador podia aceitar pedido PENDING/CANCELLED/COMPLETED: travava o
+      // cancelamento pelo vendedor, emperrava o pickup (transição inválida) e a
+      // delivery com deliveredAt nulo o prendia como "entrega ativa" para sempre.
+      if (lockedOrder[0].status !== OrderStatus.READY) {
+        throw new BadRequestException(
+          'Pedido não está disponível para entrega.',
+        );
       }
 
       // Check if delivery already exists for this order
@@ -107,7 +171,7 @@ export class DeliveriesService implements OnModuleInit {
     // Stop the offer cascade — delivery was accepted
     this.offerService.cancelOffer(orderId);
 
-    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+    await this.publishDeliveryUpdate(saved.id);
     // Publish orderUpdated so vendor panel sees the deliverer info
     const updatedOrder = await this.ordersService.findById(orderId);
     this.pubSub.publish('orderUpdated', { orderUpdated: updatedOrder });
@@ -115,6 +179,23 @@ export class DeliveriesService implements OnModuleInit {
     // The order disappears from "Disponíveis" because it now has a delivery record
     this.notifyVendorDeliveryAccepted(order, deliverer);
     return saved;
+  }
+
+  // KAN: publica deliveryUpdated sempre com o delivery COMPLETO (order.customer,
+  // order.store.owner e deliverer). Necessário para (1) o filtro de ownership da
+  // subscription conseguir decidir quem é parte do pedido e (2) clientes poderem
+  // selecionar os campos aninhados do pedido sem 500 (campos não-nuláveis).
+  // Perf (F5): aceita um delivery ja carregado com o grafo completo (preloaded)
+  // para nao repetir o findOne profundo — critico no updateLocation, que roda a
+  // cada tick de GPS.
+  private async publishDeliveryUpdate(deliveryId: string, preloaded?: Delivery): Promise<void> {
+    const full = preloaded ?? await this.deliveriesRepository.findOne({
+      where: { id: deliveryId },
+      relations: ['order', 'order.store', 'order.store.owner', 'order.customer', 'deliverer'],
+    });
+    if (full) {
+      this.pubSub.publish('deliveryUpdated', { deliveryUpdated: full });
+    }
   }
 
   private notifyVendorDeliveryAccepted(order: any, deliverer: AppUser) {
@@ -133,9 +214,13 @@ export class DeliveriesService implements OnModuleInit {
     latitude: number,
     longitude: number,
   ): Promise<Delivery> {
+    // Perf (F5): carrega o grafo completo UMA vez e o reusa na publicacao. Antes
+    // cada tick de GPS fazia 2 buscas (findOne raso + findOne profundo com 5
+    // relations dentro do publishDeliveryUpdate) — dobro de I/O no caminho mais
+    // frequente do rastreio em tempo real.
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
-      relations: ['order'],
+      relations: ['order', 'order.store', 'order.store.owner', 'order.customer', 'deliverer'],
     });
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
 
@@ -143,7 +228,7 @@ export class DeliveriesService implements OnModuleInit {
     delivery.currentLatitude = latitude;
     delivery.currentLongitude = longitude;
     const saved = await this.deliveriesRepository.save(delivery);
-    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: saved });
+    await this.publishDeliveryUpdate(saved.id, saved);
 
     // First location: notify vendor panel so GPS button appears without F5
     if (wasFirstLocation) {
@@ -174,7 +259,7 @@ export class DeliveriesService implements OnModuleInit {
     // Pre-auth stays active — capture happens with split on customer confirmation
     await this.ordersService.updateStatus(order.id, OrderStatus.PICKED_UP);
     const savedDelivery = await this.deliveriesRepository.save(delivery);
-    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
+    await this.publishDeliveryUpdate(savedDelivery.id);
     return savedDelivery;
   }
 
@@ -196,7 +281,23 @@ export class DeliveriesService implements OnModuleInit {
     // Registrar valores para tracking
     if (order.paymentMethod !== 'ON_DELIVERY') {
       const deliveryFee = Number(order.deliveryFee);
-      const vendorAmount = Number(order.subtotal) - Number(order.commissionAmount);
+
+      // KAN-254: este valor e so de tracking, mas divergia do split real. Usava
+      // `subtotal - comissao`, ignorando o desconto de cupom — entao um pedido
+      // com cupom mostrava aqui um repasse maior do que o vendedor de fato
+      // recebe, confundindo relatorio e conferencia.
+      //
+      // O split real (payments.service.ts `captureWithSplit`) calcula sobre o
+      // `total` (que ja tem o desconto aplicado):
+      //   entrega externa  -> total - comissao - taxa de entrega
+      //   retirada/entrega propria -> total - comissao
+      const total = Number(order.total);
+      const commission = Number(order.commissionAmount) || 0;
+      const hasExternalDelivery =
+        !order.store?.hasOwnDelivery && !order.isPickup && deliveryFee > 0;
+      const vendorAmount = hasExternalDelivery
+        ? total - commission - deliveryFee
+        : total - commission;
 
       if (vendorAmount > 0) {
         delivery.vendorPayoutAmount = vendorAmount;
@@ -206,7 +307,16 @@ export class DeliveriesService implements OnModuleInit {
       }
 
       if (!order.store?.hasOwnDelivery && deliveryFee > 0) {
-        delivery.payoutAmount = deliveryFee;
+        // payoutAmount guardava a taxa BRUTA, mas o que sai de fato para o
+        // entregador e liquido da comissao de entrega (default 10%). Como este
+        // campo e @Field e chega no app pelo myDeliveries, o entregador via
+        // "R$ 10,00" na tela e "R$ 9,00" no extrato do Pagar.me, toda entrega.
+        const comissaoPct =
+          await this.platformConfigService.getDeliveryCommissionPercent();
+        const brutoCents = Math.round(deliveryFee * 100);
+        const liquidoCents =
+          brutoCents - Math.round((brutoCents * comissaoPct) / 100);
+        delivery.payoutAmount = liquidoCents / 100;
         delivery.payoutStatus = 'pending_confirmation';
       }
     }
@@ -215,7 +325,7 @@ export class DeliveriesService implements OnModuleInit {
     await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERER_CONFIRMED_DELIVERY);
 
     const savedDelivery = await this.deliveriesRepository.save(delivery);
-    this.pubSub.publish('deliveryUpdated', { deliveryUpdated: savedDelivery });
+    await this.publishDeliveryUpdate(savedDelivery.id);
     return savedDelivery;
   }
 
@@ -231,11 +341,45 @@ export class DeliveriesService implements OnModuleInit {
       .getMany();
   }
 
-  async findByDeliverer(delivererId: string): Promise<Delivery[]> {
+  // Perf (F6): paginado (limit/offset); o take de 100 vira teto do limit.
+  /** O usuario e parte deste pedido? (cliente, dono da loja ou entregador) */
+  async userIsOrderParty(orderId: string, userId: string, role?: string): Promise<boolean> {
+    if (!orderId || !userId) return false;
+    if (role === 'SUPERADMIN') return true;
+    const rows = await this.deliveriesRepository.manager.query(
+      `SELECT 1
+         FROM orders o
+         LEFT JOIN stores s ON s.id = o."storeId"
+         LEFT JOIN deliveries d ON d."orderId" = o.id
+        WHERE o.id = $1
+          AND ($2 IN (o."customerId", s."ownerId") OR d."delivererId" = $2)
+        LIMIT 1`,
+      [orderId, userId],
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
+  /** O usuario e o entregador atribuido a esta entrega? */
+  async delivererOwnsDelivery(deliveryId: string, userId: string): Promise<boolean> {
+    if (!deliveryId || !userId) return false;
+    const rows = await this.deliveriesRepository.manager.query(
+      `SELECT 1 FROM deliveries WHERE id = $1 AND "delivererId" = $2 LIMIT 1`,
+      [deliveryId, userId],
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
+  async findByDeliverer(delivererId: string, limit = 20, offset = 0): Promise<Delivery[]> {
     const deliveries = await this.deliveriesRepository.find({
       where: { deliverer: { id: delivererId } },
       relations: ['order', 'order.store', 'order.customer', 'order.items', 'order.items.product'],
       order: { createdAt: 'DESC' },
+      // Perf (F5): era SEM take — o historico vitalicio do entregador (cada
+      // entrega com pedido + itens + produtos aninhados) descia inteiro a cada
+      // abertura da aba Entregas. 100 cobre ativas + historico recente; myOrders
+      // ja tinha cap analogo (500).
+      take: Math.min(Math.max(limit ?? 20, 1), 100),
+      skip: Math.max(offset ?? 0, 0),
     });
     return deliveries;
   }
@@ -245,6 +389,68 @@ export class DeliveriesService implements OnModuleInit {
       relations: ['order', 'order.store', 'order.customer', 'deliverer'],
       order: { createdAt: 'DESC' },
     });
+  }
+
+  // KAN-292: versao paginada + filtro (status derivado/busca) do painel admin.
+  // O "status" da entrega e derivado de deliveredAt/pickedUpAt (nao ha coluna):
+  //   DELIVERED  = deliveredAt IS NOT NULL
+  //   DELIVERING = deliveredAt IS NULL AND pickedUpAt IS NOT NULL
+  //   PICKED_UP  = deliveredAt IS NULL AND pickedUpAt IS NULL
+  async findAllAdminPaginated(
+    status: string | null,
+    search: string | null,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: Delivery[]; total: number; hasMore: boolean }> {
+    const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const skip = Math.max(Number(offset) || 0, 0);
+    const qb = this.deliveriesRepository
+      .createQueryBuilder('delivery')
+      .leftJoinAndSelect('delivery.order', 'order')
+      .leftJoinAndSelect('order.store', 'store')
+      .leftJoinAndSelect('order.customer', 'customer')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .orderBy('delivery.createdAt', 'DESC')
+      .addOrderBy('delivery.id', 'DESC');
+
+    if (status === 'DELIVERED') {
+      qb.andWhere('delivery.deliveredAt IS NOT NULL');
+    } else if (status === 'DELIVERING') {
+      qb.andWhere('delivery.deliveredAt IS NULL AND delivery.pickedUpAt IS NOT NULL');
+    } else if (status === 'PICKED_UP') {
+      qb.andWhere('delivery.deliveredAt IS NULL AND delivery.pickedUpAt IS NULL');
+    }
+    if (search && search.trim()) {
+      const like = `%${search.trim()}%`;
+      qb.andWhere(
+        '(deliverer.name ILIKE :like OR order.orderNumber ILIKE :like OR store.name ILIKE :like OR customer.name ILIKE :like)',
+        { like },
+      );
+    }
+
+    const [items, total] = await qb.skip(skip).take(take).getManyAndCount();
+    return { items, total, hasMore: skip + items.length < total };
+  }
+
+  // KAN-292: contagens globais para os cards de resumo (independem do filtro).
+  async adminCounts(): Promise<{ total: number; active: number; completed: number }> {
+    const res = await this.deliveriesRepository
+      .createQueryBuilder('delivery')
+      .select('COUNT(*)', 'total')
+      .addSelect(
+        'COUNT(*) FILTER (WHERE delivery."deliveredAt" IS NOT NULL)',
+        'completed',
+      )
+      .addSelect(
+        'COUNT(*) FILTER (WHERE delivery."deliveredAt" IS NULL)',
+        'active',
+      )
+      .getRawOne();
+    return {
+      total: Number(res?.total ?? 0),
+      active: Number(res?.active ?? 0),
+      completed: Number(res?.completed ?? 0),
+    };
   }
 
   async totalCount(): Promise<number> {

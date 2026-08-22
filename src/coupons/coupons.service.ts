@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not, In, EntityManager } from 'typeorm';
+import { OrderStatus } from '../common/enums';
 import { Coupon } from './entities/coupon.entity';
 import { CreateCouponInput } from './dto/create-coupon.input';
 import { UpdateCouponInput } from './dto/update-coupon.input';
@@ -84,6 +85,13 @@ export class CouponsService {
     if (input.maxUses !== undefined) coupon.maxUses = input.maxUses;
     if (input.expiresAt !== undefined) coupon.expiresAt = input.expiresAt;
 
+    // Input#4: re-checa o cap de 100% no UPDATE. O create já barrava, mas o update
+    // atribuía o discountValue sem checar — dava pra criar um cupom válido e depois
+    // editá-lo para 100% (pedido de graça) ou percentual absurdo.
+    if (coupon.discountType === 'PERCENT' && Number(coupon.discountValue) > 100) {
+      throw new BadRequestException('Desconto percentual nao pode ser maior que 100%');
+    }
+
     return this.couponsRepository.save(coupon);
   }
 
@@ -113,7 +121,20 @@ export class CouponsService {
     return true;
   }
 
-  async findByStore(storeId: string): Promise<Coupon[]> {
+  async findByStore(storeId: string, userId?: string): Promise<Coupon[]> {
+    // Cupom carrega config de negócio (code secreto, maxUses, minimumOrder). Sem
+    // checar posse, qualquer usuário logado listava TODOS os cupons de QUALQUER
+    // loja — inclusive inativos/expirados — e resgatava os ativos. Quando o
+    // chamador passa userId (resolver do vendor), exigimos que seja o dono.
+    if (userId) {
+      const store = await this.storesRepository.findOne({
+        where: { id: storeId },
+        relations: ['owner'],
+      });
+      if (!store || store.owner?.id !== userId) {
+        throw new BadRequestException('Voce nao e dono desta loja');
+      }
+    }
     return this.couponsRepository.find({
       where: { store: { id: storeId } },
       relations: ['store'],
@@ -178,10 +199,19 @@ export class CouponsService {
     // M1: Per-user coupon usage limit (1 use per customer per coupon)
     if (customerId) {
       const orderRepo = this.couponsRepository.manager.getRepository(Order);
+      // BL#5: não contar pedidos CANCELADOS/EXPIRADOS/REJEITADOS. O uso do cupom
+      // nesses casos já foi devolvido (decrementUsage), então contá-los bloqueava
+      // permanentemente um cliente que usou o cupom num pedido que depois caiu —
+      // efetivamente ele nunca consumiu o cupom.
       const userUsageCount = await orderRepo.count({
         where: {
           customer: { id: customerId },
           coupon: { id: coupon.id },
+          status: Not(In([
+            OrderStatus.CANCELLED,
+            OrderStatus.EXPIRED,
+            OrderStatus.REJECTED,
+          ])),
         },
       });
       if (userUsageCount > 0) {
@@ -213,16 +243,47 @@ export class CouponsService {
     return { coupon, discount };
   }
 
-  /** Increment usage count after order is created */
-  async incrementUsage(couponId: string): Promise<void> {
-    await this.couponsRepository.increment({ id: couponId }, 'usesCount', 1);
+  /**
+   * Increment usage count after order is created.
+   *
+   * A tabela é `coupons` (@Entity('coupons')); as quatro queries cruas de
+   * contador do sistema escreviam em `coupon`, que não existe. O Postgres
+   * respondia `relation "coupon" does not exist` em TODAS elas, com dois efeitos:
+   *
+   * 1. `maxUses` nunca era aplicado de verdade — `usesCount` ficava travado em
+   *    zero para sempre, então um cupom de "10 usos" valia infinitas vezes.
+   * 2. Aqui o erro NÃO era engolido, e a chamada acontece dentro da transação de
+   *    `createOrder`: todo pedido com cupom pago na entrega abortava inteiro.
+   *    (Os decrementos ficam em try/catch, então esses apenas logavam.)
+   */
+  /**
+   * Reserva/consome UM uso do cupom de forma atômica-condicional. Retorna
+   * `true` se reservou, `false` se o cupom ja atingiu `maxUses`.
+   *
+   * C4 + cupom multi-uso: a checagem `usesCount >= maxUses` do
+   * `validateAndCalculate` e este incremento nao sao a mesma operacao. A
+   * reserva agora acontece na CRIACAO do pedido (para todos os metodos de
+   * pagamento) — antes, o pagamento online so incrementava no webhook, e na
+   * janela entre criar e pagar (minutos/horas) N clientes passavam no check e
+   * todos ganhavam o desconto de um cupom de uso unico. Chamar dentro da
+   * transacao do pedido (passando `manager`) garante que o rollback do pedido
+   * desfaca a reserva. O `WHERE ... (maxUses=0 OR usesCount<maxUses)` + o
+   * RETURNING dizem se havia slot.
+   */
+  async incrementUsage(couponId: string, manager?: EntityManager): Promise<boolean> {
+    const runner = manager ?? this.couponsRepository.manager;
+    const rows = await runner.query(
+      `UPDATE coupons SET "usesCount" = "usesCount" + 1 WHERE id = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses") RETURNING id`,
+      [couponId],
+    );
+    return Array.isArray(rows) && rows.length > 0;
   }
 
   /** H2: Decrement usage count when order is cancelled/rejected/expired */
   async decrementUsage(couponId: string): Promise<void> {
     // Only decrement if usesCount > 0 to avoid negative values
     await this.couponsRepository.manager.query(
-      `UPDATE coupon SET "usesCount" = GREATEST("usesCount" - 1, 0) WHERE id = $1`,
+      `UPDATE coupons SET "usesCount" = GREATEST("usesCount" - 1, 0) WHERE id = $1`,
       [couponId],
     );
   }

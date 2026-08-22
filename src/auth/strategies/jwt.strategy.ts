@@ -31,6 +31,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (userType === 'vendor') {
       const user = await this.vendorUsersService.findById(payload.sub);
       if (!user) throw new UnauthorizedException();
+      // SEGURANCA: `isActive` e escrito pelas mutations de banimento do superadmin
+      // (toggleVendorUserActive / toggleAppUserActive) mas NAO era lido em lugar
+      // nenhum — banir uma conta nao tinha efeito algum: o JWT existente seguia
+      // valendo ate expirar E a conta ainda conseguia logar de novo e emitir um
+      // token novo. O banimento so existia no papel.
+      if (user.isActive === false) {
+        throw new UnauthorizedException('ACCOUNT_DISABLED');
+      }
       // KAN-215: mesma validacao de sessao unica que os app users ja tinham.
       // signWithSession('vendor') ja emitia o sessionToken no JWT, mas ninguem
       // conferia — logout/force-login em outra sessao nao invalidava o token
@@ -43,6 +51,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     const user = await this.appUsersService.findById(payload.sub);
     if (!user) throw new UnauthorizedException();
+    // SEGURANCA: idem vendor — conta desativada perde o acesso imediatamente.
+    if (user.isActive === false) {
+      throw new UnauthorizedException('ACCOUNT_DISABLED');
+    }
     if (user.sessionToken && payload.sessionToken !== user.sessionToken) {
       throw new UnauthorizedException('SESSION_EXPIRED');
     }

@@ -27,8 +27,58 @@ export class PromotionsService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    this.clearExpiredPromotions();
-    setInterval(() => this.clearExpiredPromotions(), 5 * 60 * 1000);
+    // KAN-253: as duas chamadas descartavam a Promise. Se algo escapar do
+    // try/catch interno vira unhandled rejection — e a primeira roda no boot,
+    // onde uma falha nao tratada e ainda mais sensivel.
+    const run = () => {
+      this.clearExpiredPromotions().catch((err) =>
+        this.logger.error('clearExpiredPromotions falhou:', err),
+      );
+      // Contraparte da limpeza: aplica o desconto das promocoes pagas cuja
+      // janela ja comecou (ate agora nada fazia isso — ver activateDuePromotions).
+      this.activateDuePromotions().catch((err) =>
+        this.logger.error('activateDuePromotions falhou:', err),
+      );
+    };
+    run();
+    setInterval(run, 5 * 60 * 1000);
+  }
+
+  /**
+   * Broadcast de promoção SEM dados sensíveis do vendedor. O canal público
+   * promotionUpdated era assinado por qualquer um e carregava checkoutUrl (link
+   * de pagamento Pagar.me) e adCost (gasto com anúncio). O vendedor recebe o
+   * checkoutUrl na resposta da própria mutation; o feed de clientes não precisa.
+   * checkoutUrl é nullable; adCost é não-nullable, então vai zerado (não null).
+   */
+  private publishPromotionUpdate(saved: Promotion) {
+    this.pubSub.publish('promotionUpdated', {
+      promotionUpdated: { ...saved, checkoutUrl: null, adCost: 0 },
+    });
+  }
+
+  // BUGFIX: existia apenas a limpeza de promocoes VENCIDAS — nada nunca ATIVAVA
+  // uma promocao paga cuja janela comeca no futuro. O vendedor pagava por uma
+  // campanha para segunda-feira, o webhook aplicava o desconto so se `now` ja
+  // estivesse dentro da janela (nao estava), e na segunda ninguem reaplicava:
+  // o produto seguia com preco cheio e a campanha paga simplesmente nao rodava.
+  private async activateDuePromotions() {
+    try {
+      await this.productsRepository.manager.query(`
+        UPDATE products p
+        SET "promotionalPrice" = pr."promotionalPrice"
+        FROM promotions pr
+        WHERE pr."productId" = p.id
+          AND pr."isPaid" = true
+          AND pr."isActive" = true
+          AND pr."startDate" <= NOW()
+          AND pr."endDate" >= NOW()
+          AND pr."promotionalPrice" IS NOT NULL
+          AND (p."promotionalPrice" IS DISTINCT FROM pr."promotionalPrice")
+      `);
+    } catch (err) {
+      this.logger.error('Error activating due promotions', err);
+    }
   }
 
   private async clearExpiredPromotions() {
@@ -113,6 +163,22 @@ export class PromotionsService implements OnModuleInit {
     else if (paidDays >= 7) discount = 0.10;
     const adCost = paidDays > 0 ? paidDays * pricePerDay * (1 - discount) : 0;
 
+    // BUGFIX: `create` nao validava a faixa do preco promocional (so @Min(0) no
+    // DTO), enquanto `swapProduct` ja exigia ser menor que o preco do produto.
+    // Sem isto dava para criar promocao com preco ACIMA do normal — e o pedido
+    // usa `promotionalPrice || price`, entao a "promocao" cobrava MAIS caro do
+    // cliente. E o 0 permitido virava produto de graca (subtotal e comissao 0).
+    if (product && input.promotionalPrice !== undefined && input.promotionalPrice !== null) {
+      if (Number(input.promotionalPrice) <= 0) {
+        throw new BadRequestException('O preco promocional deve ser maior que zero.');
+      }
+      if (Number(input.promotionalPrice) >= Number(product.price)) {
+        throw new BadRequestException(
+          'O preco promocional deve ser menor que o preco atual do produto.',
+        );
+      }
+    }
+
     const promotion = new Promotion();
     promotion.title = input.title;
     if (input.description) promotion.description = input.description;
@@ -125,11 +191,20 @@ export class PromotionsService implements OnModuleInit {
     promotion.store = store;
     if (product) promotion.product = product;
     const saved = await this.promotionsRepository.save(promotion);
-    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+    this.publishPromotionUpdate(saved);
 
     if (usedFreeDays > 0) {
-      store.freePromoDaysCredit = Math.max(0, store.freePromoDaysCredit - usedFreeDays);
-      await this.storesService.saveStore(store);
+      // R#6: decremento ATÔMICO do crédito de dias grátis. ANTES era um
+      // read-modify-write (`saveStore`) sem lock: duas promoções simultâneas liam
+      // o mesmo saldo e o last-write-wins descontava o crédito uma única vez para
+      // as duas. Agora o UPDATE aplica os dois decrementos de fato (clampando em 0).
+      // (Resíduo: se ambas quiserem MAIS dias grátis do que o saldo total no mesmo
+      // instante, ainda pode haver leve sobre-concessão; travar 100% exige um claim
+      // do saldo antes de calcular `usedFreeDays`.)
+      await this.productsRepository.manager.query(
+        `UPDATE stores SET "freePromoDaysCredit" = GREATEST("freePromoDaysCredit" - $2, 0) WHERE id = $1`,
+        [store.id, usedFreeDays],
+      );
     }
 
     if (user.phone) {
@@ -186,11 +261,34 @@ export class PromotionsService implements OnModuleInit {
   }
 
   async toggleActive(id: string): Promise<Promotion> {
-    const promotion = await this.promotionsRepository.findOne({ where: { id } });
+    const promotion = await this.promotionsRepository.findOne({
+      where: { id },
+      relations: ['product'],
+    });
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
     promotion.isActive = !promotion.isActive;
     const saved = await this.promotionsRepository.save(promotion);
-    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+
+    // BL#4: manter o preço promocional do produto em sincronia com o estado da
+    // promoção. ANTES, desativar uma promoção PAGA não removia o
+    // `promotionalPrice` do produto — o desconto continuava valendo em CADA novo
+    // pedido até a data de fim (o pricing lê `product.promotionalPrice` direto,
+    // sem checar `isActive`). Agora ao desativar limpamos; ao reativar dentro da
+    // vigência reaplicamos (mesmo padrão de delete/swapProduct/markAsPaid).
+    if (promotion.isPaid && promotion.product && promotion.promotionalPrice) {
+      if (!promotion.isActive) {
+        await this.productsRepository.update(promotion.product.id, { promotionalPrice: null as any });
+      } else {
+        const now = new Date();
+        if (now >= new Date(promotion.startDate) && now <= new Date(promotion.endDate)) {
+          await this.productsRepository.update(promotion.product.id, {
+            promotionalPrice: promotion.promotionalPrice,
+          });
+        }
+      }
+    }
+
+    this.publishPromotionUpdate(saved);
     return saved;
   }
 
@@ -202,7 +300,7 @@ export class PromotionsService implements OnModuleInit {
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
     promotion.isPaid = true;
     const saved = await this.promotionsRepository.save(promotion);
-    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
+    this.publishPromotionUpdate(saved);
 
     if (promotion.store?.owner?.phone) {
       this.whatsAppService.notifyPromotionPaid(promotion.store.owner.phone, promotion.title).catch(() => {});
@@ -245,6 +343,12 @@ export class PromotionsService implements OnModuleInit {
       where: { id: productId, store: { id: promotion.store.id } },
     });
     if (!product) throw new NotFoundException('Produto nao encontrado nessa loja.');
+    // BUGFIX: faltava o piso (o create valida `<= 0`). Sem ele, um preco
+    // promocional NEGATIVO passava (—5 < preco) e virava preco unitario negativo
+    // no pedido (subtotal negativo). Mesmo guard do create.
+    if (promotionalPrice <= 0) {
+      throw new BadRequestException('O preco promocional deve ser maior que zero.');
+    }
     if (promotionalPrice >= Number(product.price)) {
       throw new BadRequestException('O preco promocional deve ser menor que o preco original do produto.');
     }
@@ -253,11 +357,17 @@ export class PromotionsService implements OnModuleInit {
     promotion.title = title;
     if (product.imageUrl) promotion.imageUrl = product.imageUrl;
     const saved = await this.promotionsRepository.save(promotion);
-    this.pubSub.publish('promotionUpdated', { promotionUpdated: saved });
-    if (promotion.isPaid) {
+    this.publishPromotionUpdate(saved);
+    // BUGFIX: faltavam `isActive` e o inicio da janela. Consequencias: (a) promo
+    // comprada para o futuro passava a valer NA HORA (dias de desconto nao
+    // pagos); (b) depois de o superadmin DESATIVAR a promocao — o que limpa o
+    // preco — bastava o vendedor trocar o produto para o desconto voltar,
+    // furando a desativacao. Mesma condicao usada em toggleActive/markAsPaid.
+    if (promotion.isPaid && promotion.isActive) {
       const now = new Date();
+      const start = new Date(promotion.startDate);
       const end = new Date(promotion.endDate);
-      if (now <= end) {
+      if (now >= start && now <= end) {
         await this.productsRepository.update(product.id, { promotionalPrice });
       }
     }

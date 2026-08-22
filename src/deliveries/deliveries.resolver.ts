@@ -2,6 +2,7 @@ import { Resolver, Mutation, Query, Args, Float, Int, Subscription } from '@nest
 import { UseGuards, Inject } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Delivery } from './entities/delivery.entity';
+import { DeliveryPage, DeliveryCounts } from './dto/delivery-page.output';
 import { DeliveriesService } from './deliveries.service';
 import { DelivererTrackerService } from './deliverer-tracker.service';
 import { DeliveriesGateway } from './deliveries.gateway';
@@ -61,18 +62,42 @@ export class DeliveriesResolver {
     return delivery;
   }
 
+  // Perf (F6): paginado — antes o historico completo do entregador descia inteiro.
   @Query(() => [Delivery])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.DELIVERER)
-  myDeliveries(@CurrentUser() user: AppUser): Promise<Delivery[]> {
-    return this.deliveriesService.findByDeliverer(user.id);
+  myDeliveries(
+    @CurrentUser() user: AppUser,
+    @Args('limit', { type: () => Int, nullable: true, defaultValue: 20 }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true, defaultValue: 0 }) offset?: number,
+  ): Promise<Delivery[]> {
+    return this.deliveriesService.findByDeliverer(user.id, limit, offset);
   }
 
-  @Query(() => [Delivery])
+  // KAN-292: paginado no servidor (status/busca/limit/offset). Antes retornava a
+  // tabela inteira sob polling.
+  @Query(() => DeliveryPage)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.SUPERADMIN)
-  allDeliveries(): Promise<Delivery[]> {
-    return this.deliveriesService.findAllAdmin();
+  allDeliveries(
+    @Args('status', { nullable: true }) status?: string,
+    @Args('search', { nullable: true }) search?: string,
+    @Args('limit', { type: () => Int, nullable: true }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true }) offset?: number,
+  ): Promise<DeliveryPage> {
+    return this.deliveriesService.findAllAdminPaginated(
+      status && status !== 'ALL' ? status : null,
+      search ?? null,
+      limit ?? 20,
+      offset ?? 0,
+    );
+  }
+
+  @Query(() => DeliveryCounts)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  deliveryCounts(): Promise<DeliveryCounts> {
+    return this.deliveriesService.adminCounts();
   }
 
   @Query(() => Int)
@@ -82,9 +107,26 @@ export class DeliveriesResolver {
     return this.delivererTracker.getOnlineCount();
   }
 
+  // KAN: ownership da subscription de entrega. ANTES: sem `orderId` emitia TODAS
+  // as entregas (GPS do entregador em tempo real + status) pra qualquer cliente,
+  // e com `orderId` não checava se o assinante era parte do pedido. Agora exige
+  // autenticação (context.wsUser), exige orderId (fim do firehose) e só entrega a
+  // quem é o entregador atribuído, o cliente ou o dono da loja do pedido.
   @Subscription(() => Delivery, {
-    filter: (payload, variables) =>
-      !variables.orderId || payload.deliveryUpdated.order?.id === variables.orderId,
+    filter: (payload, variables, context) => {
+      const delivery = payload.deliveryUpdated;
+      const user = context?.wsUser;
+      if (!user) return false;
+      if (!variables.orderId) return false;
+      if (delivery?.order?.id !== variables.orderId) return false;
+      if (user.role === 'SUPERADMIN') return true;
+      const uid = user.sub;
+      return (
+        delivery?.deliverer?.id === uid ||
+        delivery?.order?.customer?.id === uid ||
+        delivery?.order?.store?.owner?.id === uid
+      );
+    },
   })
   deliveryUpdated(@Args('orderId', { nullable: true }) orderId?: string) {
     return this.pubSub.asyncIterableIterator('deliveryUpdated');

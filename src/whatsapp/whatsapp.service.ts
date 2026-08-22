@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 
 @Injectable()
 export class WhatsAppService {
@@ -20,10 +21,26 @@ export class WhatsAppService {
 
   private formatPhone(phone: string): string {
     let digits = phone.replace(/\D/g, '');
-    if (!digits.startsWith('55')) digits = `55${digits}`;
+    // BUGFIX: o teste de "ja tem DDI" era por PREFIXO, e 55 tambem e um DDD real
+    // (Santa Maria, Uruguaiana e regiao, no RS). O app grava o telefone sem DDI,
+    // com 10 ou 11 digitos, entao (55) 99999-8888 virava "55999998888", batia no
+    // startsWith('55') e seguia SEM DDI — o WhatsApp lia aquilo como DDI 55 +
+    // DDD 99 (Maranhao) e a mensagem ia para outra pessoa. Todo cliente com DDD
+    // 55 ficava sem OTP de cadastro, sem recuperacao de senha e sem aviso de
+    // pedido, em silencio. Numero brasileiro sem DDI tem 10 ou 11 digitos; com
+    // DDI, 12 ou 13. Decidir pelo COMPRIMENTO nao tem essa ambiguidade.
+    if (digits.length <= 11) digits = `55${digits}`;
     // WhatsApp BR: celulares com 9 digitos (55 + DDD + 9XXXX-XXXX = 13 digitos)
     // sao registrados no WhatsApp sem o nono digito (55 + DDD + XXXX-XXXX = 12 digitos)
-    if (digits.length === 13 && digits[4] === '9') {
+    //
+    // BUGFIX: a remocao era aplicada a TODOS os numeros. Essa convencao so vale
+    // para DDD >= 31 — em Sao Paulo, Rio e demais DDDs ate 30 o nono digito FAZ
+    // PARTE do identificador. Resultado: mensagem enviada para um numero que nao
+    // existe, `sendText` devolvia false e ninguem checa o retorno, entao pedido
+    // confirmado, pedido pronto, saiu para entrega, recuperacao de senha e aviso
+    // de plano NUNCA chegavam justamente nos maiores DDDs do pais — em silencio.
+    const ddd = Number(digits.slice(2, 4));
+    if (digits.length === 13 && digits[4] === '9' && ddd >= 31) {
       digits = digits.slice(0, 4) + digits.slice(5);
     }
     return digits;
@@ -40,7 +57,7 @@ export class WhatsAppService {
     this.logger.log(`WhatsApp tentando enviar para ${phone} via ${url}`);
 
     try {
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

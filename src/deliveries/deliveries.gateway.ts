@@ -4,18 +4,43 @@ import {
   SubscribeMessage,
   MessageBody,
   ConnectedSocket,
+  OnGatewayConnection,
   OnGatewayDisconnect,
   OnGatewayInit,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { verify as jwtVerify } from 'jsonwebtoken';
 import { DeliveriesService } from './deliveries.service';
 import { DelivererTrackerService } from './deliverer-tracker.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { AppUsersService } from '../users/app-users.service';
 import { Inject, forwardRef } from '@nestjs/common';
 
-@WebSocketGateway({ cors: { origin: '*' } })
-export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
+// SEGURANCA (critico): este gateway Socket.IO nao tinha NENHUMA autenticacao —
+// nem no handshake, nem por guard — e confiava no `userId`/`deliveryId` que
+// vinham no CORPO da mensagem. O handshake do GraphQL-WS ja fora endurecido
+// (KAN-253), mas este e um servidor Socket.IO separado no mesmo processo e
+// ficou de fora. Consequencias reais, todas anonimas:
+//   - `delivererOnline` com o userId de outro entregador injetava GPS falso no
+//     tracker; a automacao por geolocalizacao le exatamente esse mapa e, com o
+//     ponto forjado perto do cliente por 10 min, chama completeOrderWithPayment
+//     — LIBERANDO O REPASSE de um pedido que nunca foi entregue.
+//   - `updateLocation` gravava coordenadas em QUALQUER entrega.
+//   - `joinOrder` entrava na sala de qualquer pedido (GPS + status alheios).
+//   - `acceptOffer`/`declineOffer` roubavam ou matavam a oferta pendente.
+// Agora: JWT obrigatorio no handshake e identidade derivada da sessao, nunca do
+// payload. CORS tambem sai do '*' e usa a mesma allowlist do main.ts.
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+@WebSocketGateway({
+  cors: { origin: CORS_ORIGINS.length > 0 ? CORS_ORIGINS : '*', credentials: true },
+})
+export class DeliveriesGateway
+  implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
+{
   @WebSocketServer()
   server: Server;
 
@@ -36,8 +61,59 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
   afterInit() {
     this.offerService.setEmitters(
       (socketId, event, data) => this.server.to(socketId).emit(event, data),
-      (event, data) => this.server.emit(event, data),
+      // O segundo emitter carrega `newAvailableDelivery`, que inclui o ENDERECO
+      // DE ENTREGA do cliente. Era `this.server.emit`, ou seja, broadcast para
+      // TODO socket conectado — e handleConnection so exige um JWT valido, sem
+      // olhar o papel, entao qualquer cliente comum logado no app recebia o
+      // numero do pedido e o endereco residencial de outra pessoa. A sala
+      // 'deliverers' ja existe e so tem quem entrou como entregador.
+      (event, data) => this.server.to('deliverers').emit(event, data),
     );
+  }
+
+  /** Identidade autenticada do socket (nunca vinda do payload). */
+  private userIdOf(client: Socket): string | null {
+    return (client.data as any)?.user?.sub ?? null;
+  }
+
+  handleConnection(client: Socket) {
+    const raw =
+      (client.handshake.auth as any)?.token ||
+      (client.handshake.headers?.authorization as string) ||
+      '';
+    const token = String(raw).replace(/^Bearer\s+/i, '').trim();
+    const secret = process.env.JWT_SECRET;
+    if (!token || !secret) {
+      client.disconnect(true);
+      return;
+    }
+    let payload: any;
+    try {
+      payload = jwtVerify(token, secret);
+    } catch {
+      client.disconnect(true);
+      return;
+    }
+    // O jwtVerify so confere assinatura e expiracao. A revogacao mora na
+    // JwtStrategy (isActive e sessionToken) e o socket nao passa por ela: um
+    // entregador banido por fraude, ou uma sessao trocada por login em outro
+    // aparelho, continuava com o socket valido ate o JWT expirar (7 dias) —
+    // seguia online, aparecia no getNearestDeliverers, recebia ofertas e podia
+    // aceitar por `acceptOffer`, prendendo um pedido que o guard HTTP recusa.
+    this.appUsersService
+      .findById(payload?.sub)
+      .then((user) => {
+        const revogado =
+          !user ||
+          user.isActive === false ||
+          (user.sessionToken && payload?.sessionToken !== user.sessionToken);
+        if (revogado) {
+          client.disconnect(true);
+          return;
+        }
+        (client.data as any).user = payload;
+      })
+      .catch(() => client.disconnect(true));
   }
 
   handleDisconnect(client: Socket) {
@@ -49,18 +125,31 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
   }
 
   @SubscribeMessage('joinOrder')
-  handleJoinOrder(
+  async handleJoinOrder(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: string | { orderId: string },
   ) {
+    const uid = this.userIdOf(client);
+    if (!uid) return;
     const orderId = typeof data === 'string' ? data : data.orderId;
+    // So entra na sala quem e parte do pedido (mesma regra do filtro das
+    // subscriptions GraphQL). Antes qualquer um acompanhava qualquer pedido.
+    const role = (client.data as any)?.user?.role;
+    const ehParte = await this.deliveriesService.userIsOrderParty(orderId, uid, role);
+    if (!ehParte) return;
     client.join(`order:${orderId}`);
   }
 
   @SubscribeMessage('updateLocation')
   async handleUpdateLocation(
+    @ConnectedSocket() client: Socket,
     @MessageBody() data: { deliveryId: string; latitude: number; longitude: number },
   ) {
+    const uid = this.userIdOf(client);
+    if (!uid) return;
+    // So o entregador DAQUELA entrega pode mover o ponto dela.
+    const dono = await this.deliveriesService.delivererOwnsDelivery(data.deliveryId, uid);
+    if (!dono) return;
     const delivery = await this.deliveriesService.updateLocation(
       data.deliveryId,
       data.latitude,
@@ -77,65 +166,84 @@ export class DeliveriesGateway implements OnGatewayDisconnect, OnGatewayInit {
   @SubscribeMessage('delivererOnline')
   async handleDelivererOnline(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { userId: string; latitude: number; longitude: number },
+    @MessageBody() data: { userId?: string; latitude: number; longitude: number },
   ) {
+    // Identidade da SESSAO — antes vinha do payload, permitindo se passar por
+    // qualquer entregador e injetar GPS falso no tracker.
+    const uid = this.userIdOf(client);
+    if (!uid) return { status: 'unauthorized' };
+    data = { ...data, userId: uid };
     const now = Date.now();
-    const last = this.lastOnlineEvent.get(data.userId) || 0;
-    if (now - last < DeliveriesGateway.ONLINE_THROTTLE_MS && this.trackerService.isOnline(data.userId)) {
+    const last = this.lastOnlineEvent.get(uid) || 0;
+    if (now - last < DeliveriesGateway.ONLINE_THROTTLE_MS && this.trackerService.isOnline(uid)) {
       // Already online and recently processed — just update socket and return
       client.join('deliverers');
       return { status: 'online', onlineCount: this.trackerService.getOnlineCount() };
     }
-    this.lastOnlineEvent.set(data.userId, now);
+    this.lastOnlineEvent.set(uid, now);
 
     let vehicleType = 'MOTO';
     try {
-      const user = await this.appUsersService.findById(data.userId);
+      const user = await this.appUsersService.findById(uid);
       if (user?.vehicleType) vehicleType = user.vehicleType;
     } catch {}
-    this.trackerService.setOnline(data.userId, client.id, data.latitude, data.longitude, vehicleType);
+    this.trackerService.setOnline(uid, client.id, data.latitude, data.longitude, vehicleType);
     client.join('deliverers');
     return { status: 'online', onlineCount: this.trackerService.getOnlineCount() };
   }
 
   @SubscribeMessage('delivererLocationUpdate')
   handleDelivererLocationUpdate(
-    @MessageBody() data: { userId: string; latitude: number; longitude: number },
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { userId?: string; latitude: number; longitude: number },
   ) {
+    const uid = this.userIdOf(client);
+    if (!uid) return;
     const now = Date.now();
-    const last = this.lastLocationUpdate.get(data.userId) || 0;
+    const last = this.lastLocationUpdate.get(uid) || 0;
     if (now - last < DeliveriesGateway.LOCATION_THROTTLE_MS) {
       return; // Throttled — skip this update
     }
-    this.lastLocationUpdate.set(data.userId, now);
-    this.trackerService.updateLocation(data.userId, data.latitude, data.longitude);
+    this.lastLocationUpdate.set(uid, now);
+    this.trackerService.updateLocation(uid, data.latitude, data.longitude);
   }
 
   @SubscribeMessage('delivererOffline')
   handleDelivererOffline(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { userId: string },
+    @MessageBody() _data: { userId?: string },
   ) {
-    this.trackerService.setOffline(data.userId);
-    this.lastLocationUpdate.delete(data.userId);
-    this.lastOnlineEvent.delete(data.userId);
+    // Identidade da sessao — antes dava para derrubar qualquer entregador.
+    const uid = this.userIdOf(client);
+    if (!uid) return { status: 'unauthorized' };
+    this.trackerService.setOffline(uid);
+    this.lastLocationUpdate.delete(uid);
+    this.lastOnlineEvent.delete(uid);
     client.leave('deliverers');
     return { status: 'offline' };
   }
 
   @SubscribeMessage('acceptOffer')
   handleAcceptOffer(
-    @MessageBody() data: { orderId: string; delivererId: string },
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { orderId: string; delivererId?: string },
   ) {
-    const accepted = this.offerService.acceptOffer(data.orderId, data.delivererId);
+    // Identidade da sessao — antes qualquer cliente aceitava a oferta em nome de
+    // outro, encerrando a cascata (o pedido ficava sem entregador nenhum).
+    const uid = this.userIdOf(client);
+    if (!uid) return { accepted: false };
+    const accepted = this.offerService.acceptOffer(data.orderId, uid);
     return { accepted };
   }
 
   @SubscribeMessage('declineOffer')
   handleDeclineOffer(
-    @MessageBody() data: { orderId: string; delivererId: string },
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { orderId: string; delivererId?: string },
   ) {
-    this.offerService.declineOffer(data.orderId, data.delivererId);
+    const uid = this.userIdOf(client);
+    if (!uid) return { status: 'unauthorized' };
+    this.offerService.declineOffer(data.orderId, uid);
     return { status: 'declined' };
   }
 

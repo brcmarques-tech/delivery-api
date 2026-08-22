@@ -1,4 +1,5 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, OnModuleDestroy } from '@nestjs/common';
+import { randomInt } from 'crypto';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { MailService } from '../mail/mail.service';
 
@@ -8,27 +9,88 @@ interface OtpEntry {
   attempts: number;
 }
 
+/**
+ * KAN-231: janela em que uma verificacao bem-sucedida continua valendo como
+ * prova para concluir o cadastro. O usuario verifica o codigo e tem esse tempo
+ * para finalizar o registro.
+ */
+const VERIFIED_PROOF_TTL_MS = 15 * 60 * 1000;
+
 @Injectable()
-export class OtpService {
+export class OtpService implements OnModuleDestroy {
   private readonly logger = new Logger(OtpService.name);
+  // Error#5: guarda o handle do interval para poder limpar no teardown.
+  private cleanupInterval?: ReturnType<typeof setInterval>;
   // key = "phone:5599999999" or "email:user@mail.com"
   private readonly store = new Map<string, OtpEntry>();
+
+  /**
+   * KAN-231: prova de que o contato FOI verificado.
+   *
+   * Antes, `verifyCode` apenas apagava a entrada e devolvia `true` — nao
+   * sobrava nenhum estado, entao o `registerApp` (mutation publica) nao tinha
+   * como saber se houve verificacao. Resultado: dava para chamar o registro
+   * direto e pular o OTP inteiro, enquanto `create()` gravava
+   * `phoneVerified: true` fixo. A "verificacao de contato" nao era garantida
+   * por nada no backend.
+   *
+   * Agora a verificacao deixa um registro de curta duracao, consumido no
+   * cadastro (uso unico).
+   */
+  private readonly verified = new Map<string, number>();
 
   // Limpa entradas expiradas a cada 5 min
   constructor(
     private whatsAppService: WhatsAppService,
     private mailService: MailService,
   ) {
-    setInterval(() => {
+    this.cleanupInterval = setInterval(() => {
       const now = Date.now();
       for (const [key, entry] of this.store) {
         if (entry.expiresAt < now) this.store.delete(key);
       }
+      for (const [key, expiresAt] of this.verified) {
+        if (expiresAt < now) this.verified.delete(key);
+      }
     }, 5 * 60 * 1000);
   }
 
+  onModuleDestroy() {
+    if (this.cleanupInterval) clearInterval(this.cleanupInterval);
+  }
+
+  private phoneKey(phone: string): string {
+    return `phone:${phone.replace(/\D/g, '')}`;
+  }
+
+  private emailKey(email: string): string {
+    return `email:${email.toLowerCase()}`;
+  }
+
+  /**
+   * Consome a prova de verificacao de telefone (uso unico).
+   * Retorna `true` se o telefone foi verificado ha pouco.
+   */
+  consumePhoneVerification(phone: string): boolean {
+    return this.consumeVerification(this.phoneKey(phone));
+  }
+
+  /** Idem para e-mail. */
+  consumeEmailVerification(email: string): boolean {
+    return this.consumeVerification(this.emailKey(email));
+  }
+
+  private consumeVerification(key: string): boolean {
+    const expiresAt = this.verified.get(key);
+    if (!expiresAt) return false;
+    this.verified.delete(key);
+    return expiresAt >= Date.now();
+  }
+
   private generateCode(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    // KAN-280: Math.random nao e criptografico — num espaco de so 10^6 codigos,
+    // previsibilidade do PRNG e risco real. randomInt usa CSPRNG.
+    return randomInt(100000, 1000000).toString();
   }
 
   async sendPhoneCode(phone: string, fallbackEmail?: string): Promise<{ method: 'whatsapp' | 'email' }> {
@@ -56,19 +118,24 @@ export class OtpService {
       return { method: 'whatsapp' };
     }
 
-    // Fallback: enviar por email se WhatsApp falhar
+    // KAN-280 (SEGURANCA): o WhatsApp falhou, entao o codigo gerado para ESTE
+    // telefone NAO chegou a ninguem — descarta a entrada. Antes, o mesmo codigo
+    // (indexado pelo telefone) era reenviado para um `fallbackEmail` ARBITRARIO
+    // e o app seguia verificando pelo TELEFONE: quem pedia o codigo do numero de
+    // outra pessoa, informando o proprio email, recebia o codigo e "verificava"
+    // o telefone alheio — takeover de numero. O fallback continua existindo, mas
+    // passa a verificar o EMAIL (o canal que de fato recebe o codigo): gera um
+    // codigo proprio sob a chave do email. Assim ninguem reivindica um telefone
+    // sem prova de posse via WhatsApp, e quem se cadastra com WhatsApp fora do ar
+    // ainda conclui provando o proprio e-mail.
+    this.store.delete(key);
+
     if (fallbackEmail) {
-      try {
-        await this.mailService.sendVerificationCode(fallbackEmail, code);
-        this.logger.log(`OTP enviado por email (fallback) para ${fallbackEmail}`);
-        return { method: 'email' };
-      } catch {
-        this.store.delete(key);
-        throw new BadRequestException('Nao foi possivel enviar o codigo por WhatsApp nem por email.');
-      }
+      // sendEmailCode gera e grava o codigo sob a chave do email e retorna
+      // { method: 'email' } — a verificacao subsequente e por email.
+      return this.sendEmailCode(fallbackEmail);
     }
 
-    this.store.delete(key);
     throw new BadRequestException('Nao foi possivel enviar o codigo por WhatsApp. Verifique o numero.');
   }
 
@@ -106,13 +173,11 @@ export class OtpService {
   }
 
   verifyPhoneCode(phone: string, code: string): boolean {
-    const key = `phone:${phone.replace(/\D/g, '')}`;
-    return this.verifyCode(key, code);
+    return this.verifyCode(this.phoneKey(phone), code);
   }
 
   verifyEmailCode(email: string, code: string): boolean {
-    const key = `email:${email.toLowerCase()}`;
-    return this.verifyCode(key, code);
+    return this.verifyCode(this.emailKey(email), code);
   }
 
   private verifyCode(key: string, code: string): boolean {
@@ -129,7 +194,17 @@ export class OtpService {
 
     entry.attempts++;
     if (entry.attempts > 5) {
-      this.store.delete(key);
+      // KAN-280: NAO apaga a entrada. O cooldown de reenvio e derivado da
+      // EXISTENCIA dela — apagar zerava o cooldown junto, entao errar 5 vezes e
+      // pedir codigo novo IMEDIATAMENTE virava um loop de forca bruta (~5
+      // palpites + 1 reenvio por rodada) e de bombardeio de WhatsApp/email na
+      // vitima. A entrada fica, com o codigo envenenado (nunca casa) e, na
+      // PRIMEIRA vez que estoura, o cooldown re-armado — so na primeira, senao
+      // um atacante espameando verify bloquearia o reenvio do dono para sempre.
+      if (entry.attempts === 6) {
+        entry.code = '';
+        entry.expiresAt = Date.now() + 10 * 60 * 1000;
+      }
       throw new BadRequestException('Muitas tentativas. Solicite um novo codigo.');
     }
 
@@ -138,6 +213,8 @@ export class OtpService {
     }
 
     this.store.delete(key);
+    // KAN-231: deixa a prova de verificacao para o cadastro consumir.
+    this.verified.set(key, Date.now() + VERIFIED_PROOF_TTL_MS);
     return true;
   }
 }

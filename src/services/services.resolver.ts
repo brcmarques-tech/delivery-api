@@ -52,8 +52,11 @@ export class ServicesResolver {
   @Query(() => [Service])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
-  allServicesByStore(@Args('storeId') storeId: string): Promise<Service[]> {
-    return this.servicesService.findByStore(storeId, true);
+  allServicesByStore(
+    @Args('storeId') storeId: string,
+    @CurrentUser() user: any,
+  ): Promise<Service[]> {
+    return this.servicesService.findByStore(storeId, true, user.id);
   }
 
   @Query(() => Service)

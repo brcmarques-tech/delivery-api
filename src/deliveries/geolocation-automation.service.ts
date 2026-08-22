@@ -14,6 +14,13 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
 
   // Track previous distances for anomaly detection
   private previousDistances = new Map<string, { distance: number; timestamp: number }[]>();
+  // Entregas que ja receberam o aviso de "parado". Sem isso o aviso saia a cada
+  // rodada de 30s enquanto o entregador continuasse parado — e o historico
+  // permanece cheio de pontos parados, entao a condicao seguia verdadeira. Meia
+  // hora no transito ou almocando rendia ~60 pushes identicos, com som e
+  // vibracao. Limpa quando ele volta a se mover, para um novo travamento poder
+  // avisar de novo.
+  private avisadosParado = new Set<string>();
 
   constructor(
     @InjectRepository(Delivery)
@@ -23,6 +30,11 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
     private ordersService: OrdersService,
     private notificationsService: NotificationsService,
   ) {}
+
+  // Guard de reentrância: o ciclo faz chamadas de rede/settlement; se um ciclo
+  // demora mais que 30s, o próximo não deve rodar concorrente e reprocessar as
+  // mesmas entregas (notificação/auto-confirm duplicados).
+  private isRunning = false;
 
   onModuleInit() {
     // Check every 30 seconds
@@ -49,6 +61,8 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
   }
 
   private async checkActiveDeliveries() {
+    if (this.isRunning) return;
+    this.isRunning = true;
     try {
       // Find active deliveries
       const activeDeliveries = await this.deliveriesRepository
@@ -70,8 +84,22 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
       for (const delivery of activeDeliveries) {
         await this.processDelivery(delivery);
       }
+
+      // Purga o mapa previousDistances. Uma entrega concluída/cancelada nunca
+      // reaparece na query acima, então a limpeza baseada em status (mais abaixo)
+      // era código morto e cada entrega deixava um array de pontos preso na
+      // memória para sempre. Remove tudo que não está mais no conjunto ativo.
+      const activeIds = new Set(activeDeliveries.map((d) => d.id));
+      for (const id of this.previousDistances.keys()) {
+        if (!activeIds.has(id)) {
+          this.previousDistances.delete(id);
+          this.avisadosParado.delete(id);
+        }
+      }
     } catch (err) {
       this.logger.error('Geolocation check failed:', err);
+    } finally {
+      this.isRunning = false;
     }
   }
 
@@ -103,15 +131,14 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
         if (distToStore < 100 && timeSinceVendorConfirmed > 5 * 60 * 1000) {
           this.logger.log(`Auto-confirming pickup for order #${order.orderNumber} (proximity: ${Math.round(distToStore)}m)`);
           try {
-            const del = await this.deliveriesRepository.findOne({
-              where: { id: delivery.id },
-              relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
-            });
-            if (del) {
-              del.pickedUpAt = new Date();
-              await this.deliveriesRepository.save(del);
-              await this.ordersService.updateStatus(order.id, OrderStatus.PICKED_UP);
-            }
+            // BUGFIX: a transicao valida de VENDOR_CONFIRMED_PICKUP e para
+            // DELIVERING — PICKED_UP nao esta na tabela de transicoes, entao o
+            // updateStatus lançava SEMPRE (erro engolido pelo catch), a
+            // auto-coleta por proximidade nunca avançava o pedido e o pickedUpAt
+            // era reescrito e persistido a cada ciclo de 30s. O updateStatus(
+            // DELIVERING) ja grava pickedUpAt (orders.service ~1935), entao o
+            // save manual saiu.
+            await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERING);
           } catch (err) {
             this.logger.error(`Auto-confirm pickup failed for order ${order.id}:`, err);
           }
@@ -132,9 +159,22 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
         if (distToCustomer < 100 && timeSinceDelivererConfirmed > 10 * 60 * 1000) {
           this.logger.log(`Auto-confirming delivery for order #${order.orderNumber} (proximity: ${Math.round(distToCustomer)}m)`);
           try {
-            const fullOrder = await this.ordersService.findById(order.id);
-            fullOrder.customerConfirmedAt = new Date();
-            await this.ordersService.completeOrderWithPayment(fullOrder);
+            // `customerConfirmedAt` era setado so no objeto em memoria, e
+            // `completeOrderWithPayment` grava apenas status e completedAt — a
+            // coluna nunca era persistida. O pedido ficava COMPLETED e liquidado
+            // com customerConfirmedAt NULL, e no modelo de custodia essa e
+            // justamente a prova de recebimento que autoriza o repasse: numa
+            // disputa ou chargeback a plataforma nao conseguia demonstrar quando
+            // e como a entrega foi confirmada, tendo ja repassado a vendedor e
+            // entregador. Os outros dois caminhos de confirmacao usam claim
+            // atomico e persistem; aqui usamos o mesmo padrao.
+            const claim = await this.ordersService.claimCustomerConfirmation(
+              order.id,
+            );
+            if (claim) {
+              const fullOrder = await this.ordersService.findById(order.id);
+              await this.ordersService.completeOrderWithPayment(fullOrder);
+            }
           } catch (err) {
             this.logger.error(`Auto-confirm delivery failed for order ${order.id}:`, err);
           }
@@ -169,7 +209,12 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
         const timeDiff = now - history[0].timestamp;
 
         // Not moved more than 50m in 10 minutes
-        if (timeDiff >= 10 * 60 * 1000 && Math.abs(newestDist - oldestDist) < 50) {
+        const parado =
+          timeDiff >= 10 * 60 * 1000 && Math.abs(newestDist - oldestDist) < 50;
+        if (!parado) {
+          this.avisadosParado.delete(key);
+        } else if (!this.avisadosParado.has(key)) {
+          this.avisadosParado.add(key);
           this.logger.warn(`Deliverer ${deliverer.id} stationary for 10+ min on order #${order.orderNumber}`);
           // Notify deliverer
           this.notificationsService.sendToAppUser(
@@ -190,6 +235,7 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
     // Clean up tracking data for completed deliveries
     if ([OrderStatus.COMPLETED, OrderStatus.CANCELLED].includes(order.status as OrderStatus)) {
       this.previousDistances.delete(delivery.id);
+      this.avisadosParado.delete(delivery.id);
     }
   }
 }

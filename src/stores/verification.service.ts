@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Store } from './entities/store.entity';
@@ -77,27 +77,38 @@ export class VerificationService {
     if (store.verificationLevel === VerificationLevel.NONE) return;
     if (store.badgeClaimCount > 0) return;
 
-    const rewards = await this.configService.getBadgeRewards(store.verificationLevel);
     const thresholds = await this.getThresholds();
     const threshold = thresholds[store.verificationLevel] || 0;
 
+    // R#2 (mesmo padrao ja aplicado no claimBadgeReward): claim ATOMICO do
+    // primeiro bonus. Antes era read-modify-write sem lock — dois eventos
+    // concorrentes que levam a loja de NONE a um nivel (dois produtos/vendas
+    // quase juntos, ou produto + recalculo) liam badgeClaimCount=0 e concediam o
+    // bonus DUAS vezes: trial, reducao de comissao e dias de promo em dobro. O
+    // UPDATE condicional garante que so um evento conceda.
+    const claim = await this.storesRepository.manager.query(
+      `UPDATE stores SET "badgeClaimCount" = 1, "lastClaimedScore" = $2
+        WHERE id = $1 AND "badgeClaimCount" = 0
+        RETURNING id`,
+      [store.id, threshold],
+    );
+    if (!claim || claim.length === 0) return; // outro evento ja concedeu
+
+    const rewards = await this.configService.getBadgeRewards(store.verificationLevel);
     this.logger.log(`Auto-granting first badge rewards to store ${store.id} (level: ${store.verificationLevel})`);
 
-    store.freePromoDaysCredit = rewards.freePromoDays || 0;
-
+    // Recompensas que ficam na propria loja — via update direto para NAO
+    // sobrescrever o badgeClaimCount/lastClaimedScore ja gravados no claim.
+    const storeUpdates: any = { freePromoDaysCredit: rewards.freePromoDays || 0 };
     if (rewards.commissionReduction > 0) {
-      store.commissionReductionPercent = rewards.commissionReduction;
-      store.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      storeUpdates.commissionReductionPercent = rewards.commissionReduction;
+      storeUpdates.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     }
+    await this.storesRepository.update(store.id, storeUpdates);
 
     if (rewards.freeTrialDays > 0 && store.owner?.id) {
       await this.grantTrialDays(store.owner.id, rewards.freeTrialDays);
     }
-
-    store.badgeClaimCount = 1;
-    store.lastClaimedScore = threshold;
-
-    await this.storesRepository.save(store);
   }
 
   private async grantTrialDays(userId: string, days: number): Promise<void> {
@@ -110,7 +121,14 @@ export class VerificationService {
     const newExpiry = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 
     user.planExpiresAt = newExpiry;
-    if (!user.vendorPlan) {
+    // Quem ja passou por um downgrade tem vendorPlan = 'FREE' (nao null), entao
+    // o teste antigo (`!user.vendorPlan`) nao casava: o trial era registrado —
+    // planExpiresAt ia para a frente — e o plano continuava FREE, ou seja, o
+    // premio nunca era entregue. Pior: como o scheduler de expiracao filtra por
+    // vendorPlan != FREE, aquele planExpiresAt ficava pendurado para sempre e
+    // envenenava o max(hoje, vencimento) de uma compra futura, dando dias extras
+    // que ninguem concedeu.
+    if (!user.vendorPlan || user.vendorPlan === VendorPlan.FREE) {
       user.vendorPlan = VendorPlan.PRO;
     }
 
@@ -160,15 +178,35 @@ export class VerificationService {
       );
     }
 
-    const rewards = await this.configService.getBadgeRewards(level);
-    const isFirstEver = store.badgeClaimCount === 0;
-
-    store.freePromoDaysCredit = rewards.freePromoDays || 0;
-
-    if (rewards.commissionReduction > 0) {
-      store.commissionReductionPercent = rewards.commissionReduction;
-      store.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    // R#2: claim ATÔMICO dos pontos + contador. ANTES o check acima e o
+    // incremento de `lastClaimedScore`/`badgeClaimCount` eram um read-modify-write
+    // sem lock → dois `claimBadgeReward` concorrentes liam o mesmo
+    // `lastClaimedScore`, ambos passavam, e resgatavam os MESMOS pontos duas vezes
+    // (trial/cupom/redução de comissão em dobro; o incremento sofria lost update).
+    // O UPDATE condicional garante que só um claim consome os pontos.
+    const claim = await this.storesRepository.manager.query(
+      `UPDATE stores
+          SET "lastClaimedScore" = "lastClaimedScore" + $2,
+              "badgeClaimCount" = "badgeClaimCount" + 1
+        WHERE id = $1 AND ("verificationScore" - "lastClaimedScore") >= $2
+        RETURNING "badgeClaimCount"`,
+      [storeId, threshold],
+    );
+    if (!claim || claim.length === 0) {
+      throw new BadRequestException('Recompensa já resgatada ou pontos insuficientes.');
     }
+    const isFirstEver = Number(claim[0].badgeClaimCount) === 1;
+
+    const rewards = await this.configService.getBadgeRewards(level);
+
+    // Recompensas que ficam na própria loja — aplicadas via update direto para
+    // NÃO sobrescrever `lastClaimedScore`/`badgeClaimCount` já gravados no claim.
+    const storeUpdates: any = { freePromoDaysCredit: rewards.freePromoDays || 0 };
+    if (rewards.commissionReduction > 0) {
+      storeUpdates.commissionReductionPercent = rewards.commissionReduction;
+      storeUpdates.commissionReductionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    }
+    await this.storesRepository.update(storeId, storeUpdates);
 
     if (isFirstEver) {
       if (rewards.freeTrialDays > 0 && store.owner?.id) {
@@ -180,16 +218,15 @@ export class VerificationService {
       }
     }
 
-    store.lastClaimedScore += threshold;
-    store.badgeClaimCount += 1;
-
-    const saved = await this.storesRepository.save(store);
-
     if (store.owner?.phone) {
       this.whatsAppService.notifyBadgeReward(store.owner.phone, store.name, level).catch(() => {});
     }
 
-    return saved;
+    const saved = await this.storesRepository.findOne({
+      where: { id: storeId },
+      relations: ['owner'],
+    });
+    return saved as Store;
   }
 
   async getClaimableInfo(store: Store): Promise<{
@@ -244,9 +281,19 @@ export class VerificationService {
     return saved;
   }
 
-  async recalculateScore(storeId: string): Promise<Store> {
+  /**
+   * KAN-253: `userId` opcional para validar ownership. Quando chamado por um
+   * VENDOR (via resolver), qualquer um podia passar o storeId de outra loja e
+   * forcar o recalculo da verificacao alheia (IDOR). Chamadas internas/
+   * SUPERADMIN seguem passando so o storeId.
+   */
+  async recalculateScore(storeId: string, userId?: string): Promise<Store> {
     const store = await this.storesRepository.findOne({ where: { id: storeId }, relations: ['owner'] });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+
+    if (userId && store.owner?.id !== userId) {
+      throw new ForbiddenException('Esta loja nao pertence a voce');
+    }
 
     const oldLevel = store.verificationLevel;
     const points = await this.getPointsConfig();

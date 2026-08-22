@@ -20,6 +20,9 @@ interface PendingOffer {
   currentDelivererId: string | null;
   declinedBy: Set<string>;
   permanentlyExcluded: Set<string>; // customer ID, etc.
+  // Quem ja recebeu push/WhatsApp DESTA oferta. Como a cascata volta ao inicio
+  // quando todos recusam, o mesmo entregador era re-notificado a cada volta.
+  jaNotificados: Set<string>;
   timer: ReturnType<typeof setTimeout> | null;
   resolved: boolean;
   startedAt: number;
@@ -80,6 +83,7 @@ export class DeliveryOfferService {
       orderNumber: order.orderNumber,
       currentDelivererId: null,
       declinedBy: new Set([order.customerId]),
+      jaNotificados: new Set<string>(),
       permanentlyExcluded: new Set([order.customerId]),
       timer: null,
       resolved: false,
@@ -132,9 +136,14 @@ export class DeliveryOfferService {
       offer.declinedBy = new Set(offer.permanentlyExcluded);
       offer.currentDelivererId = null;
       // Small delay before restarting the loop to avoid spamming
+      // Era 2s: com UM unico entregador online (cenario normal fora de pico),
+      // ele recusava, a lista zerava, e 2s depois a MESMA oferta voltava para
+      // ele — ~300 pushes e ~300 mensagens de WhatsApp para o mesmo numero em 10
+      // minutos, com risco real de banimento do numero no WhatsApp. 30s mantem a
+      // cascata viva sem transformar em spam.
       offer.timer = setTimeout(() => {
         this.offerToNext(offer);
-      }, 2000);
+      }, 30_000);
       return;
     }
 
@@ -163,8 +172,14 @@ export class DeliveryOfferService {
       this.logger.warn(`[OFFER] No emitToSocket set! Cannot send offer for order ${offer.orderNumber}`);
     }
 
+    // Push e WhatsApp so na PRIMEIRA vez que esta oferta chega neste entregador.
+    // O evento de socket continua sendo emitido em toda re-oferta (e o canal que
+    // desenha o card na tela e nao incomoda), mas push e mensagem nao se repetem.
+    const primeiraVez = !offer.jaNotificados.has(deliverer.userId);
+    offer.jaNotificados.add(deliverer.userId);
+
     // Push notification to deliverer
-    this.notificationsService.sendToUser(
+    if (primeiraVez) this.notificationsService.sendToUser(
       deliverer.userId,
       'Nova entrega disponivel!',
       `Pedido #${offer.orderNumber} - R$ ${offer.deliveryFee.toFixed(2)}`,
@@ -172,7 +187,7 @@ export class DeliveryOfferService {
     ).catch(() => {});
 
     // WhatsApp notification to deliverer
-    this.appUsersService.findById(deliverer.userId).then((user) => {
+    if (primeiraVez) this.appUsersService.findById(deliverer.userId).then((user) => {
       if (user?.phone) {
         this.whatsAppService.notifyNewDeliveryAvailable(
           user.phone,
