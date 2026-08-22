@@ -603,7 +603,21 @@ export class OrdersService {
   async findByOrderNumber(orderNumber: string): Promise<Order | null> {
     return this.ordersRepository.findOne({
       where: { orderNumber },
-      relations: ['store', 'items', 'items.product'],
+      // BUGFIX: sem 'customer' o check de posse do agente n8n
+      // (order.customer?.id !== customerId) dava SEMPRE verdadeiro (customer
+      // undefined) e rejeitava TODO cliente — quebrando cancelar pedido, ver
+      // pedido por numero e rastrear entrega. 'delivery'/'delivery.deliverer'
+      // sao necessarios para o rastreamento (nome/telefone/posicao do
+      // entregador). 'store.owner' para o fluxo de cancelamento resolver a loja.
+      relations: [
+        'store',
+        'store.owner',
+        'items',
+        'items.product',
+        'customer',
+        'delivery',
+        'delivery.deliverer',
+      ],
     });
   }
 
