@@ -275,10 +275,16 @@ export class PaymentsService implements OnModuleDestroy {
    *      DELETE { amount: 100 } de 300 -> 200, charge SEGUE paid (correto: so
    *        parte voltou), last_transaction.status=partial_refunded
    *
-   *    Ou seja: existe uma janela de poucos segundos apos a captura em que o
-   *    adquirente recusa o estorno, e nela a API devolve 200. Quem confiasse no
-   *    status HTTP registraria "estornado" sem ter estornado nada. Por isso aqui
-   *    a decisao sai de `last_transaction.status`, nunca do 200.
+   *    A recusa aconteceu logo depois da captura e deixou de acontecer segundos
+   *    adiante, mas NAO e um atraso fixo: numa execucao posterior do mesmo
+   *    experimento o estorno imediato passou de primeira. Ou seja, e
+   *    INTERMITENTE — que e o pior caso, porque nao da para contornar com uma
+   *    espera e nao aparece em teste feito uma vez.
+   *
+   *    Seja qual for a causa (liquidacao do adquirente, concorrencia interna), a
+   *    licao e a mesma e nao depende de descobri-la: o 200 nao prova nada, e a
+   *    decisao tem de sair de `last_transaction.status`. Quem confiasse no
+   *    status HTTP registraria "estornado" sem ter estornado — as vezes.
    *
    *    Lancar nesse caso e de proposito: os chamadores ja sabem reabrir o
    *    settlement e re-tentar (ver `settlementErrors` / `retryFailedSettlements`),
