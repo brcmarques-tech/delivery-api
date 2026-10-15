@@ -17,7 +17,7 @@ import { Repository } from 'typeorm';
 import { timingSafeEqual } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { StoresService } from '../stores/stores.service';
-import { businessTodayDate } from '../common/utils/business-time';
+import { businessDayStartInstant } from '../common/utils/business-time';
 import { OrdersService } from '../orders/orders.service';
 import { ProductsService } from '../products/products.service';
 import { CouponsService } from '../coupons/coupons.service';
@@ -132,7 +132,8 @@ export class N8nAgentController {
     // hoje" as 20:00 e recebia pedidos de ontem a noite junto — e os de hoje a
     // noite eram contados de novo amanha. Receita reportada no dia errado todo
     // santo dia. Agora a virada do dia e no fuso do negocio.
-    const today = businessTodayDate();
+    // Corte do dia contra TIMESTAMP: precisa do instante real, nao da meia-noite UTC.
+    const today = businessDayStartInstant();
     // BUGFIX: o filtro do dia roda no SQL (findByStoreSince). Com o findByStore
     // anterior (cap dos 500 mais recentes) + filtro em memoria, uma loja que
     // passava de 500 pedidos no dia perdia os primeiros do dia — resumo com
