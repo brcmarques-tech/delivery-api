@@ -48,36 +48,78 @@ export class PaymentsService implements OnModuleDestroy {
   }
 
   // M7: Build billing address — Pagar.me V5 requires separate fields (street, number, neighborhood)
-  private buildBillingAddress(order: Order, store: Store): { street: string; number: string; neighborhood: string; zip_code: string; city: string; state: string; country: string } {
-    // Parse delivery address if available (format: "Rua X, 123 - Bairro, Cidade")
+  /**
+   * Endereço de cobrança no formato que o Pagar.me v5 realmente aceita.
+   *
+   * ANTES devolvia `street` / `number` / `neighborhood`. Esses campos NÃO
+   * existem no address da v5 — ela espera `line_1` (número, rua, bairro),
+   * `line_2` (complemento), `zip_code`, `city`, `state` e `country`. O gateway
+   * descartava os três em silêncio e o antifraude recebia um endereço com
+   * apenas CEP, cidade e estado: score pior e mais recusa legítima, sem
+   * nenhum erro visível de nosso lado.
+   *
+   * `state` é normalizado para a sigla de 2 letras e `country` para ISO de 2 —
+   * a v5 rejeita valores maiores.
+   */
+  private buildBillingAddress(
+    order: Order,
+    store: Store,
+  ): { line_1: string; line_2?: string; zip_code: string; city: string; state: string; country: string } {
     const addr = order.deliveryAddress;
-    // Try to extract zip from customer data if available
-    const customerZip = (order as any).customer?.zipCode?.replace(/\D/g, '')
-      || (order as any).deliveryZipCode?.replace(/\D/g, '');
+    const customerZip =
+      (order as any).customer?.zipCode?.replace(/\D/g, '') ||
+      (order as any).deliveryZipCode?.replace(/\D/g, '');
+
+    const siglaEstado = (uf?: string): string => {
+      const limpo = (uf || '').trim();
+      if (/^[A-Za-z]{2}$/.test(limpo)) return limpo.toUpperCase();
+      const porExtenso: Record<string, string> = {
+        acre: 'AC', alagoas: 'AL', amapa: 'AP', amazonas: 'AM', bahia: 'BA',
+        ceara: 'CE', 'distrito federal': 'DF', 'espirito santo': 'ES',
+        goias: 'GO', maranhao: 'MA', 'mato grosso': 'MT',
+        'mato grosso do sul': 'MS', 'minas gerais': 'MG', para: 'PA',
+        paraiba: 'PB', parana: 'PR', pernambuco: 'PE', piaui: 'PI',
+        'rio de janeiro': 'RJ', 'rio grande do norte': 'RN',
+        'rio grande do sul': 'RS', rondonia: 'RO', roraima: 'RR',
+        'santa catarina': 'SC', 'sao paulo': 'SP', sergipe: 'SE',
+        tocantins: 'TO',
+      };
+      const chave = limpo
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '');
+      return porExtenso[chave] || 'RS';
+    };
+
+    // line_1 no formato recomendado pela v5: "numero, rua, bairro"
+    const montarLinha1 = (num: string, rua: string, bairro: string) =>
+      [num, rua, bairro].filter(Boolean).join(', ').substring(0, 256);
+
     if (addr) {
-      const parts = addr.split(',').map(p => p.trim());
+      const parts = addr.split(',').map((p) => p.trim());
       const street = parts[0] || 'Rua Nao Informada';
-      const numberAndNeighborhood = parts[1]?.split('-').map(p => p.trim()) || [];
+      const numberAndNeighborhood = parts[1]?.split('-').map((p) => p.trim()) || [];
       const num = numberAndNeighborhood[0] || 'SN';
       const neighborhood = numberAndNeighborhood[1] || parts[2] || 'Centro';
       return {
-        street,
-        number: num,
-        neighborhood,
+        line_1: montarLinha1(num, street, neighborhood),
         zip_code: customerZip || store?.zipCode?.replace(/\D/g, '') || '00000000',
         city: parts[parts.length - 1] || store?.city || 'Nao Informada',
-        state: store?.state || 'RS',
+        state: siglaEstado(store?.state),
         country: 'BR',
       };
     }
-    // Fallback to store address if no delivery address (e.g. pickup)
+
+    // Fallback para o endereço da loja (ex.: retirada no local)
     return {
-      street: store?.street || 'Rua Nao Informada',
-      number: store?.number || 'SN',
-      neighborhood: store?.neighborhood || 'Centro',
+      line_1: montarLinha1(
+        store?.number || 'SN',
+        store?.street || 'Rua Nao Informada',
+        store?.neighborhood || 'Centro',
+      ),
       zip_code: store?.zipCode?.replace(/\D/g, '') || '00000000',
       city: store?.city || 'Nao Informada',
-      state: store?.state || 'RS',
+      state: siglaEstado(store?.state),
       country: 'BR',
     };
   }
