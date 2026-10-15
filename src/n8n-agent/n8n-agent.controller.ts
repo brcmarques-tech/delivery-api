@@ -165,12 +165,61 @@ export class N8nAgentController {
     };
   }
 
+  /**
+   * KAN-291 — amarra o id ao TELEFONE da conversa.
+   *
+   * Os endpoints de leitura recebiam `customerId` / `storeId` da query e
+   * confiavam neles: a unica barreira era a chave estatica, compartilhada por
+   * todos os workflows e sem escopo. Quem tivesse a chave trocava o id e lia
+   * pedidos, valores e nome de loja de QUALQUER pessoa — e `users/by-phone`
+   * converte um dado publico (o telefone) exatamente no id necessario.
+   *
+   * O telefone da conversa e o unico fato que o WAHA estabelece e que o
+   * atacante nao escolhe (o roteador valida o segredo do webhook). Amarrando o
+   * id a ele, trocar o id na query deixa de funcionar.
+   *
+   * Compatibilidade: enquanto `phone` nao vier (workflow antigo), seguimos pelo
+   * id e registramos em WARN — para a transicao ser observavel em vez de
+   * quebrar o atendimento em producao. Ligar `N8N_REQUIRE_PHONE_BINDING=true`
+   * passa a exigir.
+   */
+  private async assertTelefoneBateComCliente(
+    phone: string | undefined,
+    customerId: string,
+  ): Promise<void> {
+    if (!phone) {
+      if (process.env.N8N_REQUIRE_PHONE_BINDING === 'true') {
+        throw new ForbiddenException('Telefone da conversa obrigatorio');
+      }
+      console.warn(
+        `[N8N_SEM_BINDING] leitura por customerId sem telefone da conversa (${customerId}) — workflow desatualizado`,
+      );
+      return;
+    }
+    const cands = brazilPhoneCandidates(phone);
+    if (!cands.length) throw new ForbiddenException('Telefone invalido');
+    const dono = await this.appUsersRepository
+      .createQueryBuilder('u')
+      .where('u.id = :id', { id: customerId })
+      .andWhere("regexp_replace(u.phone, '[^0-9]', '', 'g') IN (:...cands)", {
+        cands,
+      })
+      .getOne();
+    if (!dono) {
+      throw new ForbiddenException(
+        'Identificacao nao confere com o telefone da conversa',
+      );
+    }
+  }
+
   @Get('orders/customer')
   async ordersByCustomer(
     @Query('customerId') customerId: string,
+    @Query('phone') phone: string,
     @Headers('x-n8n-key') key: string,
   ) {
     this.checkAuth(key);
+    await this.assertTelefoneBateComCliente(phone, customerId);
     const orders = await this.ordersService.findByCustomer(customerId);
     return {
       count: orders.length,
@@ -188,9 +237,11 @@ export class N8nAgentController {
   async orderByNumber(
     @Param('orderNumber') orderNumber: string,
     @Query('customerId') customerId: string,
+    @Query('phone') phone: string,
     @Headers('x-n8n-key') key: string,
   ) {
     this.checkAuth(key);
+    await this.assertTelefoneBateComCliente(phone, customerId);
     const order = await this.ordersService.findByOrderNumber(orderNumber);
     if (!order) throw new NotFoundException('Pedido nao encontrado');
     // BUGFIX: a checagem era OPCIONAL (`customerId && ...`) — bastava o
@@ -352,9 +403,11 @@ export class N8nAgentController {
   async orderTracking(
     @Param('orderNumber') orderNumber: string,
     @Query('customerId') customerId: string,
+    @Query('phone') phone: string,
     @Headers('x-n8n-key') key: string,
   ) {
     this.checkAuth(key);
+    await this.assertTelefoneBateComCliente(phone, customerId);
     const order = await this.ordersService.findByOrderNumber(orderNumber);
     if (!order) throw new NotFoundException('Pedido nao encontrado');
     // BUGFIX: posse era opcional. Este endpoint devolve NOME, TELEFONE e a

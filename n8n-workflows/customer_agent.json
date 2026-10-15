@@ -148,6 +148,10 @@
               "name": "customerId",
               "valueProvider": "fieldValue",
               "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+            },
+            {
+              "name": "phone",
+              "value": "={{ $('Execute Workflow Trigger').item.json.phone }}"
             }
           ]
         },
@@ -162,7 +166,8 @@
         },
         "optimizeResponse": true,
         "responseOptimization": "removeFields",
-        "fieldsToRemove": "updatedAt,deletedAt"
+        "fieldsToRemove": "updatedAt,deletedAt",
+        "specifyQuery": "keypair"
       }
     },
     {
@@ -204,9 +209,14 @@
               "name": "customerId",
               "valueProvider": "fieldValue",
               "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+            },
+            {
+              "name": "phone",
+              "value": "={{ $('Execute Workflow Trigger').item.json.phone }}"
             }
           ]
-        }
+        },
+        "specifyQuery": "keypair"
       }
     },
     {
@@ -295,9 +305,14 @@
               "name": "customerId",
               "valueProvider": "fieldValue",
               "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+            },
+            {
+              "name": "phone",
+              "value": "={{ $('Execute Workflow Trigger').item.json.phone }}"
             }
           ]
-        }
+        },
+        "specifyQuery": "keypair"
       }
     }
   ],
@@ -571,6 +586,10 @@
                 "name": "customerId",
                 "valueProvider": "fieldValue",
                 "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+              },
+              {
+                "name": "phone",
+                "value": "={{ $('Execute Workflow Trigger').item.json.phone }}"
               }
             ]
           },
@@ -585,7 +604,8 @@
           },
           "optimizeResponse": true,
           "responseOptimization": "removeFields",
-          "fieldsToRemove": "updatedAt,deletedAt"
+          "fieldsToRemove": "updatedAt,deletedAt",
+          "specifyQuery": "keypair"
         }
       },
       {
@@ -601,7 +621,7 @@
           "description": "Busca detalhes de um pedido específico pelo número do pedido.",
           "method": "GET",
           "url": "={{ $env.API_BASE_URL }}/n8n/orders/number/{orderNumber}",
-          "sendQuery": false,
+          "sendQuery": true,
           "sendPlaceholders": true,
           "placeholderDefinitions": {
             "values": [
@@ -618,6 +638,19 @@
               {
                 "name": "X-N8N-Key",
                 "value": "={{ $env.N8N_AGENT_KEY }}"
+              }
+            ]
+          },
+          "specifyQuery": "keypair",
+          "parametersQuery": {
+            "values": [
+              {
+                "name": "customerId",
+                "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+              },
+              {
+                "name": "phone",
+                "value": "={{ $('Execute Workflow Trigger').item.json.phone }}"
               }
             ]
           }
@@ -699,6 +732,20 @@
               {
                 "name": "X-N8N-Key",
                 "value": "={{ $env.N8N_AGENT_KEY }}"
+              }
+            ]
+          },
+          "sendQuery": true,
+          "specifyQuery": "keypair",
+          "parametersQuery": {
+            "values": [
+              {
+                "name": "customerId",
+                "value": "={{ $('Execute Workflow Trigger').item.json.customerId }}"
+              },
+              {
+                "name": "phone",
+                "value": "={{ $('Execute Workflow Trigger').item.json.phone }}"
               }
             ]
           }
