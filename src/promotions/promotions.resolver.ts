@@ -1,4 +1,4 @@
-import { Resolver, Query, Mutation, Args, Float, Subscription } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Float, Int, Subscription } from '@nestjs/graphql';
 import { UseGuards, Inject } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Promotion } from './entities/promotion.entity';
@@ -48,9 +48,20 @@ export class PromotionsResolver {
     return promotion;
   }
 
+  // Perf (F6): argumentos opcionais — sem eles, o retorno e o de antes.
   @Query(() => [Promotion])
-  activePromotions(): Promise<Promotion[]> {
-    return this.promotionsService.findActive();
+  activePromotions(
+    @Args('limit', { type: () => Int, nullable: true }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true }) offset?: number,
+  ): Promise<Promotion[]> {
+    return this.promotionsService.findActive({ limit, offset });
+  }
+
+  // Uma promocao da vitrine. Sem isto, a tela de detalhe do app precisava da
+  // lista inteira para achar uma por id — ver findActiveById no service.
+  @Query(() => Promotion, { nullable: true })
+  promotion(@Args('id') id: string): Promise<Promotion | null> {
+    return this.promotionsService.findActiveById(id);
   }
 
   @Query(() => [Promotion])

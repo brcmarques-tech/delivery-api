@@ -482,7 +482,10 @@ export class StoresService implements OnApplicationBootstrap {
     }
 
     if (busca) {
-      qb.orderBy('loja.name', 'ASC');
+      // Desempate por id pelo mesmo motivo das promocoes: `name` sozinho nao e
+      // ordem total (duas lojas podem ter o mesmo nome) e, sem ordem total, as
+      // paginas podem repetir e perder registro.
+      qb.orderBy('loja.name', 'ASC').addOrderBy('loja.id', 'ASC');
       if (limite !== undefined) qb.take(limite);
       if (deslocamento) qb.skip(deslocamento);
       return qb.getMany();

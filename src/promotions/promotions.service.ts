@@ -223,17 +223,60 @@ export class PromotionsService implements OnModuleInit {
     await this.promotionsRepository.update(id, { checkoutUrl });
   }
 
-  async findActive(): Promise<Promotion[]> {
+  /** Predicado de "promocao visivel ao publico" — um lugar so. */
+  private static vitrineWhere(now: Date) {
+    return {
+      isActive: true,
+      isPaid: true,
+      startDate: LessThanOrEqual(now),
+      endDate: MoreThanOrEqual(now),
+    };
+  }
+
+  // Perf (F6): era sempre a lista completa de promocoes ativas. Os tres
+  // consumidores no app mostravam no maximo algumas (a home num carrossel, a
+  // busca cortando em 6) e a tela de DETALHE baixava a lista inteira so para
+  // achar uma por id. Agora aceita limit/offset; sem eles, o retorno e o mesmo.
+  async findActive(opcoes?: { limit?: number; offset?: number }): Promise<Promotion[]> {
     const now = new Date();
+    const take = Math.min(Math.max(Number(opcoes?.limit) || 0, 0), 100) || undefined;
+    const skip = Math.max(Number(opcoes?.offset) || 0, 0) || undefined;
     return this.promotionsRepository.find({
-      where: {
-        isActive: true,
-        isPaid: true,
-        startDate: LessThanOrEqual(now),
-        endDate: MoreThanOrEqual(now),
-      },
+      where: PromotionsService.vitrineWhere(now),
       relations: ['store', 'product'],
-      order: { createdAt: 'DESC' },
+      // DESEMPATE OBRIGATORIO. Era so `createdAt DESC`, e isso basta enquanto
+      // ninguem pagina: com empate de data o Postgres nao garante ordem nenhuma,
+      // e a ordem pode mudar DE UMA REQUISICAO PARA OUTRA. No momento em que
+      // esta lista passou a ser paginada isso virou perda e duplicacao de item
+      // entre paginas — a pagina 2 podia repetir algo da 1 e esconder outro para
+      // sempre. E empate aqui nao e hipotetico: promocoes criadas no mesmo lote
+      // (ou em segundos) compartilham o `createdAt`. O `id` e unico, entao a
+      // ordem fica total e estavel.
+      order: { createdAt: 'DESC', id: 'ASC' },
+      ...(take !== undefined ? { take } : {}),
+      ...(skip !== undefined ? { skip } : {}),
+    });
+  }
+
+  /**
+   * UMA promocao da vitrine, por id.
+   *
+   * Existe porque a tela de detalhe do app (promotion/[id].tsx) resolvia isso
+   * baixando TODAS as promocoes ativas e fazendo `.find(p => p.id === id)` no
+   * cliente. Alem do desperdicio, isso travava a paginacao desta lista: assim que
+   * `activePromotions` ganhasse limite, a tela de detalhe pararia de achar as
+   * promocoes fora da primeira pagina.
+   *
+   * O mesmo predicado da vitrine e aplicado aqui de proposito: promocao expirada
+   * ou nao paga continua invisivel, exatamente como antes (o `.find` no cliente
+   * tambem nao a encontraria). Devolve null em vez de lancar — a tela ja tem o
+   * seu proprio estado de "promocao nao encontrada".
+   */
+  async findActiveById(id: string): Promise<Promotion | null> {
+    const now = new Date();
+    return this.promotionsRepository.findOne({
+      where: { id, ...PromotionsService.vitrineWhere(now) },
+      relations: ['store', 'product'],
     });
   }
 
