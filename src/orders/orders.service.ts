@@ -1722,13 +1722,29 @@ export class OrdersService {
     // entregue no balcao. Mesma janela de 10 min e mesmo claim atomico do bloco
     // acima; o cliente segue sendo avisado no momento da entrega e mantem a
     // janela de disputa de 48h.
+    // Janela da auto-confirmação de RETIRADA / FROTA PRÓPRIA.
+    //
+    // Diferença importante para o caso de entrega pelo app: lá quem confirma a
+    // entrega é um TERCEIRO (o entregador), aqui é o PRÓPRIO LOJISTA que marca
+    // DELIVERED — e, passada a janela, ele é pago sem nenhuma ação do cliente.
+    // É auto-atestação. Manter os mesmos 10 min do outro fluxo é uma escolha de
+    // negócio, não uma consequência técnica, então fica configurável: subir
+    // `PICKUP_AUTOCONFIRM_MINUTES` dá mais tempo ao cliente para contestar antes
+    // de o dinheiro sair. O padrão preserva o comportamento atual de propósito —
+    // mudá-lo em silêncio alteraria quando o lojista recebe.
+    const minutosRetirada = Math.max(
+      1,
+      Number(process.env.PICKUP_AUTOCONFIRM_MINUTES) || 10,
+    );
+    const janelaRetirada = new Date(Date.now() - minutosRetirada * 60 * 1000);
+
     const pendentesRetirada = await this.ordersRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoinAndSelect('order.customer', 'customer')
       .where('order.status = :status', { status: OrderStatus.DELIVERED })
-      .andWhere('order.updatedAt <= :tenMinAgo', { tenMinAgo })
+      .andWhere('order.updatedAt <= :janelaRetirada', { janelaRetirada })
       .andWhere('order.customerConfirmedAt IS NULL')
       .getMany();
 

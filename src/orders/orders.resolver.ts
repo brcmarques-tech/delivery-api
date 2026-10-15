@@ -352,10 +352,21 @@ export class OrdersResolver {
     // por PIX ficava em READY para SEMPRE — nunca virava COMPLETED, o
     // `settlePayment` nunca rodava e o lojista nunca recebia. Custódia eterna.
     //
-    // Liberar DELIVERED aqui NÃO reabre o BL#1 descrito acima: o cliente ainda
-    // precisa de `confirmReceipt` para chegar a COMPLETED, e o scheduler de
-    // auto-confirmação só casa `DELIVERER_CONFIRMED_DELIVERY` — o lojista não
-    // consegue se auto-pagar. E só vale onde de fato não há entregador do app.
+    // Liberar DELIVERED aqui NÃO reabre o BL#1 do ponto de vista de "pular
+    // estados": o pedido ainda passa por COMPLETED só via `confirmReceipt` ou
+    // pela auto-confirmação por tempo.
+    //
+    // ATENÇÃO — o comentário anterior aqui dizia que "o scheduler de
+    // auto-confirmação só casa DELIVERER_CONFIRMED_DELIVERY, então o lojista não
+    // consegue se auto-pagar". Isso DEIXOU DE SER VERDADE quando o scheduler
+    // passou a cobrir também DELIVERED (sem isso, pedido de retirada ficava
+    // preso em custódia se o cliente nunca abrisse o app). Hoje o lojista marca
+    // DELIVERED e, passada a janela, o repasse sai sem nenhuma ação do cliente.
+    //
+    // Isso é uma ESCOLHA, não um descuido: a alternativa é o dinheiro travar
+    // indefinidamente. O contrapeso é a janela de disputa de 48h, e o cliente é
+    // notificado no momento em que o pedido vira DELIVERED. A janela é
+    // configurável por `PICKUP_AUTOCONFIRM_MINUTES` — ver o scheduler.
     const entregaPropriaOuRetirada =
       order.isPickup === true || order.store?.hasOwnDelivery === true;
     if (entregaPropriaOuRetirada) {
