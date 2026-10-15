@@ -8,6 +8,7 @@ import { VerificationLevel } from '../common/enums/verification-level.enum';
 import { VendorPlan } from '../common/enums/vendor-plan.enum';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { linhasAfetadas } from '../common/utils/db-claim';
 
 const LEVEL_ORDER = [
   VerificationLevel.NONE,
@@ -92,7 +93,7 @@ export class VerificationService {
         RETURNING id`,
       [store.id, threshold],
     );
-    if (!claim || claim.length === 0) return; // outro evento ja concedeu
+    if (linhasAfetadas(claim) === 0) return; // outro evento ja concedeu
 
     const rewards = await this.configService.getBadgeRewards(store.verificationLevel);
     this.logger.log(`Auto-granting first badge rewards to store ${store.id} (level: ${store.verificationLevel})`);
@@ -192,7 +193,7 @@ export class VerificationService {
         RETURNING "badgeClaimCount"`,
       [storeId, threshold],
     );
-    if (!claim || claim.length === 0) {
+    if (linhasAfetadas(claim) === 0) {
       throw new BadRequestException('Recompensa já resgatada ou pontos insuficientes.');
     }
     const isFirstEver = Number(claim[0].badgeClaimCount) === 1;

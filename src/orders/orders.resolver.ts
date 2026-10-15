@@ -387,6 +387,29 @@ export class OrdersResolver {
     return this.ordersService.findDisputed();
   }
 
+  /**
+   * Repasses de entregador retidos na plataforma (PIX com split-on-charge).
+   * Sem isto o passivo só existia como texto em `notes`.
+   */
+  @Query(() => [Order])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('deliveries')
+  delivererPayables(
+    @Args('apenasAbertos', { nullable: true, defaultValue: true })
+    apenasAbertos: boolean,
+  ): Promise<Order[]> {
+    return this.ordersService.delivererPayables(apenasAbertos);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('deliveries')
+  markDelivererPayablePaid(@Args('orderId') orderId: string): Promise<Order> {
+    return this.ordersService.markDelivererPayablePaid(orderId);
+  }
+
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)

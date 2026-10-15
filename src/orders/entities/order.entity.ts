@@ -1,4 +1,4 @@
-import { ObjectType, Field, ID, Float } from '@nestjs/graphql';
+import { ObjectType, Field, ID, Float, Int } from '@nestjs/graphql';
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -211,6 +211,21 @@ export class Order {
   @Field(() => Date, { nullable: true })
   @Column({ type: 'timestamp', nullable: true })
   delivererSettledAt: Date;
+
+  // Repasse de entregador RETIDO na plataforma.
+  //
+  // No PIX com split-on-charge o entregador não entra na divisão da cobrança (só
+  // é conhecido no READY, depois do pagamento já dividido), então o frete dele
+  // fica com a plataforma e precisa de repasse manual. Antes isso existia apenas
+  // como texto em `notes` — impossível somar, filtrar ou dar baixa. Agora é um
+  // passivo de primeira classe.
+  @Field(() => Int, { nullable: true })
+  @Column({ type: 'int', nullable: true })
+  delivererPayableCents: number;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  delivererPayablePaidAt: Date;
 
   // Foto do valor que o cliente JA pagou/autorizou online, tirada no PRIMEIRO
   // ajuste de peso (adjustItemWeight e o unico lugar que muda `total` depois da

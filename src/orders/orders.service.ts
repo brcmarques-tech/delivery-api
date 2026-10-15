@@ -28,6 +28,7 @@ import { MailService } from '../mail/mail.service';
 import { OrderStatus } from '../common/enums';
 import { businessClock } from '../common/utils/business-time';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { linhasAfetadas } from '../common/utils/db-claim';
 
 type OnOrderReadyCallback = (order: Order) => void;
 
@@ -404,7 +405,7 @@ export class OrdersService {
               RETURNING stock`,
             [item.quantity, item.product.id],
           );
-          if (!result || result.length === 0) {
+          if (linhasAfetadas(result) === 0) {
             throw new BadRequestException(
               `Estoque insuficiente para "${item.product.name}". Tente novamente.`,
             );
@@ -1009,7 +1010,7 @@ export class OrdersService {
       `UPDATE orders SET "customerConfirmedAt" = NOW() WHERE id = $1 AND "customerConfirmedAt" IS NULL RETURNING id`,
       [order.id],
     );
-    if (!claim || claim.length === 0) {
+    if (linhasAfetadas(claim) === 0) {
       throw new BadRequestException('Recebimento ja confirmado');
     }
     order.customerConfirmedAt = new Date();
@@ -1028,7 +1029,7 @@ export class OrdersService {
         WHERE id = $1 AND "customerConfirmedAt" IS NULL RETURNING id`,
       [orderId],
     );
-    return !!claim && claim.length > 0;
+    return linhasAfetadas(claim) > 0;
   }
 
   // ─── Cliente nega recebimento → DISPUTED ─────────────────────────────
@@ -1456,7 +1457,7 @@ export class OrdersService {
          WHERE id = $1 AND "stockRestoredAt" IS NULL RETURNING id`,
       [order.id],
     );
-    if (!claim || claim.length === 0) {
+    if (linhasAfetadas(claim) === 0) {
       console.log(`Stock/coupon restore skipped for order ${order.id} — already restored`);
       return;
     }
@@ -1705,7 +1706,7 @@ export class OrdersService {
              RETURNING id`,
           [order.id, OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
         );
-        if (!claim || claim.length === 0) continue; // cliente agiu antes: nao mexe
+        if (linhasAfetadas(claim) === 0) continue; // cliente agiu antes: nao mexe
         const fresh = await this.findById(order.id);
         await this.completeOrderWithPayment(fresh);
       } catch (err) {
@@ -1739,7 +1740,7 @@ export class OrdersService {
              RETURNING id`,
           [order.id, OrderStatus.DELIVERED],
         );
-        if (!claim || claim.length === 0) continue;
+        if (linhasAfetadas(claim) === 0) continue;
         const fresh = await this.findById(order.id);
         await this.completeOrderWithPayment(fresh);
       } catch (err) {
@@ -1845,6 +1846,53 @@ export class OrdersService {
     }
   }
 
+
+  /**
+   * Pedidos com repasse de entregador RETIDO na plataforma e ainda não pago.
+   *
+   * Existe por causa do split-on-charge do PIX: o entregador não entra na
+   * divisão da cobrança (só é conhecido no READY), então o frete dele fica com a
+   * plataforma e o repasse é manual. Sem esta consulta o passivo só existia como
+   * texto solto em `notes` — ninguém conseguia somar nem saber a quem pagar.
+   */
+  async delivererPayables(apenasAbertos = true): Promise<Order[]> {
+    const qb = this.ordersRepository
+      .createQueryBuilder('pedido')
+      .leftJoinAndSelect('pedido.delivery', 'delivery')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .leftJoinAndSelect('pedido.store', 'store')
+      // Alias 'pedido' e nao 'order': ORDER e palavra reservada no Postgres e o
+      // SQL gerado quebrava com "syntax error at or near order".
+      .where('pedido.delivererPayableCents IS NOT NULL')
+      .andWhere('pedido.delivererPayableCents > 0');
+    if (apenasAbertos) {
+      qb.andWhere('pedido.delivererPayablePaidAt IS NULL');
+    }
+    return qb
+      .orderBy('pedido.completedAt', 'ASC')
+      .addOrderBy('pedido.id', 'ASC')
+      .take(500)
+      .getMany();
+  }
+
+  /** Dá baixa no repasse manual. Idempotente: só marca quem ainda está aberto. */
+  async markDelivererPayablePaid(orderId: string): Promise<Order> {
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "delivererPayablePaidAt" = NOW()
+         WHERE id = $1
+           AND "delivererPayableCents" IS NOT NULL
+           AND "delivererPayablePaidAt" IS NULL
+         RETURNING id`,
+      [orderId],
+    );
+    if (linhasAfetadas(claim) === 0) {
+      throw new BadRequestException(
+        'Este repasse não está em aberto (já foi baixado ou não existe).',
+      );
+    }
+    return this.findById(orderId);
+  }
+
   async retryFailedSettlements(): Promise<number> {
     const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const pending = await this.ordersRepository.find({
@@ -1900,7 +1948,7 @@ export class OrdersService {
         OrderStatus.DELIVERED,
       ],
     );
-    if (!result || result.length === 0) {
+    if (linhasAfetadas(result) === 0) {
       // Ja finalizado por outra chamada, ou saiu do estado que permite finalizar
       // (disputa/cancelamento) — devolve o estado real sem tocar em nada.
       return this.findById(order.id);
@@ -2069,7 +2117,7 @@ export class OrdersService {
       `UPDATE orders SET status = $2 WHERE id = $1 AND status = $3 RETURNING id`,
       [id, status, claimFrom],
     );
-    if (!transitionClaim || transitionClaim.length === 0) {
+    if (linhasAfetadas(transitionClaim) === 0) {
       throw new BadRequestException(
         `Nao pode mudar de ${claimFrom} para ${status}`,
       );

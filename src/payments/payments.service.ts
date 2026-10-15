@@ -24,6 +24,7 @@ import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
 import { PubSub } from 'graphql-subscriptions';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { linhasAfetadas } from '../common/utils/db-claim';
 
 // L5: Centralized descriptor constant
 const STATEMENT_DESCRIPTOR = 'BCMTECH';
@@ -1162,7 +1163,7 @@ export class PaymentsService implements OnModuleDestroy {
         RETURNING id, "isSettled" AS estava_liquidado`,
       [order.id],
     );
-    if (!reverseClaim || reverseClaim.length === 0) {
+    if (linhasAfetadas(reverseClaim) === 0) {
       this.logger.log(
         `Settlement reversal already performed for order #${order.orderNumber} — skipping`,
       );
@@ -1330,7 +1331,7 @@ export class PaymentsService implements OnModuleDestroy {
            AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
       [order.id],
     );
-    if (!settleResult || settleResult.length === 0) {
+    if (linhasAfetadas(settleResult) === 0) {
       this.logger.warn(`Settlement skipped for order #${order.orderNumber} — already settled or order terminated`);
       return;
     }
@@ -1391,6 +1392,9 @@ export class PaymentsService implements OnModuleDestroy {
         if (delivererAmount > 0) {
           await orderRepo.update(order.id, {
             delivererSettledAt: new Date(),
+            // Alem da nota legivel, grava o valor em coluna propria: e o que torna
+            // o passivo somavel, filtravel e baixavel pelo superadmin.
+            delivererPayableCents: delivererAmount,
             notes: `${order.notes || ''}\n[DELIVERER_PAYABLE] R$ ${(delivererAmount / 100).toFixed(2)} a repassar ao entregador (PIX split-on-charge; frete retido na plataforma).`.trim(),
           } as any);
           order.delivererSettledAt = new Date();
@@ -1499,7 +1503,7 @@ export class PaymentsService implements OnModuleDestroy {
           WHERE id = $1 AND "overpaidRefundedAt" IS NULL RETURNING id`,
         [order.id],
       );
-      if (claim && claim.length > 0) {
+      if (linhasAfetadas(claim) > 0) {
         try {
           let chargeId: string | null = null;
           if (order.preAuthChargeId) {
@@ -2537,7 +2541,7 @@ export class PaymentsService implements OnModuleDestroy {
             RETURNING id`,
           [order.id, newMpPref],
         );
-        if (!paidClaim || paidClaim.length === 0) return;
+        if (linhasAfetadas(paidClaim) === 0) return;
         order.status = OrderStatus.PENDING;
         order.couponCredited = true;
         order.mpPreferenceId = newMpPref;
@@ -2635,7 +2639,7 @@ export class PaymentsService implements OnModuleDestroy {
         WHERE id = $1 AND COALESCE(notes, '') NOT LIKE '%[PAID_AFTER_EXPIRY%' RETURNING id`,
       [order.id, `\n[PAID_AFTER_EXPIRY ${new Date().toISOString()}] pagamento chegou com o pedido ${order.status}; estorno automatico em andamento.`],
     );
-    if (!claim || claim.length === 0) return; // outro webhook ja assumiu
+    if (linhasAfetadas(claim) === 0) return; // outro webhook ja assumiu
 
     try {
       // Localiza a cobranca REAL e confirma que esta paga antes de estornar.
@@ -2755,7 +2759,7 @@ export class PaymentsService implements OnModuleDestroy {
          WHERE id = $1 AND status = 'AWAITING_PAYMENT' RETURNING id`,
       [order.id],
     );
-    if (!claimFalha || claimFalha.length === 0) return;
+    if (linhasAfetadas(claimFalha) === 0) return;
     order.status = OrderStatus.CANCELLED;
     this.logger.log(`Pedido #${order.orderNumber} cancelado por falha no pagamento`);
 
@@ -2827,7 +2831,7 @@ export class PaymentsService implements OnModuleDestroy {
          WHERE id = $1 AND status = 'AWAITING_PAYMENT' RETURNING id`,
       [order.id],
     );
-    if (!claimCancel || claimCancel.length === 0) return;
+    if (linhasAfetadas(claimCancel) === 0) return;
     order.status = OrderStatus.CANCELLED;
     this.logger.log(`Pedido #${order.orderNumber} cancelado via Pagar.me webhook`);
 
@@ -2915,7 +2919,7 @@ export class PaymentsService implements OnModuleDestroy {
            WHERE id = $1 AND status IN ('AWAITING_PAYMENT','PAYMENT_REVIEW') RETURNING id`,
         [order.id],
       );
-      if (!chargeClaim || chargeClaim.length === 0) return;
+      if (linhasAfetadas(chargeClaim) === 0) return;
       order.status = OrderStatus.PENDING;
       order.couponCredited = true;
       if (setCaptured) {
@@ -3124,7 +3128,7 @@ export class PaymentsService implements OnModuleDestroy {
            WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
         [order.id],
       );
-      const encerradoAqui = !!claimChargeback && claimChargeback.length > 0;
+      const encerradoAqui = linhasAfetadas(claimChargeback) > 0;
       order.status = OrderStatus.CANCELLED;
       this.logger.warn(`Pedido #${order.orderNumber} cancelado por chargeback | wasCompleted: ${wasCompleted} | encerradoAqui: ${encerradoAqui}`);
 
@@ -3225,7 +3229,7 @@ export class PaymentsService implements OnModuleDestroy {
            WHERE id = $1 AND notes LIKE '%[REFUND_FAILED%' RETURNING id`,
         [order.id],
       );
-      if (!claim || claim.length === 0) {
+      if (linhasAfetadas(claim) === 0) {
         throw new BadRequestException('Este pedido já está sendo re-estornado.');
       }
       // status ja e terminal; nao mexe nele.
@@ -3235,7 +3239,7 @@ export class PaymentsService implements OnModuleDestroy {
            WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
         [order.id, statusFinal],
       );
-      if (!claim || claim.length === 0) {
+      if (linhasAfetadas(claim) === 0) {
         throw new BadRequestException('Este pedido já está sendo cancelado/estornado.');
       }
       order.status = statusFinal; // reflete o claim no objeto em memória
@@ -3880,7 +3884,7 @@ export class PaymentsService implements OnModuleDestroy {
       `UPDATE appointments SET "isSettled" = true WHERE id = $1 AND "isSettled" = false RETURNING id`,
       [appointment.id],
     );
-    if (!settleResult || settleResult.length === 0) {
+    if (linhasAfetadas(settleResult) === 0) {
       this.logger.warn(`Settlement skipped for appointment ${appointment.appointmentNumber} — already settled`);
       return;
     }
