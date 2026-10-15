@@ -914,4 +914,106 @@ describe('PaymentsService', () => {
       expect(result).toBe(0);
     });
   });
+
+  // ─── saldo a liberar (waiting funds) ─────────────────────────
+  //
+  // Guarda do bug confirmado ao vivo em 15/10/2026: o service lia
+  // `balance.waiting_funds?.amount` (forma ANINHADA, da v4) em quatro pontos,
+  // mas a v5 devolve o campo PLANO `waiting_funds_amount`. Resposta real do
+  // sandbox:
+  //
+  //   { "currency":"BRL", "available_amount":0, "waiting_funds_amount":-99,
+  //     "transferred_amount":0, "payment_profile_id":null, "recipient":{...} }
+  //
+  // Resultado: undefined em todas as leituras, `|| 0` fechava em ZERO, e com
+  // isso "Valores a liberar" mostrava R$ 0,00 para todo vendedor e entregador,
+  // a simulacao e o pedido de antecipacao desistiam antes de chamar o provedor,
+  // e a secao de antecipacao da tela de ganhos (que so aparece com
+  // waitingFundsAmount > 0) NUNCA era renderizada.
+  //
+  // Estes testes batem na forma do payload, que e exatamente o que quebrou.
+  describe('getRecipientBalance — forma do payload de saldo', () => {
+    function comBalance(balance: any) {
+      jest.spyOn(service as any, 'pagarmeGet').mockImplementation((path: any) =>
+        String(path).endsWith('/balance')
+          ? Promise.resolve(balance)
+          : Promise.resolve(null),
+      );
+    }
+
+    afterEach(() => jest.restoreAllMocks());
+
+    it('le o campo PLANO waiting_funds_amount da v5', async () => {
+      comBalance({
+        currency: 'BRL',
+        available_amount: 12345,
+        waiting_funds_amount: 6789,
+        transferred_amount: 100,
+      });
+      const r = await service.getRecipientBalance('re_x');
+      expect(r.waitingFundsAmount).toBe(67.89);
+      expect(r.availableAmount).toBe(123.45);
+      expect(r.transferredAmount).toBe(1);
+    });
+
+    it('ainda aceita a forma ANINHADA antiga, para nao zerar em silencio se o provedor variar', async () => {
+      comBalance({ available_amount: 0, waiting_funds: { amount: 4200 }, transferred_amount: 0 });
+      const r = await service.getRecipientBalance('re_x');
+      expect(r.waitingFundsAmount).toBe(42);
+    });
+
+    it('zero de verdade quando nenhuma das formas vem', async () => {
+      comBalance({ available_amount: 0, transferred_amount: 0 });
+      const r = await service.getRecipientBalance('re_x');
+      expect(r.waitingFundsAmount).toBe(0);
+    });
+
+    it('preserva valor NEGATIVO em vez de virar zero (o sandbox devolve -99)', async () => {
+      // Importa porque `|| 0` tambem apagaria um negativo, e saldo negativo e
+      // informacao real do provedor — esconder isso mente para o lojista.
+      comBalance({ available_amount: 0, waiting_funds_amount: -99, transferred_amount: 0 });
+      const r = await service.getRecipientBalance('re_x');
+      expect(r.waitingFundsAmount).toBeCloseTo(-0.99, 10);
+    });
+  });
+
+  // ─── simulacao de antecipacao ────────────────────────────────
+  describe('simulateAnticipation — estimativa marcada', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it('marca isEstimate quando a cotacao do provedor falha (nao finge cotacao)', async () => {
+      jest
+        .spyOn(service as any, 'pagarmeGet')
+        .mockResolvedValue({ waiting_funds_amount: 10000 });
+      // o POST da simulacao falha — e o que acontece hoje em toda chamada,
+      // porque o caminho /anticipations nao existe na v5
+      jest.spyOn(service as any, 'pagarmePost').mockRejectedValue(new Error('404'));
+
+      const r = await service.simulateAnticipation('re_x');
+      expect(r.isEstimate).toBe(true);
+      expect(r.originalAmount).toBe(100);
+      expect(r.feePercentage).toBe(3.5);
+    });
+
+    it('nao marca isEstimate quando a cotacao vem do provedor', async () => {
+      jest
+        .spyOn(service as any, 'pagarmeGet')
+        .mockResolvedValue({ waiting_funds_amount: 10000 });
+      jest.spyOn(service as any, 'pagarmePost').mockResolvedValue({ amount: 9700 });
+
+      const r = await service.simulateAnticipation('re_x');
+      expect(r.isEstimate).toBe(false);
+      expect(r.anticipatedAmount).toBe(97);
+      expect(r.fee).toBeCloseTo(3, 10);
+    });
+
+    it('zero sem saldo a liberar nao e estimativa', async () => {
+      jest
+        .spyOn(service as any, 'pagarmeGet')
+        .mockResolvedValue({ waiting_funds_amount: 0 });
+      const r = await service.simulateAnticipation('re_x');
+      expect(r.isEstimate).toBe(false);
+      expect(r.originalAmount).toBe(0);
+    });
+  });
 });

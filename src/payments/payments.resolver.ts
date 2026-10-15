@@ -230,7 +230,9 @@ export class PaymentsResolver {
   async simulateAnticipation(@CurrentUser() user: any): Promise<AnticipationSimulation> {
     const recipientId = user.pagarmeRecipientId;
     if (!recipientId) {
-      return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0 };
+      // Sem recebedor cadastrado o zero e REAL (nao ha o que antecipar), nao
+      // uma estimativa nossa.
+      return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0, isEstimate: false };
     }
     return this.paymentsService.simulateAnticipation(recipientId);
   }

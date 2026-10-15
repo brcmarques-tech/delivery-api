@@ -3394,6 +3394,43 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Recipient Balance & Anticipation ─────────────────────────────────
 
+  /**
+   * Centavos a liberar ("waiting funds") de um recebedor, a partir da resposta
+   * de `GET /recipients/{id}/balance`.
+   *
+   * BUG CORRIGIDO AQUI (confirmado ao vivo em 15/10/2026): o codigo lia
+   * `balance.waiting_funds?.amount` — forma ANINHADA, da v4 — em quatro pontos.
+   * A v5 devolve o campo PLANO. Resposta real do sandbox:
+   *
+   *   { "currency": "BRL", "available_amount": 0, "waiting_funds_amount": -99,
+   *     "transferred_amount": 0, "payment_profile_id": null, "recipient": {...} }
+   *
+   * Entao `waiting_funds` era sempre undefined, o `?.amount` virava undefined e
+   * o `|| 0` fechava a conta em ZERO. Consequencias, todas em producao:
+   *
+   *  - "Valores a liberar" mostrava R$ 0,00 para TODO vendedor e entregador,
+   *    independente do que existisse de fato;
+   *  - `simulateAnticipation` e `requestAnticipation` liam o mesmo campo, viam
+   *    zero e desistiam antes de chamar o provedor;
+   *  - a tela de ganhos so renderiza a secao de antecipacao quando
+   *    `waitingFundsAmount > 0`, entao a secao NUNCA apareceu.
+   *
+   * Isso explica por que o caminho errado de antecipacao (ver
+   * `simulateAnticipation`) nunca deu sinal: o codigo nem chegava a chama-lo.
+   *
+   * O leitor aceita as DUAS formas de proposito. Nao e indecisao: e um ponto de
+   * integracao com um provedor que ja mudou de forma uma vez, e cair para a
+   * forma antiga custa uma linha e evita que o campo volte a zerar em silencio
+   * se a resposta variar entre ambientes.
+   */
+  private static centavosAguardando(balance: any): number {
+    const plano = balance?.waiting_funds_amount;
+    if (typeof plano === 'number') return plano;
+    const aninhado = balance?.waiting_funds?.amount;
+    if (typeof aninhado === 'number') return aninhado;
+    return 0;
+  }
+
   async getRecipientBalance(recipientId: string): Promise<{ availableAmount: number; waitingFundsAmount: number; transferredAmount: number; autoAnticipationEnabled: boolean }> {
     try {
       const [balance, recipient] = await Promise.all([
@@ -3402,7 +3439,7 @@ export class PaymentsService implements OnModuleDestroy {
       ]);
       return {
         availableAmount: (balance.available_amount || 0) / 100,
-        waitingFundsAmount: (balance.waiting_funds?.amount || 0) / 100,
+        waitingFundsAmount: PaymentsService.centavosAguardando(balance) / 100,
         transferredAmount: (balance.transferred_amount || 0) / 100,
         autoAnticipationEnabled: recipient?.automatic_anticipation_settings?.enabled ?? false,
       };
@@ -3412,14 +3449,51 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
-  async simulateAnticipation(recipientId: string): Promise<{ originalAmount: number; anticipatedAmount: number; fee: number; feePercentage: number }> {
+  /**
+   * ATENCAO — A INTEGRACAO DE ANTECIPACAO ESTA QUEBRADA NA RAIZ.
+   *
+   * O caminho usado aqui e no requestAnticipation, `/recipients/{id}/anticipations`,
+   * NAO EXISTE na API v5 do Pagar.me: e nome da v4. Na v5 o recurso vive em
+   * `/recipients/{id}/bulk_anticipations` (e a simulacao em
+   * `/bulk_anticipations/simulate`, que na v5 virou POST).
+   *
+   * Verificado contra o sandbox em 14/10/2026, usando o recebedor da PLATAFORMA
+   * (que existe: GET /recipients/{id} responde 200):
+   *   GET /recipients/{plataforma}/anticipations      -> 404 com CORPO VAZIO
+   *   GET /recipients/{plataforma}/rota_inventada_xyz -> 404 com CORPO VAZIO  (identico)
+   *   GET /recipients/{id}/balance (recebedor falso)  -> 404 {"message":"The recipient could not be found"}
+   *   GET /recipients/{plataforma}/bulk_anticipations -> 401 {"message":"IP de origem nao autorizado..."}
+   * Ou seja: `/anticipations` responde como ROTA INEXISTENTE (igual a uma rota
+   * que eu inventei), enquanto `/bulk_anticipations` responde como rota que
+   * EXISTE e esta barrada por allowlist de IP. Nao e recebedor ausente.
+   *
+   * Consequencias, as duas em producao hoje:
+   *  - `requestAnticipation` SEMPRE falha com 404. A antecipacao nunca funcionou,
+   *    em nenhum ambiente.
+   *  - `simulateAnticipation` SEMPRE cai no catch abaixo e devolvia uma taxa fixa
+   *    de 3,5% com a mesma forma de uma cotacao real. A tela de ganhos mostra
+   *    "Voce recebe R$ X" em destaque, e aquele X era invencao nossa.
+   *
+   * Nada disso aparecia porque o catch so logava `warn`.
+   *
+   * NAO corrigi o caminho aqui de proposito. Corrigir exige (a) confirmar os
+   * nomes dos campos do corpo na v5 — o codigo manda `requested_amount` e
+   * `type`, que sao da v4 — e (b) a allowlist de IP do Pagar.me, que nao esta
+   * configurada e nao e algo que se resolva no codigo (o mesmo bloqueio ja
+   * conhecido do `/transfers`). Chutar o corpo certo numa rota que MOVE DINHEIRO,
+   * sem poder testar, troca "falha sempre e em silencio" por "faz algo
+   * inesperado" — que e pior. O estado atual falha fechado; o que mudo aqui e
+   * parar de MENTIR o numero e passar a gritar no log.
+   */
+  async simulateAnticipation(recipientId: string): Promise<{ originalAmount: number; anticipatedAmount: number; fee: number; feePercentage: number; isEstimate: boolean }> {
     try {
       // Get waiting funds first
       const balance = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
-      const waitingCents = balance.waiting_funds?.amount || 0;
+      const waitingCents = PaymentsService.centavosAguardando(balance);
 
       if (waitingCents <= 0) {
-        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0 };
+        // Saldo a liberar veio do provedor e e zero: valor real, nao estimativa.
+        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0, isEstimate: false };
       }
 
       // Simulate anticipation
@@ -3436,13 +3510,30 @@ export class PaymentsService implements OnModuleDestroy {
       const fee = originalAmount - anticipatedAmount;
       const feePercentage = originalAmount > 0 ? (fee / originalAmount) * 100 : 0;
 
-      return { originalAmount, anticipatedAmount, fee, feePercentage: Math.round(feePercentage * 100) / 100 };
+      // Cotacao de verdade, vinda do provedor.
+      return {
+        originalAmount,
+        anticipatedAmount,
+        fee,
+        feePercentage: Math.round(feePercentage * 100) / 100,
+        isEstimate: false,
+      };
     } catch (err: any) {
-      this.logger.warn(`Failed to simulate anticipation: ${err.response?.data?.message || err.message}`);
-      // Fallback: estimate ~3.5% fee
+      // ERROR, nao WARN: hoje este caminho e percorrido em TODA chamada (ver o
+      // comentario do metodo) e ninguem notou em meses justamente porque era um
+      // warn sem marcador. O marcador existe para dar grep e alerta.
+      this.logger.error(
+        `[ANTECIPACAO_INDISPONIVEL] simulacao falhou para ${recipientId}: ` +
+          `${err.response?.data?.message || err.message}. ` +
+          `Conferir o caminho da API (v5 usa /bulk_anticipations, nao /anticipations) ` +
+          `e a allowlist de IP do Pagar.me.`,
+      );
+      // Fallback: estimativa de ~3,5%, MARCADA como estimativa. O valor serve
+      // para a pessoa ter uma nocao de ordem de grandeza; o que nao pode e ele
+      // se passar por cotacao do provedor, que era o caso antes.
       try {
         const balance = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
-        const waitingCents = balance.waiting_funds?.amount || 0;
+        const waitingCents = PaymentsService.centavosAguardando(balance);
         const originalAmount = waitingCents / 100;
         const estimatedFee = originalAmount * 0.035;
         return {
@@ -3450,16 +3541,17 @@ export class PaymentsService implements OnModuleDestroy {
           anticipatedAmount: originalAmount - estimatedFee,
           fee: Math.round(estimatedFee * 100) / 100,
           feePercentage: 3.5,
+          isEstimate: true,
         };
       } catch {
-        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0 };
+        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0, isEstimate: true };
       }
     }
   }
 
   async requestAnticipation(recipientId: string): Promise<{ id: string; status: string; requestedAmount: number; approvedAmount: number; fee: number; createdAt: string }> {
     const balance = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
-    const waitingCents = balance.waiting_funds?.amount || 0;
+    const waitingCents = PaymentsService.centavosAguardando(balance);
 
     if (waitingCents <= 0) {
       throw new BadRequestException('Não há valores pendentes para antecipar');
@@ -3490,8 +3582,21 @@ export class PaymentsService implements OnModuleDestroy {
       };
     } catch (err: any) {
       const errorData = err.response?.data;
-      this.logger.error(`Anticipation request failed: ${JSON.stringify(errorData || err.message)}`);
-      throw new BadRequestException(errorData?.message || 'Erro ao solicitar antecipação');
+      this.logger.error(
+        `[ANTECIPACAO_INDISPONIVEL] pedido falhou para ${recipientId}: ` +
+          `${JSON.stringify(errorData || err.message)}. ` +
+          `Conferir o caminho da API (v5 usa /bulk_anticipations, nao /anticipations) ` +
+          `e a allowlist de IP do Pagar.me.`,
+      );
+      // A mensagem do provedor so e repassada quando ELE respondeu algo. Num 404
+      // de rota inexistente — o caso de hoje — nao ha mensagem, e o lojista via
+      // "Erro ao solicitar antecipacao", que soa como falha momentanea e convida
+      // a tentar de novo para sempre. Dizer que o recurso esta indisponivel e
+      // honesto e evita o retry infinito.
+      throw new BadRequestException(
+        errorData?.message ||
+          'A antecipação está indisponível no momento. Nossa equipe já foi avisada.',
+      );
     }
   }
 
