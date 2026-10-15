@@ -29,6 +29,7 @@ import { OrderStatus } from '../common/enums';
 import { businessClock } from '../common/utils/business-time';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { linhasAfetadas } from '../common/utils/db-claim';
+import { DeliveryCodesService } from './delivery-codes.service';
 
 type OnOrderReadyCallback = (order: Order) => void;
 
@@ -389,6 +390,15 @@ export class OrdersService {
           // true havendo cupom. O decremento no cancelamento/expiracao se apoia
           // nela para devolver o uso.
           couponCredited: !!couponEntity,
+          // Garantia de entrega por códigos: o do LOJISTA e o do CLIENTE nascem
+          // com o pedido; o do ENTREGADOR só existe quando alguém aceita a
+          // corrida. Só pedido com entrega por entregador do app recebe — e é a
+          // presença desses campos que chaveia entre o fluxo de códigos e o de
+          // botões, então pedido em andamento no deploy não quebra.
+          ...(DeliveryCodesService.codigosDeNovoPedido({
+            isPickup,
+            lojaTemFrotaPropria: !!store.hasOwnDelivery,
+          }) || {}),
           status: needsPayment
             ? OrderStatus.AWAITING_PAYMENT
             : OrderStatus.PENDING,
@@ -1255,6 +1265,10 @@ export class OrdersService {
     if (order.store?.owner?.id !== vendorUserId) {
       throw new BadRequestException('Voce nao pode confirmar este pedido');
     }
+    this.recusarSeUsaCodigo(
+      order,
+      'Digite o código do entregador na coleta.',
+    );
 
     // Vendor can confirm when: READY, PICKED_UP, or DELIVERING
     const allowed = [
@@ -1303,6 +1317,71 @@ export class OrdersService {
     }
 
     return updated;
+  }
+
+  /**
+   * Coleta confirmada pelo PAR DE CÓDIGOS da loja (ver DeliveryCodesService).
+   *
+   * Substitui, de uma vez, o `confirmPickup` do entregador e o
+   * `vendorConfirmPickup` do lojista — porque a troca mútua de códigos prova as
+   * duas pontas: o entregador digitou o código da loja (esteve lá) e o lojista
+   * digitou o código do entregador (entregou à pessoa certa).
+   *
+   * Não reaproveito aqueles dois métodos porque a checagem de posse deles é
+   * amarrada a QUEM está chamando, e aqui a prova é justamente cruzada: quem
+   * registra é sempre a outra parte. Já o `confirmDelivery` É reaproveitado no
+   * código do cliente, porque lá quem registra é o próprio entregador.
+   *
+   * Vai direto a DELIVERING (transição já permitida a partir de READY), em vez
+   * de passar por PICKED_UP e VENDOR_CONFIRMED_PICKUP: aqueles dois estados
+   * existem para representar "só uma das pontas confirmou", e com o par de
+   * códigos esse meio-caminho não existe.
+   */
+
+  /**
+   * Pedido que usa confirmação por CÓDIGO não aceita os botões antigos.
+   *
+   * Isto não é rigor por rigor: ter dois caminhos capazes de liberar o mesmo
+   * dinheiro é ter duas fontes de verdade, e a mais fraca vence — bastaria o
+   * app chamar o botão para contornar a prova de presença que o código existe
+   * para dar. Então, havendo código, o botão fecha.
+   *
+   * A checagem é pela PRESENÇA do código, não por flag global: pedido criado
+   * antes da migration (ou de retirada, ou de loja com frota própria) não tem
+   * código e segue no fluxo antigo sem nenhum ajuste.
+   */
+  private recusarSeUsaCodigo(order: Order, acao: string): void {
+    if (!order.codigoVendedor) return;
+    throw new BadRequestException(
+      `Este pedido usa confirmação por código. ${acao}`,
+    );
+  }
+
+  async marcarColetaPorCodigo(orderId: string): Promise<Order> {
+    const order = await this.findById(orderId);
+
+    if (!order.delivery?.deliverer) {
+      // Mesma regra do vendorConfirmPickup: confirmar coleta é confirmar a
+      // entrega do pedido A UM ENTREGADOR. Sem entregador atribuído o pedido
+      // sairia de READY sem ninguém designado e travaria (deixa de aparecer em
+      // findPendingForDelivery e só sai de DELIVERING com uma entrega).
+      throw new BadRequestException(
+        'Nenhum entregador aceitou este pedido ainda.',
+      );
+    }
+
+    const agora = new Date();
+    await this.ordersRepository.update(orderId, {
+      vendorConfirmedPickupAt: agora,
+    } as any);
+    await this.deliveriesRepository.update(order.delivery.id, {
+      pickedUpAt: agora,
+    } as any);
+
+    if (order.status === OrderStatus.DELIVERING) {
+      return this.findById(orderId);
+    }
+    return this.updateStatus(orderId, OrderStatus.DELIVERING);
   }
 
   // ─── Superadmin resolve disputa ───────────────────────────────────────
@@ -1696,6 +1775,13 @@ export class OrdersService {
         tenMinAgo,
       })
       .andWhere('order.customerConfirmedAt IS NULL')
+      // Pedido com código fica FORA do auto-confirm. Era este caminho que
+      // liberava repasse por decurso de prazo, sem nenhuma ação do cliente — e
+      // a automação por GPS, que fazia o mesmo, foi encontrada explorável com
+      // ponto forjado. A substituição é intencional: sem o código do cliente, a
+      // liberação passa pelo registro de "entrega sem código", que abre janela
+      // de contestação em vez de pagar no escuro.
+      .andWhere('order."codigoVendedor" IS NULL')
       .getMany();
 
     for (const order of expiredOrders) {

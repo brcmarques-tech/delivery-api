@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DeliveryConfirmationScheduler } from './delivery-confirmation.scheduler';
 import { OrdersService } from '../orders/orders.service';
+import { DeliveryCodesService } from '../orders/delivery-codes.service';
 import { Order } from '../orders/entities/order.entity';
 
 describe('DeliveryConfirmationScheduler', () => {
@@ -31,6 +32,12 @@ describe('DeliveryConfirmationScheduler', () => {
         DeliveryConfirmationScheduler,
         { provide: getRepositoryToken(Order), useValue: mockOrdersRepo },
         { provide: OrdersService, useValue: mockOrdersService },
+        // O scheduler passou a liberar as entregas registradas SEM o código do
+        // cliente cuja janela de contestação venceu.
+        {
+          provide: DeliveryCodesService,
+          useValue: { liberarEntregasSemCodigoVencidas: jest.fn().mockResolvedValue(0) },
+        },
       ],
     }).compile();
 

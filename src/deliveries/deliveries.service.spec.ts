@@ -4,6 +4,7 @@ import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { DeliveriesService } from './deliveries.service';
 import { Delivery } from './entities/delivery.entity';
 import { OrdersService } from '../orders/orders.service';
+import { DeliveryCodesService } from '../orders/delivery-codes.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
@@ -82,6 +83,11 @@ const mockPlatformConfig = {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // O aceite da corrida passou a gerar o código do entregador.
+        {
+          provide: DeliveryCodesService,
+          useValue: { gerarCodigoDoEntregador: jest.fn().mockResolvedValue(undefined) },
+        },
         DeliveriesService,
         { provide: getRepositoryToken(Delivery), useValue: mockDeliveriesRepo },
         { provide: OrdersService, useValue: mockOrdersService },

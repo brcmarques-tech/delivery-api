@@ -253,6 +253,82 @@ export class Order {
   @Column({ type: 'timestamp', nullable: true })
   stockRestoredAt: Date | null;
 
+  // ─── Garantia de entrega por CÓDIGOS ──────────────────────────────────
+  //
+  // ATENÇÃO — NENHUM DESTES CAMPOS TEM @Field(), E ISSO É DELIBERADO.
+  //
+  // Se um código virar campo do tipo `Order` no GraphQL, qualquer query que
+  // retorne o pedido o entrega junto — e a query do ENTREGADOR passaria a
+  // trazer o código do CLIENTE, que é exatamente o segredo que ele tem de
+  // receber da pessoa. Isso destruiria o esquema inteiro, e não é hipótese
+  // remota: este projeto já vazou dado sensível desse jeito três vezes (PII em
+  // `serviceRatings`, endereço do cliente em broadcast para todo socket
+  // conectado, e permissões de superadmin que só existiam na UI).
+  //
+  // Cada parte lê o SEU código por uma query dedicada, que valida posse e
+  // devolve só aquele valor. Ver DeliveryCodesService.
+  //
+  // Só pedidos com entrega por entregador do app recebem códigos; a presença
+  // deles é o que chaveia entre o fluxo novo e o antigo.
+
+  /** Visível só ao LOJISTA. O ENTREGADOR digita na coleta. */
+  @Column({ type: 'varchar', length: 6, nullable: true })
+  codigoVendedor: string | null;
+
+  /** Visível só ao ENTREGADOR. O LOJISTA digita na coleta. */
+  @Column({ type: 'varchar', length: 6, nullable: true })
+  codigoEntregador: string | null;
+
+  /** Visível só ao CLIENTE. O ENTREGADOR digita na porta — é o que LIBERA o dinheiro. */
+  @Column({ type: 'varchar', length: 6, nullable: true })
+  codigoCliente: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  codigoVendedorUsadoEm: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  codigoEntregadorUsadoEm: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  codigoClienteUsadoEm: Date | null;
+
+  // Onde o entregador estava em cada registro. É a evidência que sustenta a
+  // contestação de chargeback (KAN-303: recuperar repasse é impossível, então a
+  // defesa é a prova de entrega).
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  codigoVendedorLat: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  codigoVendedorLng: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  codigoClienteLat: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  codigoClienteLng: number | null;
+
+  /** Tentativas erradas acumuladas NESTE pedido (contador compartilhado). */
+  @Column({ type: 'int', default: 0 })
+  codigoTentativas: number;
+
+  @Column({ type: 'timestamp', nullable: true })
+  codigoBloqueadoAte: Date | null;
+
+  /**
+   * Entrega registrada SEM o código do cliente (ausente, dormindo, ou que se
+   * recusa a informar).
+   *
+   * Existe para o pagamento do entregador não ficar preso à boa vontade do
+   * cliente — isso derrubaria retenção de entregador rápido. Abre janela de
+   * contestação: sem contestação do cliente, libera; com contestação, a
+   * plataforma decide com a foto, o GPS e o horário.
+   */
+  @Column({ type: 'timestamp', nullable: true })
+  entregaSemCodigoEm: Date | null;
+
+  @Column({ type: 'varchar', length: 300, nullable: true })
+  entregaSemCodigoMotivo: string | null;
+
   @Field()
   @CreateDateColumn()
   createdAt: Date;

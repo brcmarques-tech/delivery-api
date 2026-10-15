@@ -1,5 +1,6 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { OrdersService } from '../orders/orders.service';
+import { DeliveryCodesService } from '../orders/delivery-codes.service';
 
 @Injectable()
 export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDestroy {
@@ -15,6 +16,7 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
 
   constructor(
     private ordersService: OrdersService,
+    private deliveryCodesService: DeliveryCodesService,
   ) {}
 
   onModuleInit() {
@@ -40,9 +42,31 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
       await this.autoAdvanceVendorConfirmedPickup();
       await this.autoConfirmExpiredDeliveries();
       await this.alertNoDeliverer();
+      await this.liberarEntregasSemCodigoVencidas();
       await this.retryFailedSettlements();
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  // Liberar entregas registradas SEM o código do cliente, cuja janela de
+  // contestação venceu sem o cliente contestar.
+  //
+  // Este job é o que substitui o auto-confirm por decurso de prazo que existia
+  // antes: ali o pagamento saía sem prova nenhuma e sem o cliente ter sido
+  // avisado; aqui ele só sai depois de um registro com foto, GPS e horário, e
+  // depois de o cliente ter tido a janela inteira para contestar.
+  private async liberarEntregasSemCodigoVencidas() {
+    try {
+      const count =
+        await this.deliveryCodesService.liberarEntregasSemCodigoVencidas();
+      if (count > 0) {
+        this.logger.log(
+          `Liberadas ${count} entrega(s) sem código após a janela de contestação`,
+        );
+      }
+    } catch (err) {
+      this.logger.error('Falha ao liberar entregas sem código:', err);
     }
   }
 

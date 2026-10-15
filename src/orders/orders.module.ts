@@ -6,6 +6,7 @@ import { OrderStatusLog } from './entities/order-status-log.entity';
 import { Delivery } from '../deliveries/entities/delivery.entity';
 import { OrdersService } from './orders.service';
 import { OrdersResolver } from './orders.resolver';
+import { DeliveryCodesService } from './delivery-codes.service';
 import { ProductsModule } from '../products/products.module';
 import { StoresModule } from '../stores/stores.module';
 import { DeliveriesModule } from '../deliveries/deliveries.module';
@@ -29,7 +30,9 @@ import { MailModule } from '../mail/mail.module';
     CouponsModule,
     MailModule,
   ],
-  providers: [OrdersService, OrdersResolver],
-  exports: [OrdersService],
+  providers: [OrdersService, OrdersResolver, DeliveryCodesService],
+  // Exportado porque a camada de entregas precisa dele para gerar o código do
+  // entregador no momento em que a corrida é aceita.
+  exports: [OrdersService, DeliveryCodesService],
 })
 export class OrdersModule {}

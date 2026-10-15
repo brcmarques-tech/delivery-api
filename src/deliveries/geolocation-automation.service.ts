@@ -156,7 +156,12 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
 
         const timeSinceDelivererConfirmed = now - new Date(order.delivererConfirmedDeliveryAt).getTime();
         // Within 100m of customer for 10+ minutes
-        if (distToCustomer < 100 && timeSinceDelivererConfirmed > 10 * 60 * 1000) {
+        // Pedido com código NÃO é finalizado por proximidade. Este era o
+        // caminho mais fraco do sistema: a auditoria encontrou GPS forjado
+        // disparando a finalização e liberando repasse de pedido nunca
+        // entregue. Com código, a prova é um segredo que só o cliente tem.
+        const usaCodigo = !!(order as any).codigoVendedor;
+        if (!usaCodigo && distToCustomer < 100 && timeSinceDelivererConfirmed > 10 * 60 * 1000) {
           this.logger.log(`Auto-confirming delivery for order #${order.orderNumber} (proximity: ${Math.round(distToCustomer)}m)`);
           try {
             // `customerConfirmedAt` era setado so no objeto em memoria, e

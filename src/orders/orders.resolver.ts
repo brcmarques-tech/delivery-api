@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrdersService } from './orders.service';
+import { DeliveryCodesService } from './delivery-codes.service';
 import { CreateOrderInput } from './dto/create-order.input';
 import { OrderPage } from './dto/order-page.output';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
@@ -101,6 +102,7 @@ export class OrdersResolver {
     private ordersService: OrdersService,
     @Inject(PUB_SUB) private pubSub: PubSub,
     private configService: ConfigService,
+    private deliveryCodesService: DeliveryCodesService,
   ) {}
 
   @Mutation(() => Order)
@@ -304,6 +306,142 @@ export class OrdersResolver {
     @CurrentUser() user: AppUser,
   ): Promise<Order> {
     return this.ordersService.vendorConfirmPickup(orderId, user.id);
+  }
+
+  // ─── Garantia de entrega por CÓDIGOS ──────────────────────────────────
+  //
+  // LEITURA: cada parte lê SÓ o seu código, por uma query dedicada que valida
+  // posse e devolve um único valor.
+  //
+  // Isto não é preciosismo de API: os códigos NÃO são campos do tipo `Order`
+  // (ver order.entity.ts) exatamente para que nenhuma query de pedido os
+  // carregue de carona. Se o código do cliente fosse campo do pedido, a query
+  // do ENTREGADOR o traria — e ele é justamente o segredo que o entregador tem
+  // de receber da pessoa, não de ler no próprio app. Esse erro já aconteceu
+  // três vezes neste projeto com outros dados sensíveis.
+
+  /** O lojista lê o código QUE O ENTREGADOR vai digitar na coleta. */
+  @Query(() => String, { nullable: true })
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  codigoDaMinhaLoja(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<string | null> {
+    return this.deliveryCodesService.lerCodigo(orderId, 'VENDEDOR', user.id);
+  }
+
+  /** O entregador lê o código QUE O LOJISTA vai digitar na coleta. */
+  @Query(() => String, { nullable: true })
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  meuCodigoDeEntregador(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<string | null> {
+    return this.deliveryCodesService.lerCodigo(orderId, 'ENTREGADOR', user.id);
+  }
+
+  /** O cliente lê o código QUE O ENTREGADOR vai digitar na porta. */
+  @Query(() => String, { nullable: true })
+  @UseGuards(GqlAuthGuard)
+  meuCodigoDeEntrega(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<string | null> {
+    return this.deliveryCodesService.lerCodigo(orderId, 'CLIENTE', user.id);
+  }
+
+  // REGISTRO: quem digita é sempre a OUTRA parte. É essa troca cruzada que faz
+  // o código provar presença física — e não apenas que alguém logado tocou num
+  // botão, que era toda a "prova" do fluxo anterior.
+
+  /** Coleta: o ENTREGADOR digita o código da loja. */
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  registrarCodigoDaLoja(
+    @Args('orderId') orderId: string,
+    @Args('codigo') codigo: string,
+    @CurrentUser() user: AppUser,
+    // O GPS do entregador no instante do registro. É a evidência que sustenta
+    // a contestação de chargeback (KAN-303), onde recuperar repasse já feito é
+    // impossível e a defesa é a prova de entrega.
+    @Args('latitude', { type: () => Float, nullable: true }) latitude?: number,
+    @Args('longitude', { type: () => Float, nullable: true }) longitude?: number,
+  ): Promise<Order> {
+    return this.deliveryCodesService.registrarCodigo({
+      orderId,
+      parte: 'VENDEDOR',
+      codigo,
+      digitadoPor: user.id,
+      latitude,
+      longitude,
+    });
+  }
+
+  /** Coleta: o LOJISTA digita o código do entregador. */
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  registrarCodigoDoEntregador(
+    @Args('orderId') orderId: string,
+    @Args('codigo') codigo: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.deliveryCodesService.registrarCodigo({
+      orderId,
+      parte: 'ENTREGADOR',
+      codigo,
+      digitadoPor: user.id,
+    });
+  }
+
+  /**
+   * Entrega sem o código do cliente (ausente, dormindo, ou que se recusa).
+   *
+   * Não libera dinheiro: registra a evidência e abre a janela de contestação.
+   * O caminho rápido continua sendo o código — este existe para o pagamento do
+   * entregador não ficar preso à boa vontade do cliente.
+   */
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  registrarEntregaSemCodigo(
+    @Args('orderId') orderId: string,
+    @Args('motivo') motivo: string,
+    @CurrentUser() user: AppUser,
+    @Args('latitude', { type: () => Float, nullable: true }) latitude?: number,
+    @Args('longitude', { type: () => Float, nullable: true }) longitude?: number,
+  ): Promise<Order> {
+    return this.deliveryCodesService.registrarEntregaSemCodigo({
+      orderId,
+      delivererId: user.id,
+      motivo,
+      latitude,
+      longitude,
+    });
+  }
+
+  /** Entrega: o ENTREGADOR digita o código do cliente. LIBERA o dinheiro. */
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  registrarCodigoDoCliente(
+    @Args('orderId') orderId: string,
+    @Args('codigo') codigo: string,
+    @CurrentUser() user: AppUser,
+    @Args('latitude', { type: () => Float, nullable: true }) latitude?: number,
+    @Args('longitude', { type: () => Float, nullable: true }) longitude?: number,
+  ): Promise<Order> {
+    return this.deliveryCodesService.registrarCodigo({
+      orderId,
+      parte: 'CLIENTE',
+      codigo,
+      digitadoPor: user.id,
+      latitude,
+      longitude,
+    });
   }
 
   @Mutation(() => Order)

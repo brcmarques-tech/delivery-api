@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject, forwardRef, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, In, IsNull } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
 import { Delivery } from './entities/delivery.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { OrdersService } from '../orders/orders.service';
+import { DeliveryCodesService } from '../orders/delivery-codes.service';
 import { DeliveryOfferService } from './delivery-offer.service';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
@@ -22,7 +23,13 @@ export class DeliveriesService implements OnModuleInit {
     private notificationsService: NotificationsService,
     private platformConfigService: PlatformConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
+    // Garantia de entrega por códigos: o código do entregador nasce no aceite
+    // da corrida, que acontece aqui.
+    @Inject(forwardRef(() => DeliveryCodesService))
+    private deliveryCodesService: DeliveryCodesService,
   ) {}
+
+  private readonly logger = new Logger(DeliveriesService.name);
 
   onModuleInit() {
     this.ordersService.onOrderReady((order) => {
@@ -192,6 +199,22 @@ export class DeliveriesService implements OnModuleInit {
       relations: ['order', 'order.store', 'order.customer', 'deliverer'],
     });
 
+    // Garantia de entrega por códigos: agora que existe entregador, ele ganha o
+    // SEU código — o que o lojista vai digitar na coleta para provar que
+    // entregou o pedido à pessoa certa. Antes deste ponto não há entregador, e
+    // por isso este é o único lugar onde esse código pode nascer.
+    //
+    // Não bloqueia o aceite se falhar: o entregador não pode perder a corrida
+    // por causa disso, e a geração é idempotente (claim atômico), então o
+    // caminho de recuperação é simplesmente chamar de novo.
+    await this.deliveryCodesService
+      .gerarCodigoDoEntregador(orderId)
+      .catch((err: any) =>
+        this.logger.error(
+          `[CODIGO] falha ao gerar o codigo do entregador no pedido ${orderId}: ${err?.message}`,
+        ),
+      );
+
     // Stop the offer cascade — delivery was accepted
     this.offerService.cancelOffer(orderId);
 
@@ -275,6 +298,15 @@ export class DeliveriesService implements OnModuleInit {
     if (delivery.deliverer?.id !== delivererId) {
       throw new BadRequestException('Esta entrega não pertence a você.');
     }
+    // Pedido com código não confirma coleta por botão: a prova é a troca de
+    // códigos na loja. Deixar o botão aberto seria manter um caminho mais fraco
+    // capaz de avançar o mesmo pedido — e o mais fraco é o que acaba sendo
+    // usado.
+    if (delivery.order?.codigoVendedor) {
+      throw new BadRequestException(
+        'Este pedido usa confirmação por código. Digite o código da loja na coleta.',
+      );
+    }
 
     const order = delivery.order;
 
@@ -288,7 +320,21 @@ export class DeliveriesService implements OnModuleInit {
   }
 
   // Entregador confirma que entregou pro cliente
-  async confirmDelivery(deliveryId: string, delivererId: string): Promise<Delivery> {
+  /**
+   * @param viaCodigo true somente quando chamado pelo fluxo de códigos.
+   *
+   * Sem esse parâmetro havia um desvio real: o entregador chamava
+   * `confirmDelivery` direto pelo GraphQL, o pedido ia a
+   * DELIVERER_CONFIRMED_DELIVERY sem o código do cliente, e dez minutos depois
+   * o auto-confirm finalizava e LIBERAVA O REPASSE — exatamente a fraqueza que
+   * os códigos existem para fechar. Agora, em pedido com código, só entra por
+   * aqui quem veio do registro do código do cliente.
+   */
+  async confirmDelivery(
+    deliveryId: string,
+    delivererId: string,
+    viaCodigo = false,
+  ): Promise<Delivery> {
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
       relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
@@ -296,6 +342,11 @@ export class DeliveriesService implements OnModuleInit {
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
     if (delivery.deliverer?.id !== delivererId) {
       throw new BadRequestException('Esta entrega não pertence a você.');
+    }
+    if (delivery.order?.codigoVendedor && !viaCodigo) {
+      throw new BadRequestException(
+        'Este pedido usa confirmação por código. Digite o código do cliente na entrega.',
+      );
     }
 
     delivery.deliveredAt = new Date();
