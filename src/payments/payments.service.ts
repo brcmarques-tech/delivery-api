@@ -1226,6 +1226,47 @@ export class PaymentsService implements OnModuleDestroy {
   /**
    * @param motivo distingue ESTORNO de CHARGEBACK — a diferenca decide se as
    * transferencias precisam ser revertidas na mao. Ver o bloco do split abaixo.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * ATENCAO: A REVERSAO POR TRANSFERENCIA NAO PODE FUNCIONAR. NAO E BUG DE
+   * CODIGO — E LIMITE DO PROVEDOR.
+   * ──────────────────────────────────────────────────────────────────────────
+   *
+   * O codigo abaixo tenta puxar dinheiro de volta do vendedor e do entregador
+   * com `POST /transfers { recipient_id: plataforma, source_recipient_id: <quem
+   * recebeu> }`. Duas coisas impedem isso, as duas medidas contra o sandbox em
+   * 15/10/2026:
+   *
+   *  1. A rota coletiva `POST /transfers` responde 401 "IP de origem nao
+   *     autorizado" — esta atras da allowlist de IP do Pagar.me.
+   *  2. Mais grave: NAO EXISTE transferencia de um recebedor para outro, nem da
+   *     plataforma para um recebedor. O que existe e
+   *     `POST /recipients/{id}/transfers { amount }`, e ela e um SAQUE: tira do
+   *     saldo DAQUELE recebedor e manda para a conta bancaria DELE. Provado pelo
+   *     registro que ela cria:
+   *
+   *       { "id": "with_8KeGrY5S1ZuyqanL",   <- prefixo "with" = withdraw
+   *         "status": "failed",
+   *         "bank_account": { "holder_name": "<titular do recebedor>", ... } }
+   *       e a mensagem de erro: "The withdraw could not be created."
+   *
+   *     Ou seja, `source_recipient_id` nao e campo de nada na v5.
+   *
+   * CONSEQUENCIA DE NEGOCIO, que precisa de decisao e nao de codigo: num modelo
+   * de split, o dinheiro vai direto do adquirente para o vendedor e para o
+   * entregador. Quando vem um CHARGEBACK depois disso, a plataforma devolve ao
+   * cliente e NAO tem como recuperar o que ja saiu. A mitigacao tem de ser de
+   * outra natureza — contestar o chargeback, reter uma reserva por recebedor,
+   * descontar de repasses futuros do mesmo vendedor, ou cobrir o prejuizo.
+   *
+   * O ESTORNO comum (nao chargeback) e diferente e esta OK: estornar a cobranca
+   * reverte o split junto, porque o adquirente desfaz a divisao original — e por
+   * isso o metodo tem o parametro `motivo` e sai cedo no caso de refund com
+   * split.
+   *
+   * Deixei o codigo no lugar de proposito: ele registra `[REVERSAL_ERRORS]` e
+   * restaura as marcas de liquidacao, que e o rastro de que ha dinheiro a
+   * recuperar. Remover isso apagaria a unica evidencia do prejuizo.
    */
   async reverseSettlementTransfers(
     order: Order,
@@ -2095,14 +2136,43 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     try {
-      await this.pagarmePatch(`/subscriptions/${vendor.pagarmeSubscriptionId}`, {
-        payment_method: 'credit_card',
-        card_token: cardToken,
-      });
+      // CAMINHO CORRIGIDO. Era `PATCH /subscriptions/{id}`, que na v5 responde
+      // 405 (a rota existe, mas nao aceita PATCH). Verificado contra o sandbox
+      // em 15/10/2026, com id de assinatura inexistente para nao alterar nada:
+      //
+      //   PATCH /subscriptions/{id}                     -> 405
+      //   PATCH /subscriptions/{id}/card                -> 422 "The card_id,
+      //                                                    card_token or card
+      //                                                    field is required."
+      //   PATCH /subscriptions/{id}/card {card_token}   -> 404 "Token not found."
+      //
+      // O 422 lista os campos aceitos e o 404 de token mostra que a rota
+      // realmente valida o token — ou seja, e esta.
+      //
+      // O que isso causava: o lojista que tentasse trocar o cartao da assinatura
+      // recebia "Erro ao atualizar cartao. Verifique os dados e tente novamente."
+      // — mensagem que culpa os dados DELE, quando a causa era a rota. E o cartao
+      // nunca era trocado, entao a renovacao seguia falhando e ele perdia o plano.
+      //
+      // `payment_method` nao vai mais: na rota /card ele nao e campo (existe a
+      // rota /payment-method para esse caso).
+      await this.pagarmePatch(
+        `/subscriptions/${vendor.pagarmeSubscriptionId}/card`,
+        { card_token: cardToken },
+      );
       this.logger.log(`Updated card for subscription ${vendor.pagarmeSubscriptionId}`);
     } catch (err: any) {
-      this.logger.error(`Failed to update subscription card: ${err.response?.data?.message || err.message}`);
-      throw new BadRequestException('Erro ao atualizar cartão. Verifique os dados e tente novamente.');
+      const detalhe = err.response?.data?.message || err.message;
+      this.logger.error(`Failed to update subscription card: ${detalhe}`);
+      // Repassa a mensagem do provedor quando ela existe: "Token not found" e
+      // "cartao recusado" sao coisas diferentes para quem esta na tela, e a
+      // mensagem generica mandava o lojista conferir dados que podiam estar
+      // corretos.
+      throw new BadRequestException(
+        detalhe
+          ? `Nao foi possivel atualizar o cartao: ${detalhe}`
+          : 'Erro ao atualizar cartão. Verifique os dados e tente novamente.',
+      );
     }
   }
 
