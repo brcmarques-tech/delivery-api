@@ -744,7 +744,7 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Order PIX ─────────────────────────────────────────────────────────
 
-  async createOrderPix(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string }> {
+  async createOrderPix(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string; settledViaSplit?: boolean }> {
     const store = order.store;
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
@@ -752,9 +752,77 @@ export class PaymentsService implements OnModuleDestroy {
     this.logger.log(`PIX split check: vendorRecipientId=${vendorRecipientId || 'NULL'} platformRecipientId=${platformRecipientId || 'NULL'} storeOwner=${store?.owner?.email || 'NULL'}`);
 
     const totalCents = Math.round(Number(order.total) * 100);
+    const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
+    const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
+    const hasExternalDelivery = !store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0;
 
-    // No split at payment time — all money goes to platform.
-    // Transfers to vendor/deliverer happen after delivery is confirmed.
+    // Split-on-charge (auditoria C1): o repasse antigo via /transfers no settle
+    // NUNCA funcionou — na v5 /transfers SACA do saldo do proprio recebedor (que
+    // e zero), nao distribui da plataforma pra ele. A distribuicao correta e via
+    // SPLIT na cobranca. No PIX o pagamento e imediato, entao o split e definido
+    // aqui e o Pagar.me credita o vendedor no saldo dele no momento do pagamento
+    // (nunca passa pela conta da plataforma). A protecao "estorno garantido": um
+    // /refund da cobranca reverte o split (debita o saldo do vendedor).
+    //
+    // O ENTREGADOR NAO entra neste split: ele so e conhecido no READY (aceite da
+    // corrida), depois do pagamento. A taxa de entrega fica com a plataforma e o
+    // repasse ao entregador e feito off-platform (marcado [DELIVERER_PAYABLE] no
+    // settle). A parte do VENDEDOR e identica ao fluxo de cartao:
+    //   entrega externa: total - comissao - frete
+    //   retirada/entrega propria: total - comissao (vendedor fica com o frete)
+    const splitRules: any[] = [];
+    if (vendorRecipientId && platformRecipientId) {
+      let vendorAmount = hasExternalDelivery
+        ? totalCents - commissionCents - deliveryFeeCents
+        : totalCents - commissionCents;
+      if (vendorAmount < 0) vendorAmount = 0;
+
+      if (vendorAmount > 0) {
+        splitRules.push({
+          amount: vendorAmount,
+          recipient_id: vendorRecipientId,
+          type: 'flat',
+          options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
+        });
+      }
+
+      const platformAmount = totalCents - splitRules.reduce((s, r) => s + r.amount, 0);
+      if (platformAmount > 0) {
+        splitRules.push({
+          amount: platformAmount,
+          recipient_id: platformRecipientId,
+          type: 'flat',
+          options: { charge_processing_fee: true, liable: true, charge_remainder_fee: true },
+        });
+      } else if (splitRules.length > 0) {
+        // Comissao 0% (PREMIUM/ENTERPRISE) em retirada/entrega propria: vendedor
+        // fica com 100% e a plataforma com 0. Sem regra de valor zero (o gateway
+        // recusa) — a taxa/responsabilidade passam pra regra do vendedor.
+        splitRules[0].options = {
+          ...splitRules[0].options,
+          charge_processing_fee: true,
+          liable: true,
+          charge_remainder_fee: true,
+        };
+      }
+
+      const splitSum = splitRules.reduce((s, r) => s + r.amount, 0);
+      if (splitSum !== totalCents) {
+        this.logger.error(
+          `PIX split sum mismatch for order #${order.orderNumber}: sum=${splitSum}, total=${totalCents} — caindo no fallback sem split`,
+        );
+        splitRules.length = 0; // fallback seguro: cobra sem split (nao bloqueia a venda)
+      }
+    }
+
+    const splitApplied = splitRules.length > 0;
+    if (!splitApplied) {
+      this.logger.error(
+        `[PIX_NO_SPLIT] Pedido #${order.orderNumber}: cobranca PIX SEM split ` +
+          `(vendorRecipient=${vendorRecipientId || 'NULL'} platformRecipient=${platformRecipientId || 'NULL'}). ` +
+          `Dinheiro fica 100% na plataforma; repasse ao vendedor precisa ser manual.`,
+      );
+    }
 
     const phone = this.formatPhoneForPagarme(customer.phone);
 
@@ -788,6 +856,7 @@ export class PaymentsService implements OnModuleDestroy {
               { name: 'Pedido', value: order.orderNumber },
             ],
           },
+          ...(splitApplied ? { split: splitRules } : {}),
         },
       ],
       metadata: {
@@ -807,7 +876,7 @@ export class PaymentsService implements OnModuleDestroy {
       const qrCodeUrl = lastTransaction?.qr_code_url || '';
 
       this.logger.log(
-        `Pagar.me PIX order created for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id}`,
+        `Pagar.me PIX order created for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id} | split: ${splitApplied ? splitRules.map((r) => `${r.recipient_id}:${r.amount}`).join(',') : 'NONE'}`,
       );
 
       return {
@@ -815,6 +884,7 @@ export class PaymentsService implements OnModuleDestroy {
         preferenceId: result.id,
         qrCode,
         qrCodeUrl,
+        settledViaSplit: splitApplied,
       };
     } catch (err: any) {
       const errorData = err.response?.data;
@@ -1089,10 +1159,13 @@ export class PaymentsService implements OnModuleDestroy {
     // caminho que o PIX ja usava.
     if (
       motivo === 'refund' &&
-      order.paymentMethod === 'CREDIT_CARD' &&
-      order.settledViaSplit
+      order.settledViaSplit &&
+      (order.paymentMethod === 'CREDIT_CARD' || order.paymentMethod === 'PIX')
     ) {
-      this.logger.log(`Order #${order.orderNumber} settled via capture-with-split — refund will reverse splits automatically`);
+      // Cartao (capture-with-split) e PIX (split-on-charge): o /refund da cobranca
+      // desfaz o split no proprio Pagar.me (debita o saldo do vendedor). Nao ha
+      // transferencia manual a reverter. Este e o "estorno garantido".
+      this.logger.log(`Order #${order.orderNumber} settled via split — refund will reverse splits automatically`);
       return;
     }
     if (
@@ -1184,13 +1257,22 @@ export class PaymentsService implements OnModuleDestroy {
   // PIX: manual transfers (balance is instant).
   async settlePayment(order: Order): Promise<void> {
     // C2: Atomic idempotency guard — prevents double settlement
+    // ALTO (auditoria 2026-08-23): o claim só olhava `isSettled`. Um settlement em
+    // voo do retryFailedSettlements (lista carregada segundos antes) ou a janela
+    // entre o findOne do refundOrder e este claim podia repassar vendedor+entregador
+    // de um pedido que JÁ tinha sido cancelado/estornado — a plataforma devolvia
+    // 100% ao cliente E pagava o repasse (double outflow). Só liquidamos pedido em
+    // estado não-terminal-de-cancelamento. DISPUTED PRECISA passar: resolveDispute
+    // (DELIVERER_FAVOR) liquida enquanto o pedido ainda está DISPUTED.
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const settleResult = await orderRepo.manager.query(
-      `UPDATE orders SET "isSettled" = true WHERE id = $1 AND "isSettled" = false RETURNING id`,
+      `UPDATE orders SET "isSettled" = true
+         WHERE id = $1 AND "isSettled" = false
+           AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
       [order.id],
     );
     if (!settleResult || settleResult.length === 0) {
-      this.logger.warn(`Settlement skipped for order #${order.orderNumber} — already settled`);
+      this.logger.warn(`Settlement skipped for order #${order.orderNumber} — already settled or order terminated`);
       return;
     }
 
@@ -1225,6 +1307,12 @@ export class PaymentsService implements OnModuleDestroy {
     // Track settlement status on the order
     const settlementErrors: string[] = [];
 
+    // PIX agora usa split-on-charge (C1): vendedor + plataforma JA foram
+    // distribuidos pelo Pagar.me no momento do pagamento. Nao repassar de novo via
+    // /transfers (que estava quebrado). O entregador nao entrou no split (era
+    // desconhecido na cobranca), entao vira um payable off-platform aqui.
+    const pixSettledViaSplit = order.paymentMethod === 'PIX' && order.settledViaSplit;
+
     // 1. Transfer to deliverer (if applicable)
     // `!order.delivererSettledAt`: no retry de uma liquidacao PARCIAL, a parte
     // que ja saiu nao e reenviada. Antes o retry re-postava as duas
@@ -1234,11 +1322,22 @@ export class PaymentsService implements OnModuleDestroy {
     if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0 && !order.delivererSettledAt) {
       const delivery = (order as any).delivery;
       const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
+      const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+      const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
 
-      if (delivererRecipientId) {
-        const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
-        const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
-
+      if (pixSettledViaSplit) {
+        // PIX split-on-charge: o frete ficou com a plataforma (entregador nao
+        // estava no split da cobranca). Registra o payable para repasse manual/
+        // off-platform e marca como resolvido para nao re-tentar o /transfers.
+        if (delivererAmount > 0) {
+          await orderRepo.update(order.id, {
+            delivererSettledAt: new Date(),
+            notes: `${order.notes || ''}\n[DELIVERER_PAYABLE] R$ ${(delivererAmount / 100).toFixed(2)} a repassar ao entregador (PIX split-on-charge; frete retido na plataforma).`.trim(),
+          } as any);
+          order.delivererSettledAt = new Date();
+          this.logger.log(`[DELIVERER_PAYABLE] order #${order.orderNumber} | ${delivererAmount} cents (off-platform)`);
+        }
+      } else if (delivererRecipientId) {
         if (delivererAmount > 0) {
           try {
             const result = await this.pagarmePost('/transfers', {
@@ -1271,7 +1370,10 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     // 2. Transfer to vendor (idem: nao reenvia se ja saiu)
-    if (vendorRecipientId && !order.vendorSettledAt) {
+    if (pixSettledViaSplit) {
+      // Vendedor ja recebeu via split na cobranca PIX — nada a repassar.
+      this.logger.log(`Vendor already settled via PIX split-on-charge for order #${order.orderNumber}`);
+    } else if (vendorRecipientId && !order.vendorSettledAt) {
       const platformDeliveryFee = (!store?.hasOwnDelivery && !order.isPickup) ? deliveryFeeCents : 0;
       const vendorAmount = totalCents - commissionCents - platformDeliveryFee;
 
@@ -2580,11 +2682,18 @@ export class PaymentsService implements OnModuleDestroy {
       return;
     }
 
-    // Mesmo motivo do handleOrderCanceled: a guarda so pulava CANCELLED, entao um
-    // pedido ja EXPIRED/REJECTED (estoque devolvido) ganhava estoque de novo.
+    // CRITICO (auditoria 2026-08-23): o claim so podia excluir os terminais, mas
+    // isso deixava PENDING/ACCEPTED/.../COMPLETED passarem. Um `charge.payment_failed`
+    // TARDIO (tentativa recusada num payment link que aceita varias tentativas)
+    // chegando DEPOIS do `order.paid` da tentativa que pagou cancelava um pedido
+    // JA PAGO e devolvia o estoque — sem disparar estorno neste handler. Cliente
+    // pagava, pedido morria, dinheiro retido em silencio.
+    // Falha de pagamento so pode cancelar pedido que ainda NAO foi pago
+    // (AWAITING_PAYMENT). PAYMENT_REVIEW ja foi tratado com return acima; a partir
+    // de PENDING o pedido esta pago e um payment_failed e de outra charge/tentativa.
     const claimFalha = await orderRepo.manager.query(
       `UPDATE orders SET status = 'CANCELLED', "updatedAt" = NOW()
-         WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+         WHERE id = $1 AND status = 'AWAITING_PAYMENT' RETURNING id`,
       [order.id],
     );
     if (!claimFalha || claimFalha.length === 0) return;
@@ -2647,11 +2756,16 @@ export class PaymentsService implements OnModuleDestroy {
     // que dispara `order.canceled` minutos depois. O webhook via EXPIRED !=
     // CANCELLED e devolvia tudo outra vez -> oversell na sequencia.
     //
-    // Claim atomico com a mesma lista de terminais usada no estorno: 0 linhas
-    // significa que outro fluxo ja encerrou o pedido e nao ha o que devolver.
+    // CRITICO (auditoria 2026-08-23): antes o claim excluia so os terminais, o que
+    // deixava um `order.canceled` TARDIO (ex.: cancelamento manual no painel do
+    // Pagar.me, ou abandono de tentativa antiga num payment link) destruir um
+    // pedido JA PAGO (PENDING+) e devolver o estoque, sem estornar. `order.canceled`
+    // so representa cancelamento de order NAO paga (QR PIX expirado, tentativa
+    // abandonada); estorno de pedido pago chega por `charge.refunded`/`chargedback`,
+    // que revertem repasse corretamente. So cancelamos aqui se ainda AWAITING_PAYMENT.
     const claimCancel = await orderRepo.manager.query(
       `UPDATE orders SET status = 'CANCELLED', "updatedAt" = NOW()
-         WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+         WHERE id = $1 AND status = 'AWAITING_PAYMENT' RETURNING id`,
       [order.id],
     );
     if (!claimCancel || claimCancel.length === 0) return;
@@ -2845,9 +2959,29 @@ export class PaymentsService implements OnModuleDestroy {
         return;
       }
 
-      const wasCompleted = order.status === OrderStatus.COMPLETED;
+      // ATOMICO (auditoria 2026-08-23): antes era read-check-save com guarda so
+      // `!= CANCELLED` + `save(order)` de entidade inteira. Um pedido ja em
+      // REJECTED/EXPIRED pelo NOSSO proprio refundOrder (ex.: vendedor rejeita PIX
+      // pago -> refundOrder estorna e devolve estoque, status=REJECTED) passava a
+      // guarda quando o Pagar.me disparava o `charge.refunded` correspondente ->
+      // estoque devolvido uma SEGUNDA vez (oversell) e status sobrescrito. Claim
+      // atomico com a lista COMPLETA de terminais (igual aos outros handlers),
+      // capturando o status anterior no mesmo comando para decidir wasCompleted e
+      // se havia repasse a reverter. 0 linhas = outro fluxo ja encerrou -> no-op.
+      const [claim] = await orderRepo.manager.query(
+        `WITH prev AS (SELECT status, "isSettled" FROM orders WHERE id = $1 FOR UPDATE)
+         UPDATE orders o SET status = 'CANCELLED', "updatedAt" = NOW()
+         FROM prev
+         WHERE o.id = $1 AND prev.status NOT IN ('CANCELLED','REJECTED','EXPIRED')
+         RETURNING prev.status AS old_status, prev."isSettled" AS was_settled`,
+        [order.id],
+      );
+      if (!claim) {
+        this.logger.log(`Estorno de #${order.orderNumber} ignorado — pedido ja terminal (sem re-devolver estoque)`);
+        return;
+      }
+      const wasCompleted = claim.old_status === OrderStatus.COMPLETED;
       order.status = OrderStatus.CANCELLED;
-      await orderRepo.save(order);
       this.logger.log(`Pedido #${order.orderNumber} cancelado por estorno | wasCompleted: ${wasCompleted}`);
 
       // Se o pedido ja estava COMPLETED e liquidado, reverter os repasses ao
@@ -2863,7 +2997,7 @@ export class PaymentsService implements OnModuleDestroy {
       // devolvia ao cliente sem recuperar o repasse. `isSettled` sozinho ja e a
       // condicao correta ("o dinheiro ja saiu") e reverseSettlementTransfers ja
       // e no-op quando nao houve liquidacao.
-      if (order.isSettled) {
+      if (claim.was_settled) {
         this.logger.error(`CRITICAL: Estorno em pedido COMPLETED #${order.orderNumber} — revertendo repasses`);
         try {
           await this.reverseSettlementTransfers(order);
@@ -3103,14 +3237,27 @@ export class PaymentsService implements OnModuleDestroy {
 
       // Verify charge status before refunding
       const chargeData = await this.pagarmeGet(`/charges/${chargeId}`);
-      if (chargeData.status !== 'paid' && chargeData.status !== 'captured') {
+      const st = String(chargeData.status || '').toLowerCase();
+      if (st === 'authorized' || st === 'pending_capture' || st === 'pending') {
+        // ALTO (auditoria 2026-08-23): cartão PRÉ-AUTORIZADO ainda não capturado.
+        // Ocorre na disputa a favor do cliente a partir de DELIVERER_CONFIRMED_DELIVERY
+        // (antes do settle/captura): a charge está só `authorized`. Um /refund é
+        // recusado pelo Pagar.me -> [REFUND_FAILED] em loop e o limite do cliente
+        // fica preso até a pré-auth caducar (dias). O correto é VOID (DELETE /charges),
+        // que libera a autorização na hora e não move dinheiro (não houve captura).
+        await this.pagarmeDelete(`/charges/${chargeId}`);
+        this.logger.log(`Pre-auth voided (refund path) for order #${order.orderNumber} | charge: ${chargeId}`);
+      } else if (st === 'paid' || st === 'captured') {
+        // Request refund (dinheiro já capturado)
+        await this.pagarmePost(`/charges/${chargeId}/refund`, {
+          amount: chargeAmount,
+        });
+      } else if (st === 'refunded' || st === 'voided' || st === 'canceled') {
+        // Já estornada/cancelada no gateway — idempotente, segue como sucesso.
+        this.logger.log(`Charge ${chargeId} já está "${st}" — estorno idempotente p/ pedido #${order.orderNumber}`);
+      } else {
         throw new BadRequestException(`Cobrança com status "${chargeData.status}" não pode ser estornada`);
       }
-
-      // Request refund
-      await this.pagarmePost(`/charges/${chargeId}/refund`, {
-        amount: chargeAmount,
-      });
 
       // status CANCELLED já foi gravado no claim atômico acima (R#1).
       this.logger.log(`Refund requested for order #${order.orderNumber} | charge: ${chargeId}`);

@@ -256,45 +256,84 @@ describe('PaymentsService', () => {
 
   // ─── createOrderPix ─────────────────────────────────────────
   describe('createOrderPix', () => {
-    it('should create a Pagar.me order with PIX payment WITHOUT split (platform holds funds)', async () => {
+    const pixOrderResponse = {
+      id: 'or_pix_123',
+      status: 'pending',
+      charges: [{
+        id: 'ch_123',
+        status: 'pending',
+        last_transaction: {
+          qr_code: 'pix-qr-code-string',
+          qr_code_url: 'https://api.pagar.me/qrcode/123',
+        },
+      }],
+    };
+
+    // C1 (split-on-charge): a cobranca PIX agora carrega split. O vendedor e
+    // creditado no saldo dele no pagamento (nunca passa pela plataforma). O
+    // /transfers antigo sacava do saldo ZERO do proprio recebedor e nunca
+    // funcionava.
+    it('should create a PIX order WITH split (vendor + platform)', async () => {
       const order = makeOrder({ paymentMethod: 'PIX' });
       const customer = makeCustomer();
 
-      httpService.axiosRef.post.mockImplementation((url: string) => {
-        if (url.includes('/customers')) {
-          return Promise.resolve({ data: { id: 'cus_123' } });
-        }
-        if (url.includes('/orders')) {
-          return Promise.resolve({
-            data: {
-              id: 'or_pix_123',
-              status: 'pending',
-              charges: [{
-                id: 'ch_123',
-                status: 'pending',
-                last_transaction: {
-                  qr_code: 'pix-qr-code-string',
-                  qr_code_url: 'https://api.pagar.me/qrcode/123',
-                },
-              }],
-            },
-          });
-        }
-        return Promise.resolve({ data: {} });
-      });
+      httpService.axiosRef.post.mockResolvedValue({ data: pixOrderResponse });
 
       const result = await service.createOrderPix(order, customer);
 
       expect(result.preferenceId).toBe('or_pix_123');
       expect(result.qrCode).toBe('pix-qr-code-string');
-      expect(result.qrCodeUrl).toBe('https://api.pagar.me/qrcode/123');
+      expect(result.settledViaSplit).toBe(true);
 
-      // Verify NO split rules — all money goes to platform
       const orderCall = httpService.axiosRef.post.mock.calls.find((c: any) => c[0].includes('/orders'));
-      const body = orderCall[1];
-      expect(body.payments[0].payment_method).toBe('pix');
-      expect(body.payments[0].pix.expires_in).toBe(1800);
-      expect(body.payments[0].split).toBeUndefined();
+      const split = orderCall[1].payments[0].split;
+      expect(Array.isArray(split)).toBe(true);
+      // Entrega externa: vendedor = 5500 - 250 (comissao) - 500 (frete) = 4750;
+      // plataforma retem 750 (comissao + frete; entregador pago off-platform).
+      const vendor = split.find((r: any) => r.recipient_id === 'rp_vendor_123');
+      const platform = split.find((r: any) => r.recipient_id === 'rp_platform_123');
+      expect(vendor.amount).toBe(4750);
+      expect(platform.amount).toBe(750);
+      // Soma tem que fechar com o total (o gateway rejeita se nao fechar).
+      expect(split.reduce((s: number, r: any) => s + r.amount, 0)).toBe(5500);
+      // Plataforma e a liable / paga a taxa da adquirente.
+      expect(platform.options.liable).toBe(true);
+      expect(vendor.options.liable).toBe(false);
+    });
+
+    it('should split PIX for pickup orders (vendor keeps delivery fee, no deliverer)', async () => {
+      const order = makeOrder({ paymentMethod: 'PIX', isPickup: true });
+      const customer = makeCustomer();
+
+      httpService.axiosRef.post.mockResolvedValue({ data: pixOrderResponse });
+
+      await service.createOrderPix(order, customer);
+
+      const orderCall = httpService.axiosRef.post.mock.calls.find((c: any) => c[0].includes('/orders'));
+      const split = orderCall[1].payments[0].split;
+      const vendor = split.find((r: any) => r.recipient_id === 'rp_vendor_123');
+      const platform = split.find((r: any) => r.recipient_id === 'rp_platform_123');
+      // Retirada: vendedor = 5500 - 250 = 5250; plataforma = 250 (so comissao).
+      expect(vendor.amount).toBe(5250);
+      expect(platform.amount).toBe(250);
+      expect(split.reduce((s: number, r: any) => s + r.amount, 0)).toBe(5500);
+    });
+
+    it('should fall back to NO split when vendor has no recipient (sale not blocked)', async () => {
+      const order = makeOrder({
+        paymentMethod: 'PIX',
+        store: makeStore({ owner: makeVendorUser({ pagarmeRecipientId: null }) }),
+      });
+      const customer = makeCustomer();
+
+      httpService.axiosRef.post.mockResolvedValue({ data: pixOrderResponse });
+
+      const result = await service.createOrderPix(order, customer);
+
+      // Venda nao e bloqueada, mas sem split (dinheiro fica na plataforma).
+      expect(result.settledViaSplit).toBe(false);
+      const orderCall = httpService.axiosRef.post.mock.calls.find((c: any) => c[0].includes('/orders'));
+      expect(orderCall[1].payments[0].split).toBeUndefined();
     });
   });
 
@@ -376,6 +415,36 @@ describe('PaymentsService', () => {
       expect(transferCalls.length).toBe(1);
       expect(transferCalls[0][1].recipient_id).toBe('rp_vendor_123');
       expect(transferCalls[0][1].amount).toBe(5250); // total - commission
+    });
+
+    // C1: PIX split-on-charge — vendedor JA recebeu no pagamento (via split).
+    // O settle NAO pode chamar /transfers para o vendedor; o entregador (que nao
+    // estava no split da cobranca) vira um payable off-platform.
+    it('should NOT transfer to vendor on settle when PIX was split-on-charge, and records deliverer payable', async () => {
+      const order = makeOrder({
+        paymentMethod: 'PIX',
+        isPickup: false,
+        settledViaSplit: true,
+        delivery: {
+          deliverer: { pagarmeRecipientId: 'rp_deliverer_456' },
+        },
+      });
+
+      httpService.axiosRef.post.mockResolvedValue({ data: { id: 'tr_x', status: 'pending' } });
+
+      await service.settlePayment(order);
+
+      // Nenhuma transferencia (vendedor via split; entregador off-platform).
+      const transferCalls = httpService.axiosRef.post.mock.calls.filter(
+        (c: any) => c[0].includes('/transfers'),
+      );
+      expect(transferCalls.length).toBe(0);
+
+      // Payable do entregador registrado nas notes (R$5.00 - 1% = 495 cents).
+      const payableUpdate = mockOrderRepo.update.mock.calls.find(
+        (c: any) => typeof c[1]?.notes === 'string' && c[1].notes.includes('[DELIVERER_PAYABLE]'),
+      );
+      expect(payableUpdate).toBeDefined();
     });
 
     // ─── Reembolso parcial de peso (onlinePaidTotal > total final) ─────
@@ -461,6 +530,26 @@ describe('PaymentsService', () => {
           notes: expect.stringContaining('weight_refund'),
         }),
       );
+    });
+
+    // ─── Regressão auditoria 2026-08-23 ───────────────────────
+    // ALTO: settlePayment não pode repassar dinheiro de pedido já cancelado/estornado.
+    // O claim de isSettled agora exige status NOT IN (terminais) → 0 linhas → aborta
+    // antes de qualquer /transfers (double outflow evitado).
+    it('should NOT transfer when the settlement claim finds the order already terminated', async () => {
+      const order = makeOrder({ paymentMethod: 'PIX', isPickup: false });
+      // claim de settlement (UPDATE isSettled ... AND status NOT IN terminais) → 0 linhas.
+      mockOrderRepo.manager.query.mockResolvedValueOnce([]);
+      httpService.axiosRef.post.mockResolvedValue({ data: { id: 'tr_x', status: 'pending' } });
+
+      await service.settlePayment(order);
+
+      const transferCalls = httpService.axiosRef.post.mock.calls.filter(
+        (c: any) => c[0].includes('/transfers'),
+      );
+      expect(transferCalls.length).toBe(0);
+      // Restaura o mock para os demais testes.
+      mockOrderRepo.manager.query.mockResolvedValue([{ id: 'order-1' }]);
     });
   });
 
@@ -627,6 +716,76 @@ describe('PaymentsService', () => {
         (c: any) => c[0].includes('/refund'),
       );
       expect(refundCalls.length).toBe(0);
+    });
+
+    // ─── Regressão auditoria 2026-08-23 ───────────────────────
+    // CRÍTICO: webhook payment_failed/order.canceled TARDIO não pode cancelar
+    // um pedido JÁ PAGO (PENDING+). O claim agora exige status='AWAITING_PAYMENT'.
+    it('should NOT cancel an already-paid (PENDING) order on a late payment_failed webhook', async () => {
+      const paidOrder = {
+        id: 'order-late-fail',
+        orderNumber: '2001',
+        status: OrderStatus.PENDING,
+        items: [{ product: { id: 'p1' }, quantity: 1 }],
+        customer: { id: 'c1' },
+        store: { id: 's1', owner: { id: 'o1' } },
+      };
+      // O claim condicional (status='AWAITING_PAYMENT') não encontra a linha → 0 linhas.
+      const claimQuery = jest.fn().mockResolvedValue([]);
+      const orderRepoLocal = {
+        findOne: jest.fn().mockResolvedValue(paidOrder),
+        save: jest.fn(),
+        increment: jest.fn(),
+        manager: { query: claimQuery, getRepository: jest.fn(() => ({ increment: jest.fn() })) },
+      };
+      paymentsRepo.manager.getRepository.mockReturnValue(orderRepoLocal);
+
+      await service.handleWebhook({
+        type: 'charge.payment_failed',
+        data: { id: 'ch_latefail', metadata: { order_id: 'order-late-fail' } },
+      });
+
+      // O claim rodou com o filtro AWAITING_PAYMENT e não afetou nada → pedido intacto.
+      const cancelClaim = claimQuery.mock.calls.find(
+        (c: any) => typeof c[0] === 'string' && c[0].includes("status = 'AWAITING_PAYMENT'"),
+      );
+      expect(cancelClaim).toBeDefined();
+      expect(orderRepoLocal.save).not.toHaveBeenCalled();
+    });
+
+    // ALTO: charge.refunded de um pedido já REJECTED (pelo nosso refundOrder) não
+    // pode devolver estoque uma segunda vez — o claim atômico retorna 0 linhas.
+    it('should NOT re-restore stock on charge.refunded when order is already terminal', async () => {
+      const rejectedOrder = {
+        id: 'order-rej',
+        orderNumber: '2002',
+        status: OrderStatus.REJECTED,
+        total: 55.0,
+        items: [{ product: { id: 'p1' }, quantity: 3 }],
+        customer: { id: 'c1' },
+        store: { id: 's1', owner: { id: 'o1' } },
+      };
+      const productIncrement = jest.fn();
+      // claim atômico WITH prev ... RETURNING → 0 linhas (já terminal).
+      const claimQuery = jest.fn().mockResolvedValue([]);
+      const orderRepoLocal = {
+        findOne: jest.fn().mockResolvedValue(rejectedOrder),
+        save: jest.fn(),
+        manager: {
+          query: claimQuery,
+          getRepository: jest.fn(() => ({ increment: productIncrement })),
+        },
+      };
+      paymentsRepo.manager.getRepository.mockReturnValue(orderRepoLocal);
+
+      await service.handleWebhook({
+        type: 'charge.refunded',
+        data: { id: 'ch_ref', status: 'refunded', metadata: { order_id: 'order-rej' }, charges: [] },
+      });
+
+      // Nada de restauração de estoque nem save (claim perdeu).
+      expect(productIncrement).not.toHaveBeenCalled();
+      expect(orderRepoLocal.save).not.toHaveBeenCalled();
     });
   });
 

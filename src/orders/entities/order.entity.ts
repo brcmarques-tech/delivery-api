@@ -229,6 +229,15 @@ export class Order {
   @Column({ default: false })
   couponCredited: boolean;
 
+  // Guarda de idempotência da RESTAURAÇÃO de estoque+cupom no cancelamento.
+  // (auditoria 2026-08-23) Antes, dois fluxos concorrentes de cancelamento
+  // (ex.: cliente cancela + expirePendingOrders varre o mesmo pedido) liam ambos
+  // o status já terminal e chamavam restoreStockAndCoupon os DOIS: estoque
+  // devolvido 2x (fantasma -> oversell) e decrementUsage do cupom 2x. Este
+  // timestamp é fincado por claim atômico — só o primeiro fluxo restaura.
+  @Column({ type: 'timestamp', nullable: true })
+  stockRestoredAt: Date | null;
+
   @Field()
   @CreateDateColumn()
   createdAt: Date;

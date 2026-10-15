@@ -504,6 +504,22 @@ export class OrdersService {
             );
           }
         }
+        // MÉDIO (auditoria 2026-08-23): devolver TAMBÉM o uso do cupom reservado na
+        // criação (incrementUsage). Antes, uma falha de pré-autorização (cartão
+        // recusado) consumia 1 uso do cupom PARA SEMPRE — N tentativas com cartão
+        // inválido "esgotavam" um cupom (maxUses) sem nenhuma venda.
+        if (couponEntity?.id) {
+          await this.couponsService
+            .decrementUsage(couponEntity.id)
+            .catch((e: any) =>
+              console.error(
+                `Failed to return coupon on pre-auth failure for order ${savedOrder.id}: ${e?.message}`,
+              ),
+            );
+          await this.ordersRepository
+            .update(savedOrder.id, { couponCredited: false })
+            .catch(() => {});
+        }
         throw new BadRequestException(
           err?.message ||
             'Falha na pré-autorização do cartão. Verifique os dados e tente novamente.',
@@ -528,6 +544,10 @@ export class OrdersService {
         savedOrder.mpPreferenceId = result.preferenceId;
         if (result.qrCode) savedOrder.pixQrCode = result.qrCode;
         if (result.qrCodeUrl) savedOrder.pixQrCodeBase64 = result.qrCodeUrl;
+        // Split-on-charge (C1): a cobranca PIX carrega split (vendedor+plataforma).
+        // Marca o pedido para que o settle NAO tente o /transfers quebrado e para
+        // que o estorno saiba que o split se reverte sozinho no /refund.
+        if (result.settledViaSplit) savedOrder.settledViaSplit = true;
         await this.ordersRepository.save(savedOrder);
       } catch (err: any) {
         console.error('PIX checkout generation failed:', err?.message || err);
@@ -799,6 +819,11 @@ export class OrdersService {
       // aparecer na lista de entregas disponíveis (senão um entregador aceita
       // e ganha um payout de taxa que nunca foi cobrada do cliente).
       .andWhere('order.isPickup = false')
+      // CRITICO (auditoria 2026-08-23): loja com frota própria (hasOwnDelivery)
+      // não deve aparecer para entregadores do app. O settlePayment pula a
+      // transferência ao entregador nesse caso (a taxa fica com o vendedor), então
+      // um entregador que aceitasse trabalharia DE GRAÇA. Mesmo motivo do pickup.
+      .andWhere('(store.hasOwnDelivery = false OR store.hasOwnDelivery IS NULL)')
       .orderBy('order.createdAt', 'ASC')
       .getMany();
     return orders;
@@ -1420,6 +1445,28 @@ export class OrdersService {
    * este método quando GANHOU o claim da transição.
    */
   private async restoreStockAndCoupon(order: Order): Promise<void> {
+    // ALTO (auditoria 2026-08-23): claim atômico anti-restauração-dupla. O claim
+    // anti-estorno-duplo protege só o ESTORNO; a restauração era chamada por quem
+    // lê o status já terminal do banco, então dois cancelamentos concorrentes
+    // (cliente + expirePendingOrders) restauravam estoque+cupom os DOIS -> estoque
+    // fantasma (oversell) e cupom decrementado 2x. Só o primeiro a fincar
+    // stockRestoredAt segue.
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "stockRestoredAt" = NOW()
+         WHERE id = $1 AND "stockRestoredAt" IS NULL RETURNING id`,
+      [order.id],
+    );
+    if (!claim || claim.length === 0) {
+      console.log(`Stock/coupon restore skipped for order ${order.id} — already restored`);
+      return;
+    }
+    // CRÍTICO: refletir o claim na entidade EM MEMÓRIA. `updateStatus` chama este
+    // método e logo depois faz `ordersRepository.save(order)` — e esse `order` foi
+    // carregado ANTES do claim, com `stockRestoredAt` nulo. O save da entidade
+    // inteira regravava NULL por cima da marca recém-fincada, apagando a trava: na
+    // prática a proteção anti-restauração-dupla NUNCA persistia neste caminho, que
+    // é o de todo cancelamento sem pagamento online.
+    order.stockRestoredAt = new Date();
     for (const item of order.items || []) {
       if (item.product) {
         await this.productsService.restoreStock(item.product.id, item.quantity);
@@ -1453,6 +1500,19 @@ export class OrdersService {
         await this.paymentsService.cancelPreAuth(order);
       } catch (err: any) {
         console.error('Cancel pre-auth failed:', err?.message);
+        // BAIXO (auditoria 2026-08-23): antes a falha era só console.error e o
+        // limite do cliente ficava preso até a pré-auth caducar (dias), invisível.
+        // Marcador consultável para reconciliação: SELECT ... WHERE notes LIKE
+        // '%[PREAUTH_CANCEL_FAILED%'.
+        await this.ordersRepository.manager
+          .query(
+            `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`,
+            [
+              order.id,
+              `\n[PREAUTH_CANCEL_FAILED ${new Date().toISOString()}] ${err?.message || 'unknown'} — pré-auth pode seguir presa até caducar.`,
+            ],
+          )
+          .catch(() => {});
       }
       return false; // nao houve claim de status: o chamador segue pelo updateStatus
     }
@@ -1462,9 +1522,15 @@ export class OrdersService {
       return this.estornarEDecidir(order, statusFinal, 'Refund captured charge');
     }
 
-    // PIX ou Checkout já pago (sem pré-auth): estorno
+    // PIX ou Checkout já pago (sem pré-auth): estorno.
+    // BAIXO (auditoria 2026-08-23): só estornar se o pedido REALMENTE foi pago.
+    // Um PIX/checkout ainda em AWAITING_PAYMENT (QR gerado mas não pago) não tem o
+    // que estornar — o refundOrder encontra a charge `pending`, lança, e gravava um
+    // [REFUND_FAILED] FALSO que poluía a fila de reconciliação de dinheiro perdido.
+    // Pagamento que entre depois do cancelamento é coberto por refundLatePayment.
     if (
       order.mpPreferenceId &&
+      order.status !== OrderStatus.AWAITING_PAYMENT &&
       (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD')
     ) {
       return this.estornarEDecidir(order, statusFinal, 'Refund on cancel');
@@ -2037,31 +2103,15 @@ export class OrdersService {
       status === OrderStatus.REJECTED ||
       status === OrderStatus.EXPIRED
     ) {
-      for (const item of order.items) {
-        if (item.product) {
-          await this.productsService.restoreStock(
-            item.product.id,
-            item.quantity,
-          );
-        }
-      }
-      // H2: Decrement coupon usage when order is cancelled/rejected/expired
-      // KAN-234: so decrementa se o uso foi REALMENTE contabilizado para este
-      // pedido. Antes decrementava sempre que houvesse cupom — entao cancelar
-      // um pedido de pagamento online que nunca foi pago (e portanto nunca
-      // incrementou) liberava um uso extra do cupom, furando o limite. A flag
-      // e zerada em seguida para o decremento ser idempotente.
-      if (order.coupon?.id && order.couponCredited) {
-        try {
-          await this.couponsService.decrementUsage(order.coupon.id);
-          await this.ordersRepository.update(order.id, { couponCredited: false });
-        } catch (err: any) {
-          console.error(
-            `Failed to decrement coupon usage for order ${order.id}:`,
-            err?.message,
-          );
-        }
-      }
+      // Era um laço de restauração INLINE, que não passava pelo claim de
+      // `stockRestoredAt` — o que deixava o buraco que o claim foi criado para
+      // fechar. O claim protegia só quem chega por `restoreStockAndCoupon` (o
+      // caminho do estorno); este aqui, que é o usado em todo cancelamento SEM
+      // pagamento online, devolvia estoque sem marcar nada. Dois cancelamentos
+      // concorrentes (cliente pelo app + `expirePendingOrders` varrendo o mesmo
+      // pedido) ainda restauravam os dois: um por cada caminho. Agora os dois
+      // disputam o mesmo claim.
+      await this.restoreStockAndCoupon(order);
     }
 
     // Timestamps dos novos status
@@ -2181,7 +2231,10 @@ export class OrdersService {
     if (
       status === OrderStatus.READY &&
       this.onOrderReadyCallback &&
-      !order.isPickup
+      !order.isPickup &&
+      // CRITICO (auditoria 2026-08-23): loja com frota própria não deve disparar
+      // a cascata de ofertas — o entregador do app não é remunerado nesses pedidos.
+      !full.store?.hasOwnDelivery
     ) {
       this.onOrderReadyCallback(full);
     }

@@ -87,6 +87,30 @@ export class DeliveriesService implements OnModuleInit {
 
     const order = await this.ordersService.findById(orderId);
 
+    // ALTO (auditoria 2026-08-23): AUTOENTREGA. Sem esta checagem, um cliente com
+    // conta de entregador aceitava a PRÓPRIA entrega — passava a controlar as duas
+    // pontas da "prova de entrega" (confirma a coleta, o scheduler avança, confirma
+    // a entrega e o próprio recebimento -> COMPLETED, e ~90% da taxa volta ao bolso
+    // dele) e ainda podia abrir disputa em 48h para estornar tudo com a mercadoria
+    // em mãos. O dono da loja (owner) também não pode ser o entregador do próprio
+    // pedido. (customer e deliverer são a mesma tabela app_users; owner é vendor_users.)
+    if (order.customer?.id && order.customer.id === deliverer.id) {
+      throw new BadRequestException('Você não pode aceitar a entrega do seu próprio pedido.');
+    }
+    if (order.store?.owner?.id && order.store.owner.id === deliverer.id) {
+      throw new BadRequestException('O dono da loja não pode ser o entregador do próprio pedido.');
+    }
+
+    // CRITICO (auditoria 2026-08-23): pedido de retirada ou de loja com frota
+    // própria não remunera o entregador do app no settlePayment. A listagem já os
+    // exclui, mas aceitar por orderId direto contornava o filtro — bloqueio aqui.
+    if (order.isPickup) {
+      throw new BadRequestException('Pedido de retirada não precisa de entregador.');
+    }
+    if (order.store?.hasOwnDelivery) {
+      throw new BadRequestException('Esta loja faz as próprias entregas.');
+    }
+
     // Atomic acceptance using DB transaction with row-level lock
     // Prevents race condition when 2 deliverers click at the same time
     const result = await this.deliveriesRepository.manager.transaction(async (manager) => {

@@ -76,6 +76,18 @@ export class DeliveriesGateway
     return (client.data as any)?.user?.sub ?? null;
   }
 
+  // ALTO (auditoria 2026-08-23): os handlers de entregador (delivererOnline,
+  // location, acceptOffer, declineOffer) só checavam identidade, não ROLE. Como
+  // entrar na sala 'deliverers'/no tracker não exigia ser entregador, qualquer
+  // conta logada podia se declarar online e passar a receber `newAvailableDelivery`
+  // / `deliveryOffer` — que carregam o ENDEREÇO do cliente, nº e valor do pedido —
+  // além de poluir o tracker e sabotar a cascata de ofertas. O JWT do entregador
+  // carrega role='DELIVERER' (a aprovação seta role E isDeliverer juntos), que é o
+  // mesmo que o guard HTTP de acceptDelivery já exige.
+  private isDeliverer(client: Socket): boolean {
+    return (client.data as any)?.user?.role === 'DELIVERER';
+  }
+
   handleConnection(client: Socket) {
     const raw =
       (client.handshake.auth as any)?.token ||
@@ -172,6 +184,7 @@ export class DeliveriesGateway
     // qualquer entregador e injetar GPS falso no tracker.
     const uid = this.userIdOf(client);
     if (!uid) return { status: 'unauthorized' };
+    if (!this.isDeliverer(client)) return { status: 'forbidden' };
     data = { ...data, userId: uid };
     const now = Date.now();
     const last = this.lastOnlineEvent.get(uid) || 0;
@@ -199,6 +212,7 @@ export class DeliveriesGateway
   ) {
     const uid = this.userIdOf(client);
     if (!uid) return;
+    if (!this.isDeliverer(client)) return;
     const now = Date.now();
     const last = this.lastLocationUpdate.get(uid) || 0;
     if (now - last < DeliveriesGateway.LOCATION_THROTTLE_MS) {
@@ -232,6 +246,7 @@ export class DeliveriesGateway
     // outro, encerrando a cascata (o pedido ficava sem entregador nenhum).
     const uid = this.userIdOf(client);
     if (!uid) return { accepted: false };
+    if (!this.isDeliverer(client)) return { accepted: false };
     const accepted = this.offerService.acceptOffer(data.orderId, uid);
     return { accepted };
   }
@@ -243,6 +258,7 @@ export class DeliveriesGateway
   ) {
     const uid = this.userIdOf(client);
     if (!uid) return { status: 'unauthorized' };
+    if (!this.isDeliverer(client)) return { status: 'forbidden' };
     this.offerService.declineOffer(data.orderId, uid);
     return { status: 'declined' };
   }
