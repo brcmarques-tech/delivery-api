@@ -342,6 +342,47 @@ export class OrdersService {
       );
     }
 
+    // ─── Entrega por entregador do app exige CARTÃO ──────────────────────
+    //
+    // Isto é um GUARDA-TRILHO, não uma regra de produto permanente. O motivo é
+    // concreto e está medido:
+    //
+    //   - No CARTÃO a pré-autorização é capturada COM SPLIT no momento da
+    //     liberação (os 3 códigos). O entregador entra nessa divisão e recebe
+    //     automaticamente, e o dinheiro fica de fato retido até a entrega.
+    //   - No PIX o split é definido na CRIAÇÃO da cobrança, quando ainda não
+    //     existe entregador (ele só é ofertado no READY). Resultado: o frete
+    //     fica retido na plataforma e o repasse ao entregador é MANUAL, e o
+    //     vendedor já é creditado no pagamento — ou seja, nem repasse
+    //     automático, nem custódia real.
+    //
+    // E não há terceira via dentro do provedor: não existe transferência da
+    // plataforma para um recebedor (POST /recipients/{id}/transfers é SAQUE do
+    // saldo do próprio recebedor para a conta bancária dele), e o split é
+    // imutável depois do pagamento. Ver KAN-300.
+    //
+    // Então, enquanto o pagamento ao entregador fora do Pagar.me não existir,
+    // deixar PIX + entrega por app aberto significa lançar prometendo um
+    // repasse automático que não acontece.
+    //
+    // O padrão é LIGADO de propósito: o estado seguro tem de ser o que vale sem
+    // ninguém lembrar de configurar nada. Desligar é decisão explícita
+    // (APP_DELIVERY_REQUIRES_CARD=false), e o ambiente local a desliga no
+    // docker-compose para os testes poderem exercitar o fluxo com PIX.
+    const exigeCartaoNaEntrega =
+      (process.env.APP_DELIVERY_REQUIRES_CARD ?? 'true') !== 'false';
+    const entregaPorEntregadorDoApp = !isPickup && !store.hasOwnDelivery;
+    if (
+      exigeCartaoNaEntrega &&
+      entregaPorEntregadorDoApp &&
+      paymentMethod !== 'CREDIT_CARD'
+    ) {
+      throw new BadRequestException(
+        'Para entrega por entregador, o pagamento precisa ser no cartão. ' +
+          'Para pagar com PIX, escolha retirada no local.',
+      );
+    }
+
     if (paymentMethod === 'ON_DELIVERY' && !isPickup && !store.hasOwnDelivery) {
       throw new BadRequestException(
         'Pagamento na entrega nao disponivel para esta loja. Use PIX ou cartao.',
@@ -1038,9 +1079,15 @@ export class OrdersService {
 
   /**
    * Grava a confirmacao de recebimento de forma atomica e diz se ESTE chamador
-   * foi quem a gravou. Usado pelos caminhos automaticos (proximidade por GPS e
-   * expiracao dos 10 min), que precisam persistir a coluna — `customerConfirmedAt`
-   * e a prova de recebimento que autoriza o repasse no modelo de custodia.
+   * foi quem a gravou. `customerConfirmedAt` e a prova de recebimento que
+   * autoriza o repasse no modelo de custodia, entao todo caminho que finaliza
+   * um pedido precisa persisti-la — o `completeOrderWithPayment` grava apenas
+   * status e `completedAt`.
+   *
+   * Hoje quem chama e o registro do CODIGO DO CLIENTE (o cliente informar o
+   * codigo e a confirmacao dele) e a expiracao dos 10 min para pedidos sem
+   * codigo. A automacao por proximidade de GPS, que tambem chamava, foi
+   * removida: a prova era falsificavel.
    */
   async claimCustomerConfirmation(orderId: string): Promise<boolean> {
     const claim = await this.ordersRepository.manager.query(

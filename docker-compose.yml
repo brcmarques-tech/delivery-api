@@ -17,6 +17,13 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       JWT_SECRET: dev-secret-change-in-production
+
+      # Entrega por entregador do app exige cartao (padrao do codigo: true).
+      # DESLIGADO so aqui, no ambiente local, para os E2E exercitarem o fluxo
+      # de codigos com PIX. Em producao NAO definir esta variavel: o padrao
+      # ligado e o estado seguro enquanto o repasse ao entregador no PIX for
+      # manual (ver KAN-300).
+      APP_DELIVERY_REQUIRES_CARD: "false"
       JWT_EXPIRATION: 7d
       PORT: 3000
       # KAN-222: segredos vêm do .env (gitignored) por substituição — não versionar.

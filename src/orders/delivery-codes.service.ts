@@ -589,6 +589,22 @@ export class DeliveryCodesService {
       }
       await this.deliveriesService.confirmDelivery(entregaId, entregadorId, true);
 
+      // PROVA DE RECEBIMENTO. O cliente ter informado o código É a confirmação
+      // de recebimento dele — mais forte, inclusive, do que o toque num botão.
+      //
+      // Isto não é redundância com `codigoClienteUsadoEm`: `customerConfirmedAt`
+      // é a coluna que o resto do sistema lê como "o cliente confirmou", e no
+      // modelo de custódia é ela que autoriza o repasse. Eu havia esquecido de
+      // gravá-la, e o resultado era pedido COMPLETED e LIQUIDADO com a prova
+      // nula — exatamente o bug que a auditoria já havia corrigido no caminho da
+      // automação por GPS. Numa disputa ou chargeback a plataforma não
+      // conseguiria demonstrar quando e como a entrega foi confirmada, tendo já
+      // repassado a vendedor e entregador.
+      //
+      // Claim atômico, pelo mesmo motivo dos outros caminhos: se o cliente
+      // confirmar pelo botão no mesmo instante, só um grava.
+      await this.ordersService.claimCustomerConfirmation(atualizado.id);
+
       this.logger.log(
         `[CODIGO_LIBERACAO] pedido #${atualizado.orderNumber} — 3 códigos registrados, liberando repasse`,
       );
