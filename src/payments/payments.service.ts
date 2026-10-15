@@ -988,7 +988,19 @@ export class PaymentsService implements OnModuleDestroy {
 
     const splitRules: any[] = [];
     let vendorAmount: number;
-    let platformAmount: number;
+    // KAN-254 (codigo morto no caminho do dinheiro): `platformAmount` era
+    // atribuido em CINCO pontos antes do calculo do residuo — comissao +
+    // comissao de entrega, mais a parte do entregador sem recipient, mais a
+    // comissao no caminho de retirada, mais o clamp do vendedor negativo, mais
+    // o else do vendedor zerado — e TODOS eram mortos: o residuo sobrescrevia a
+    // variavel sem condicao nenhuma, e o primeiro LEITOR vem depois dele.
+    //
+    // Isso e pior do que redundancia: eram cinco formulas aparentes para a
+    // fatia da plataforma, nenhuma em uso. Quem fosse corrigir a comissao
+    // editaria uma delas e nada mudaria — num arquivo que divide dinheiro de
+    // verdade. A regra real e uma so e esta logo depois do bloco: a plataforma
+    // leva O QUE SOBRA (e por isso absorve MDR, arredondamento e a
+    // responsabilidade do split). Agora ela existe em um unico lugar.
 
     const hasExternalDelivery = !store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0;
 
@@ -999,7 +1011,6 @@ export class PaymentsService implements OnModuleDestroy {
       const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
 
       vendorAmount = totalCents - commissionCents - deliveryFeeCents;
-      platformAmount = commissionCents + deliveryCommissionCents;
 
       if (delivererRecipientId && delivererAmount > 0) {
         splitRules.push({
@@ -1009,14 +1020,16 @@ export class PaymentsService implements OnModuleDestroy {
           options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
         });
       } else {
-        // No deliverer recipient — platform absorbs deliverer share.
+        // Sem recipient do entregador a parte dele fica com a plataforma —
+        // automaticamente, porque a plataforma leva o residuo (nao ha soma a
+        // fazer aqui; a linha que somava era morta, ver KAN-254 acima).
+        //
         // Isto acontecia em SILENCIO: sem log, sem marca no pedido, sem
         // pendencia registrada, e a captura saia como sucesso. O entregador
         // perdia 100% do ganho de uma entrega ja feita e ninguem — nem ele nem a
         // plataforma — tinha como descobrir depois, porque o split ja foi
         // executado e nao ha retroativo. Marcamos o pedido para que a divida
         // fique rastreavel e possa ser paga manualmente.
-        platformAmount += delivererAmount;
         this.logger.error(
           `[DELIVERER_UNPAID] Pedido #${order.orderNumber}: entregador sem recipient no Pagar.me. ` +
             `R$ ${(delivererAmount / 100).toFixed(2)} ficaram com a plataforma e precisam de repasse manual.`,
@@ -1032,15 +1045,13 @@ export class PaymentsService implements OnModuleDestroy {
       }
     } else {
       // Pickup or own delivery — vendor gets total minus commission
+      // (a plataforma fica com a comissao por consequencia do residuo)
       vendorAmount = totalCents - commissionCents;
-      platformAmount = commissionCents;
     }
 
-    // Cap vendor at 0 minimum
-    if (vendorAmount < 0) {
-      platformAmount += vendorAmount;
-      vendorAmount = 0;
-    }
+    // Cap vendor at 0 minimum. O que o vendedor nao leva volta para o residuo
+    // da plataforma sozinho — nao ha nada a somar aqui.
+    if (vendorAmount < 0) vendorAmount = 0;
 
     if (vendorAmount > 0) {
       splitRules.push({
@@ -1049,13 +1060,13 @@ export class PaymentsService implements OnModuleDestroy {
         type: 'flat',
         options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
       });
-    } else {
-      platformAmount = totalCents - splitRules.reduce((sum, r) => sum + r.amount, 0);
     }
 
-    // Platform gets remainder (absorbs MDR, rounding, and liability)
-    const splitSum = splitRules.reduce((sum, r) => sum + r.amount, 0);
-    platformAmount = totalCents - splitSum;
+    // A UNICA definicao da fatia da plataforma: o que sobra depois das regras do
+    // entregador e do vendedor. Absorve MDR, arredondamento e responsabilidade,
+    // e e isso que garante a invariante validada mais abaixo (soma == total).
+    const platformAmount =
+      totalCents - splitRules.reduce((sum, r) => sum + r.amount, 0);
 
     if (platformAmount > 0) {
       splitRules.push({

@@ -13,7 +13,7 @@ import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { OrderStatusLog } from './entities/order-status-log.entity';
 import { Delivery } from '../deliveries/entities/delivery.entity';
-import { CreateOrderInput, OrderItemInput } from './dto/create-order.input';
+import { CreateOrderInput } from './dto/create-order.input';
 import { AppUser } from '../users/entities/app-user.entity';
 import { ProductsService } from '../products/products.service';
 import { StoresService } from '../stores/stores.service';
@@ -152,8 +152,19 @@ export class OrdersService {
     let subtotal = 0;
     const items: OrderItem[] = [];
 
+    // Perf (KAN-254): era um SELECT por item (com join de store e category) e
+    // depois a verificacao de idade repetia a rodada inteira — 2N queries para
+    // ler N produtos, no caminho mais quente de escrita. Agora uma query so, e a
+    // verificacao de idade reusa estes mesmos objetos.
+    const produtosPorId = await this.productsService.findManyByIds(
+      input.items.map((i) => i.productId),
+    );
+
     for (const itemInput of input.items) {
-      const product = await this.productsService.findById(itemInput.productId);
+      const product = produtosPorId.get(itemInput.productId);
+      // Mesma excecao e no MESMO ponto do laco em que o findById a lancava, para
+      // o "primeiro problema do carrinho vence" continuar valendo igual.
+      if (!product) throw new NotFoundException('Produto nao encontrado');
       // C3: o produto TEM que ser da loja do pedido e estar disponível. Antes o
       // pedido aceitava produto de outra loja (preço/comissão calculados contra a
       // loja errada, corrompendo settlement) ou produto oculto/inativo.
@@ -208,9 +219,7 @@ export class OrdersService {
     }
 
     // Verificação de idade: se algum produto pertence a categoria +18, exigir confirmação
-    const hasAgeRestrictedItem = await this.hasAgeRestrictedProducts(
-      input.items,
-    );
+    const hasAgeRestrictedItem = this.hasAgeRestrictedProducts(produtosPorId);
     if (hasAgeRestrictedItem && !input.ageVerified) {
       throw new BadRequestException(
         'Este pedido contem produtos com restricao de idade. Confirme que voce tem 18 anos ou mais.',
@@ -2419,12 +2428,17 @@ export class OrdersService {
     return saved;
   }
 
-  private async hasAgeRestrictedProducts(
-    items: OrderItemInput[],
-  ): Promise<boolean> {
-    for (const item of items) {
-      const product = await this.productsService.findById(item.productId);
-      if (product.category?.requiresAgeVerification) return true;
+  /**
+   * Perf (KAN-254): este metodo recarregava do banco, um por um, os MESMOS
+   * produtos que `createOrder` acabara de carregar — e com o mesmo join de
+   * category que a resposta ja trazia. Agora recebe os objetos ja em maos e nao
+   * toca no banco. Deixou de ser async porque nao ha mais I/O aqui.
+   */
+  private hasAgeRestrictedProducts(
+    produtosPorId: Map<string, { category?: { requiresAgeVerification?: boolean } | null }>,
+  ): boolean {
+    for (const produto of produtosPorId.values()) {
+      if (produto.category?.requiresAgeVerification) return true;
     }
     return false;
   }

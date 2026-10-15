@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { PubSub } from 'graphql-subscriptions';
 import { firstValueFrom } from 'rxjs';
@@ -116,6 +116,26 @@ export class ProductsService {
 
   // Igual ao findById, mas inclui produtos soft-deleted (usado na verificacao
   // de ownership do restore, que por definicao age sobre um produto deletado).
+  /**
+   * Mesmo contrato do findById (MESMAS relations), mas em UMA query para varios
+   * ids. Devolve um mapa id -> produto; id inexistente simplesmente nao aparece,
+   * e quem chama decide o que fazer (o findById lancaria NotFoundException).
+   *
+   * Perf (KAN-254): `createOrder` fazia um SELECT por item do carrinho, cada um
+   * com join de store e category — e depois a verificacao de idade fazia a
+   * MESMA rodada outra vez, totalizando 2N queries no caminho mais quente de
+   * escrita do sistema. Carrinho de 10 itens = 20 queries para ler 10 produtos.
+   */
+  async findManyByIds(ids: string[]): Promise<Map<string, Product>> {
+    const unicos = [...new Set(ids)];
+    if (unicos.length === 0) return new Map();
+    const produtos = await this.productsRepository.find({
+      where: { id: In(unicos) },
+      relations: ['store', 'category'],
+    });
+    return new Map(produtos.map((p) => [p.id, p]));
+  }
+
   async findByIdAnyState(id: string): Promise<Product> {
     const product = await this.productsRepository.findOne({
       where: { id },
