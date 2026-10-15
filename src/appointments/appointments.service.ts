@@ -8,7 +8,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, In, IsNull, Between, LessThanOrEqual } from 'typeorm';
+import { Repository, Not, In, IsNull, Between, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
 import { Appointment } from './entities/appointment.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Service } from '../services/entities/service.entity';
@@ -756,6 +756,48 @@ export class AppointmentsService {
   }
 
   // ─── Reminder ───────────────────────────────────────────
+
+
+  /**
+   * Re-tenta a liquidação de agendamentos concluídos cujo repasse falhou.
+   *
+   * `completeAppointment` chama `settleAppointmentPayment` em fire-and-forget:
+   * um `.catch` que só escreve no log. Se a chamada ao Pagar.me falhar (rede,
+   * 5xx, recipient momentaneamente recusado), NADA re-tentava — o agendamento
+   * ficava COMPLETED com `isSettled = false` para sempre e o lojista nunca
+   * recebia por um serviço já prestado. Pedidos já tinham
+   * `retryFailedSettlements`; agendamentos ficaram de fora.
+   *
+   * Mesma janela de 48h dos pedidos: fora dela o caso vira reconciliação manual
+   * em vez de ficar re-tentando para sempre.
+   */
+  async retryFailedAppointmentSettlements(): Promise<number> {
+    const janela = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const pendentes = await this.appointmentsRepository.find({
+      where: {
+        status: AppointmentStatus.COMPLETED,
+        isSettled: false,
+        paymentMethod: In(['PIX', 'CREDIT_CARD']),
+        updatedAt: MoreThanOrEqual(janela),
+        deletedAt: IsNull(),
+      },
+      relations: RELATIONS,
+    });
+
+    let liquidados = 0;
+    for (const apt of pendentes) {
+      try {
+        await this.paymentsService.settleAppointmentPayment(apt);
+        liquidados++;
+      } catch (err: any) {
+        // Segue isSettled=false; volta no próximo ciclo enquanto estiver na janela.
+        this.logger.error(
+          `Retry de liquidação falhou para ${apt.appointmentNumber}: ${err?.message}`,
+        );
+      }
+    }
+    return liquidados;
+  }
 
   async sendUpcomingReminders(): Promise<number> {
     // BUGFIX: o comentario antigo dizia "server runs in BRT" — em producao NAO

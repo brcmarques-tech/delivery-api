@@ -26,6 +26,7 @@ export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestr
     try {
       await this.sendReminders();
       await this.expireUnpaid();
+      await this.retryLiquidacoes();
     } finally {
       this.isRunning = false;
     }
@@ -33,6 +34,17 @@ export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestr
 
   onModuleDestroy() {
     if (this.intervalId) clearInterval(this.intervalId);
+  }
+
+  private async retryLiquidacoes() {
+    try {
+      const n = await this.appointmentsService.retryFailedAppointmentSettlements();
+      if (n > 0) {
+        this.logger.log(`Liquidacao de ${n} agendamento(s) re-tentada com sucesso`);
+      }
+    } catch (err) {
+      this.logger.error('Falha ao re-tentar liquidacao de agendamentos:', err);
+    }
   }
 
   private async expireUnpaid() {

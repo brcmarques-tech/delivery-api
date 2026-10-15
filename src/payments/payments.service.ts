@@ -1288,9 +1288,26 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     if (reversalErrors.length > 0) {
+      // O claim no topo já zerou isSettled/vendorSettledAt/delivererSettledAt
+      // (necessário para a idempotência). Se a reversão FALHOU, isso apagava a
+      // única informação de que havia dinheiro repassado — e o `[REVERSAL_ERRORS]`
+      // virava uma nota sem nada acionável atrás: nenhum scheduler re-tentava e a
+      // perda ficava invisível no balanço.
+      //
+      // Restaurar as marcas devolve o pedido ao estado "tem repasse a recuperar",
+      // que é o que um retry (ou a conferência manual) precisa enxergar. A
+      // idempotência segue valendo: quem ganhar o claim de novo tenta de novo, e
+      // só zera de vez quando a reversão der certo.
       await orderRepo.update(order.id, {
         notes: `${order.notes || ''}\n[REVERSAL_ERRORS] ${reversalErrors.join(' | ')}`.trim(),
-      });
+        isSettled: true,
+        ...(vendorRecebeu ? { vendorSettledAt: new Date() } : {}),
+        ...(entregadorRecebeu ? { delivererSettledAt: new Date() } : {}),
+      } as any);
+      this.logger.error(
+        `[REVERSAL_ERRORS] Pedido #${order.orderNumber}: repasse NAO recuperado — ` +
+          `marcas restauradas para permitir nova tentativa/conferencia manual.`,
+      );
     }
   }
 
