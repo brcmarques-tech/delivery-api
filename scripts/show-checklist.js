@@ -1,3 +1,11 @@
+/**
+ * Imprime o PROPOSED_CHANGES_CHECKLIST.md no terminal.
+ *
+ * Utilitario de desenvolvimento, sem efeito em runtime: existe para o checklist
+ * de mudancas propostas ser lido sem sair do terminal (`node scripts/show-checklist.js`).
+ * Nao e usado por nenhum caminho da API — se o checklist deixar de existir, este
+ * script pode ser removido junto.
+ */
 const fs = require('fs');
 const path = require('path');
 

@@ -36,6 +36,19 @@ export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestr
     if (this.intervalId) clearInterval(this.intervalId);
   }
 
+  /**
+   * Re-tenta a liquidação de AGENDAMENTOS que falhou.
+   *
+   * O ciclo de pedido já tinha retry (retryFailedSettlements); o de agendamento
+   * não tinha nenhum. Quando a liquidação falhava — provedor fora do ar,
+   * recebedor sem conta, pré-autorização expirada — o dinheiro simplesmente
+   * ficava parado na plataforma, sem ninguém re-tentar e sem alarme: o
+   * agendamento aparecia como concluído e o prestador nunca recebia.
+   *
+   * O `try/catch` aqui é obrigatório, não zelo: este método roda dentro do tick
+   * do scheduler, e uma exceção escapando daqui mataria os outros jobs da
+   * rodada.
+   */
   private async retryLiquidacoes() {
     try {
       const n = await this.appointmentsService.retryFailedAppointmentSettlements();
