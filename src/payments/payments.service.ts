@@ -2343,7 +2343,16 @@ export class PaymentsService implements OnModuleDestroy {
       await this.handleChargePaid(data);
     } else if (eventType === 'charge.refunded') {
       await this.handleChargeRefunded(data);
-    } else if (eventType === 'charge.chargedback') {
+    } else if (
+      // O nome do evento de contestacao NAO esta confirmado no painel: a doc da
+      // v5 cita `charge.chargedback` e ha relato de `chargeback.received`.
+      // Escutar so um significaria PERDER TODO CHARGEBACK em silencio — sem
+      // reversao de repasse, sem cancelamento, sem nada. Aceitar as variantes e
+      // barato: a que nao existir simplesmente nunca dispara.
+      eventType === 'charge.chargedback' ||
+      eventType === 'charge.chargeback' ||
+      eventType.startsWith('chargeback.')
+    ) {
       await this.handleChargeChargedback(data);
     } else if (eventType === 'charge.payment_failed') {
       await this.handleOrderPaymentFailed(data);
@@ -2363,6 +2372,13 @@ export class PaymentsService implements OnModuleDestroy {
       await this.handleInvoicePaymentFailed(data);
     } else if (eventType === 'invoice.canceled') {
       this.logger.log(`Invoice canceled: ${data.id} | subscription: ${data.subscription?.id}`);
+    } else {
+      // Nao havia ramo final: evento desconhecido era DESCARTADO sem rastro. Se
+      // o Pagar.me renomear um evento (ou enviar um que nao mapeamos), o sintoma
+      // seria dinheiro ou estado parando de atualizar, sem nenhuma pista no log.
+      this.logger.warn(
+        `[WEBHOOK_NAO_TRATADO] tipo=${eventType} id=${data?.id} — evento ignorado; se repetir, falta um handler.`,
+      );
     }
   }
 
