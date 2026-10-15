@@ -92,6 +92,12 @@ describe('PaymentsService', () => {
       post: jest.fn(),
       get: jest.fn(),
       put: jest.fn(),
+      // Faltava `delete` aqui, e isso tem consequencia: TODO caminho que usa
+      // pagarmeDelete (estorno, void de pre-autorizacao, cancelamento de
+      // assinatura) estourava "delete is not a function" dentro do try/catch e
+      // era engolido como "falha do provedor". Nenhum desses caminhos chegou a
+      // ser exercitado por teste.
+      delete: jest.fn(),
     },
   };
 
@@ -465,16 +471,32 @@ describe('PaymentsService', () => {
       httpService.axiosRef.post.mockResolvedValue({
         data: { id: 'tr_1', status: 'pending' },
       });
+      // O estorno agora e DELETE /charges/{id}. E a resposta precisa trazer
+      // `last_transaction.status`, porque e dali que o service decide se
+      // estornou — o provedor responde 200 mesmo quando o estorno falha.
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: {
+          id: 'ch_abc',
+          status: 'paid', // parcial: a cobranca SEGUE paid, so parte voltou
+          last_transaction: { status: 'partial_refunded', amount: 500 },
+        },
+      });
 
       await service.settlePayment(order);
 
-      const refundCall = httpService.axiosRef.post.mock.calls.find(
-        (c: any) => c[0].includes('/charges/ch_abc/refund'),
+      const refundCall = httpService.axiosRef.delete.mock.calls.find(
+        (c: any) => c[0].includes('/charges/ch_abc'),
       );
       expect(refundCall).toBeDefined();
-      expect(refundCall[1].amount).toBe(500); // 6000 - 5500 centavos
+      // No axios o corpo do DELETE vai em config.data
+      expect(refundCall[1].data.amount).toBe(500); // 6000 - 5500 centavos
       // Idempotency-Key: um retry de settlement NAO pode estornar em dobro
-      expect(refundCall[2].headers['Idempotency-Key']).toBe('weight-refund-order-1');
+      expect(refundCall[1].headers['Idempotency-Key']).toBe('weight-refund-order-1');
+      // E a rota ANTIGA (v4), que nao existe no provedor, nao pode voltar
+      const rotaV4 = httpService.axiosRef.post.mock.calls.find(
+        (c: any) => typeof c[0] === 'string' && c[0].includes('/refund'),
+      );
+      expect(rotaV4).toBeUndefined();
     });
 
     it('should NOT refund when paid amount equals final total', async () => {
@@ -508,16 +530,33 @@ describe('PaymentsService', () => {
       httpService.axiosRef.get.mockResolvedValue({
         data: { charges: [{ id: 'ch_abc', status: 'paid' }] },
       });
-      httpService.axiosRef.post.mockImplementation((url: string) => {
-        if (url.includes('/refund')) {
-          return Promise.reject({ response: { data: { message: 'gateway down' } } });
-        }
-        return Promise.resolve({ data: { id: 'tr_1', status: 'pending' } });
+      httpService.axiosRef.post.mockResolvedValue({ data: { id: 'tr_1', status: 'pending' } });
+      // ESTE e o modo de falha REAL do provedor, medido no sandbox: o DELETE
+      // responde HTTP 200 e o estorno NAO acontece — a cobranca segue "paid" e a
+      // falha aparece so em `last_transaction.status`. Acontece numa janela de
+      // poucos segundos apos a captura ("action_forbidden | Valor invalido para
+      // estorno"). Antes desta correcao o codigo olhava apenas o status HTTP,
+      // entao registraria "estornado" sem ter estornado nada — e este teste
+      // passava com um Promise.reject que nao representa o que o provedor faz.
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: {
+          id: 'ch_abc',
+          status: 'paid',
+          last_transaction: {
+            status: 'failed',
+            amount: 500,
+            gateway_response: {
+              code: '400',
+              errors: [{ message: 'action_forbidden |  | Valor inválido para estorno.' }],
+            },
+          },
+        },
       });
 
       await service.settlePayment(order);
 
-      // Claim solto para o retry re-tentar (a Idempotency-Key impede duplicar)
+      // Claim solto para o retry re-tentar. Seguro porque so chegamos aqui
+      // quando o provedor AFIRMOU que falhou — nao ha estorno "talvez feito".
       expect(mockOrderRepo.update).toHaveBeenCalledWith(
         'order-1',
         expect.objectContaining({ overpaidRefundedAt: null }),
@@ -668,6 +707,13 @@ describe('PaymentsService', () => {
         data: { id: 'ch_late', status: 'paid', amount: 5500 },
       });
       httpService.axiosRef.post.mockResolvedValue({ data: { id: 'ref_1' } });
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: {
+          id: 'ch_late',
+          status: 'canceled', // total: a cobranca inteira volta
+          last_transaction: { status: 'refunded', amount: 5500 },
+        },
+      });
 
       await service.handleWebhook({
         type: 'order.paid',
@@ -678,12 +724,15 @@ describe('PaymentsService', () => {
         },
       });
 
-      const refundCall = httpService.axiosRef.post.mock.calls.find(
-        (c: any) => c[0].includes('/charges/ch_late/refund'),
+      const refundCall = httpService.axiosRef.delete.mock.calls.find(
+        (c: any) => c[0].includes('/charges/ch_late'),
       );
       expect(refundCall).toBeDefined();
-      expect(refundCall[1].amount).toBe(5500); // o valor REAL da cobranca
-      expect(refundCall[2].headers['Idempotency-Key']).toBe('late-refund-order-9');
+      // Estorno TOTAL vai SEM corpo — foi a forma validada no sandbox. Mandar
+      // `amount` igual ao total nao foi testado contra o provedor, entao nao
+      // inventamos.
+      expect(refundCall[1].data).toBeUndefined();
+      expect(refundCall[1].headers['Idempotency-Key']).toBe('late-refund-order-9');
     });
 
     it('should NOT refund late payment when another webhook already claimed it', async () => {
@@ -1014,6 +1063,85 @@ describe('PaymentsService', () => {
       const r = await service.simulateAnticipation('re_x');
       expect(r.isEstimate).toBe(false);
       expect(r.originalAmount).toBe(0);
+    });
+  });
+
+  // ─── estorno de cobranca ─────────────────────────────────────
+  //
+  // Guarda dos dois bugs provados no sandbox em 15/10/2026:
+  //
+  //  1. a rota `POST /charges/{id}/refund` NAO EXISTE na v5 (404 com corpo
+  //     vazio, numa cobranca real e paga). Eram 4 pontos chamando ela, ou seja
+  //     todo estorno de cobranca capturada falhava.
+  //  2. o `DELETE /charges/{id}` responde HTTP 200 MESMO QUANDO O ESTORNO
+  //     FALHA. O resultado real esta em `last_transaction.status`. Quem olhasse
+  //     so o status HTTP registraria "estornado" sem ter estornado.
+  describe('estornarCobranca', () => {
+    const estornar = (chargeId: string, opts?: any) =>
+      (service as any).estornarCobranca(chargeId, opts);
+
+    it('estorno TOTAL vai sem corpo (forma validada no provedor)', async () => {
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'canceled', last_transaction: { status: 'refunded', amount: 300 } },
+      });
+      await estornar('ch_1');
+      const [url, config] = httpService.axiosRef.delete.mock.calls.at(-1);
+      expect(url).toContain('/charges/ch_1');
+      expect(config.data).toBeUndefined();
+    });
+
+    it('estorno PARCIAL manda { amount } no corpo do DELETE', async () => {
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'paid', last_transaction: { status: 'partial_refunded', amount: 100 } },
+      });
+      await estornar('ch_2', { amountCents: 100 });
+      const [, config] = httpService.axiosRef.delete.mock.calls.at(-1);
+      expect(config.data).toEqual({ amount: 100 });
+    });
+
+    it('aceita partial_refunded como sucesso mesmo com a cobranca ainda "paid"', async () => {
+      // No parcial a cobranca SEGUE paid — so parte do valor voltou. Tratar
+      // "paid" como falha aqui faria o retry estornar de novo.
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'paid', last_transaction: { status: 'partial_refunded', amount: 70 } },
+      });
+      await expect(estornar('ch_3', { amountCents: 70 })).resolves.toBeUndefined();
+    });
+
+    it('LANCA quando o provedor devolve 200 mas last_transaction falhou', async () => {
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: {
+          status: 'paid',
+          last_transaction: {
+            status: 'failed',
+            gateway_response: {
+              errors: [{ message: 'action_forbidden |  | Valor inválido para estorno.' }],
+            },
+          },
+        },
+      });
+      await expect(estornar('ch_4')).rejects.toThrow(/Valor inválido para estorno/);
+    });
+
+    it('a mensagem do erro diz se era total ou parcial', async () => {
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'paid', last_transaction: { status: 'failed' } },
+      });
+      await expect(estornar('ch_5', { amountCents: 250 })).rejects.toThrow(/parcial 250/);
+    });
+
+    it('sem last_transaction, o status da cobranca resolve o caso total', async () => {
+      httpService.axiosRef.delete.mockResolvedValue({ data: { status: 'canceled' } });
+      await expect(estornar('ch_6')).resolves.toBeUndefined();
+    });
+
+    it('repassa a Idempotency-Key', async () => {
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'canceled', last_transaction: { status: 'refunded' } },
+      });
+      await estornar('ch_7', { idempotencyKey: 'chave-x' });
+      const [, config] = httpService.axiosRef.delete.mock.calls.at(-1);
+      expect(config.headers['Idempotency-Key']).toBe('chave-x');
     });
   });
 

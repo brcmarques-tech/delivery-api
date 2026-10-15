@@ -221,17 +221,103 @@ export class PaymentsService implements OnModuleDestroy {
     return response.data;
   }
 
-  private async pagarmeDelete<T = any>(path: string): Promise<T> {
+  private async pagarmeDelete<T = any>(
+    path: string,
+    body?: any,
+    idempotencyKey?: string,
+  ): Promise<T> {
+    const headers: Record<string, string> = {
+      'Authorization': this.pagarmeAuthHeader,
+      'Content-Type': 'application/json',
+    };
+    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
     const response = await this.httpService.axiosRef.delete(
       `${this.pagarmeBaseUrl}${path}`,
-      {
-        headers: {
-          'Authorization': this.pagarmeAuthHeader,
-          'Content-Type': 'application/json',
-        },
-      },
+      // O DELETE de cobranca aceita corpo — e e por ele que se pede estorno
+      // PARCIAL (`{ amount }`). No axios, corpo de DELETE vai em `data`.
+      { headers, ...(body !== undefined ? { data: body } : {}) },
     );
     return response.data;
+  }
+
+  /**
+   * Estorna uma cobranca. Sem `amountCents` estorna o TOTAL; com, estorna so
+   * aquele valor (estorno parcial).
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * DOIS BUGS GRAVES CONSERTADOS AQUI (provados no sandbox em 15/10/2026)
+   * ──────────────────────────────────────────────────────────────────────────
+   *
+   * 1) A ROTA DE ESTORNO NAO EXISTE. O codigo chamava
+   *    `POST /charges/{id}/refund` em QUATRO lugares. Essa rota e da v4. Provado
+   *    com uma cobranca REAL e PAGA criada no sandbox:
+   *
+   *      POST /charges/ch_jdJ0VOSyVSaZzpwx/refund   -> 404 com CORPO VAZIO
+   *      POST /charges/ch_.../capture (controle)    -> 404 "Charge not found."
+   *
+   *    O `/capture` casa a rota e so depois nao acha a cobranca; o `/refund`
+   *    nao casa rota nenhuma. Tambem testei `/refunds` e `/cancel`: nao existem.
+   *    A forma na v5 e `DELETE /charges/{id}`.
+   *
+   *    Consequencia: TODO estorno de cobranca capturada falhava — cancelamento
+   *    de pedido pago, reembolso de pagamento tardio, devolucao de agendamento e
+   *    a sobra do ajuste de peso. O dinheiro ficava na plataforma.
+   *
+   * 2) HTTP 200 NAO SIGNIFICA QUE ESTORNOU. Esta e a parte que mais importa:
+   *    o `DELETE` responde 200 mesmo quando o estorno FALHA, e o resultado real
+   *    esta em `last_transaction.status`. Medido:
+   *
+   *      DELETE logo depois da captura -> 200, charge=paid,
+   *        last_transaction.status=failed,
+   *        erro "action_forbidden | Valor invalido para estorno."
+   *      DELETE ~10s depois           -> 200, charge=canceled,
+   *        last_transaction.status=refunded, "Transacao aprovada com sucesso"
+   *      DELETE { amount: 100 } de 300 -> 200, charge SEGUE paid (correto: so
+   *        parte voltou), last_transaction.status=partial_refunded
+   *
+   *    Ou seja: existe uma janela de poucos segundos apos a captura em que o
+   *    adquirente recusa o estorno, e nela a API devolve 200. Quem confiasse no
+   *    status HTTP registraria "estornado" sem ter estornado nada. Por isso aqui
+   *    a decisao sai de `last_transaction.status`, nunca do 200.
+   *
+   *    Lancar nesse caso e de proposito: os chamadores ja sabem reabrir o
+   *    settlement e re-tentar (ver `settlementErrors` / `retryFailedSettlements`),
+   *    e a janela fecha sozinha em segundos. Re-tentar e seguro justamente porque
+   *    so chegamos aqui quando o provedor AFIRMOU que falhou.
+   */
+  private async estornarCobranca(
+    chargeId: string,
+    opts?: { amountCents?: number; idempotencyKey?: string },
+  ): Promise<void> {
+    const parcial = opts?.amountCents !== undefined && opts.amountCents !== null;
+    // Total: sem corpo (forma validada no sandbox). Parcial: `{ amount }`.
+    const corpo = parcial ? { amount: opts!.amountCents } : undefined;
+
+    const resultado: any = await this.pagarmeDelete(
+      `/charges/${chargeId}`,
+      corpo,
+      opts?.idempotencyKey,
+    );
+
+    const statusTransacao = String(resultado?.last_transaction?.status || '').toLowerCase();
+    const statusCobranca = String(resultado?.status || '').toLowerCase();
+
+    const estornou =
+      statusTransacao === 'refunded' ||
+      statusTransacao === 'partial_refunded' ||
+      // Se o provedor nao trouxer last_transaction, o status da cobranca ainda
+      // resolve o caso total. Nao vale para parcial: ali a cobranca segue "paid".
+      (!statusTransacao && (statusCobranca === 'canceled' || statusCobranca === 'refunded'));
+
+    if (estornou) return;
+
+    const motivo =
+      resultado?.last_transaction?.gateway_response?.errors?.[0]?.message ||
+      resultado?.last_transaction?.acquirer_message ||
+      `last_transaction.status="${statusTransacao || 'ausente'}" charge.status="${statusCobranca}"`;
+    throw new Error(
+      `estorno recusado pelo provedor (${parcial ? `parcial ${opts!.amountCents}` : 'total'}): ${motivo}`,
+    );
   }
 
   // ─── Pagar.me error translation ──────────────────────────────────────
@@ -1528,11 +1614,10 @@ export class PaymentsService implements OnModuleDestroy {
           }
           if (!chargeId) throw new Error('cobranca nao localizada no Pagar.me');
 
-          await this.pagarmePost(
-            `/charges/${chargeId}/refund`,
-            { amount: sobraCents },
-            `weight-refund-${order.id}`,
-          );
+          await this.estornarCobranca(chargeId, {
+            amountCents: sobraCents,
+            idempotencyKey: `weight-refund-${order.id}`,
+          });
           this.logger.log(
             `Partial weight refund for order #${order.orderNumber} | paid: ${pagoCents} | final: ${totalCents} | refunded: ${sobraCents} cents`,
           );
@@ -1547,7 +1632,11 @@ export class PaymentsService implements OnModuleDestroy {
         } catch (err: any) {
           const errorDetail = JSON.stringify(err.response?.data || err.message);
           this.logger.error(`Partial weight refund failed for order #${order.orderNumber}: ${errorDetail}`);
-          // Solta o claim para o retry re-tentar; a Idempotency-Key impede duplicar.
+          // Solta o claim para o retry re-tentar. Re-tentar e seguro porque o
+          // helper so lanca quando o PROVEDOR afirmou que o estorno falhou (ver
+          // estornarCobranca) — nao ha estorno "talvez feito" neste caminho. E a
+          // causa mais comum e a janela de poucos segundos apos a captura, que
+          // fecha sozinha.
           await orderRepo.update(order.id, { overpaidRefundedAt: null } as any);
           settlementErrors.push(`weight_refund:${sobraCents}:${errorDetail}`);
         }
@@ -2685,11 +2774,10 @@ export class PaymentsService implements OnModuleDestroy {
         throw new Error(`cobranca com status "${charge.status}" nao esta paga`);
       }
 
-      await this.pagarmePost(
-        `/charges/${chargeId}/refund`,
-        { amount: charge.amount },
-        `late-refund-${order.id}`,
-      );
+      // Total: o helper manda DELETE sem corpo, que e a forma validada.
+      await this.estornarCobranca(chargeId, {
+        idempotencyKey: `late-refund-${order.id}`,
+      });
       this.logger.warn(
         `Late payment auto-refunded for ${order.status} order #${order.orderNumber} | charge: ${chargeId} | amount: ${charge.amount} cents`,
       );
@@ -3328,6 +3416,14 @@ export class PaymentsService implements OnModuleDestroy {
         throw new BadRequestException('Não foi possível localizar a cobrança no Pagar.me para estorno. O webhook pode não ter atualizado o ID do pedido.');
       }
 
+      // Guarda explicita: os ramos acima ou atribuem `chargeId` ou lancam, mas o
+      // tipo segue `string | null`. Antes isso passava porque o id ia dentro de
+      // template string (que aceita null e geraria a URL "/charges/null"); agora
+      // ele e passado como argumento, e o compilador cobra — com razao.
+      if (!chargeId) {
+        throw new BadRequestException('Cobrança não localizada no Pagar.me para estorno.');
+      }
+
       // Verify charge status before refunding
       const chargeData = await this.pagarmeGet(`/charges/${chargeId}`);
       const st = String(chargeData.status || '').toLowerCase();
@@ -3341,10 +3437,9 @@ export class PaymentsService implements OnModuleDestroy {
         await this.pagarmeDelete(`/charges/${chargeId}`);
         this.logger.log(`Pre-auth voided (refund path) for order #${order.orderNumber} | charge: ${chargeId}`);
       } else if (st === 'paid' || st === 'captured') {
-        // Request refund (dinheiro já capturado)
-        await this.pagarmePost(`/charges/${chargeId}/refund`, {
-          amount: chargeAmount,
-        });
+        // Dinheiro ja capturado: estorno de verdade. O helper confere
+        // `last_transaction.status` — o 200 do provedor nao garante nada.
+        await this.estornarCobranca(chargeId);
       } else if (st === 'refunded' || st === 'voided' || st === 'canceled') {
         // Já estornada/cancelada no gateway — idempotente, segue como sucesso.
         this.logger.log(`Charge ${chargeId} já está "${st}" — estorno idempotente p/ pedido #${order.orderNumber}`);
@@ -4070,8 +4165,8 @@ export class PaymentsService implements OnModuleDestroy {
           );
           return;
         }
-        await this.pagarmePost(`/charges/${charge.id}/refund`, {
-          amount: charge.amount,
+        await this.estornarCobranca(charge.id, {
+          idempotencyKey: `appointment-refund-${appointment.id}`,
         });
         this.logger.log(
           `Estorno solicitado no cancelamento do agendamento ${appointment.appointmentNumber}`,
