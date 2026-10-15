@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
@@ -40,12 +40,18 @@ import { SiteConfigModule } from './site-config/site-config.module';
 // qual agente esta ativo. O agente em uso e o N8nAgentModule abaixo.
 import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
 import { buildPostgresSsl } from './config/db-ssl.config';
+import { HttpThrottlerGuard } from './common/guards/http-throttler.guard';
 
 @Module({
   providers: [
     {
       provide: APP_FILTER,
       useClass: SentryGlobalFilter,
+    },
+    {
+      // Teto global para os controllers REST — ver HttpThrottlerGuard.
+      provide: APP_GUARD,
+      useClass: HttpThrottlerGuard,
     },
   ],
   imports: [
