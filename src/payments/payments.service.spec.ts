@@ -1016,4 +1016,62 @@ describe('PaymentsService', () => {
       expect(r.originalAmount).toBe(0);
     });
   });
+
+  // ─── data de pagamento da antecipacao ────────────────────────
+  //
+  // A regra e do proprio Pagar.me, lida na mensagem de validacao dele:
+  //   "prazo minimo de antecipacao: D+0 ate 11AM ou D+1"
+  //
+  // O calculo anterior nao tratava o corte das 11h e lia o dia da semana em
+  // UTC. Como a API roda TZ=UTC e o negocio e hora de Sao Paulo, isso errava em
+  // duas faixas:
+  //  - entre 11h e 21h de dia util mandava D+0, que o provedor RECUSA;
+  //  - entre 21h e meia-noite a data UTC ja era a de amanha, e o desvio de fim
+  //    de semana era calculado sobre o dia errado.
+  //
+  // Os instantes abaixo sao UTC; o comentario diz a hora de Sao Paulo
+  // equivalente (BRT = UTC-3).
+  describe('dataDeAntecipacao — regra D+0 ate 11h, senao proximo dia util', () => {
+    const data = (iso: string) =>
+      (PaymentsService as any).dataDeAntecipacao(new Date(iso));
+
+    it('antes das 11h num dia util: mesmo dia (D+0)', () => {
+      expect(data('2026-10-19T12:00:00Z')).toBe('2026-10-19'); // seg 09:00 BRT
+      expect(data('2026-10-19T13:59:00Z')).toBe('2026-10-19'); // seg 10:59 BRT
+    });
+
+    it('a partir das 11h em ponto: proximo dia (D+1)', () => {
+      expect(data('2026-10-19T14:00:00Z')).toBe('2026-10-20'); // seg 11:00 BRT
+      expect(data('2026-10-19T17:00:00Z')).toBe('2026-10-20'); // seg 14:00 BRT
+    });
+
+    it('entre 21h e meia-noite: usa o dia BRASILEIRO, nao o UTC', () => {
+      // 2026-10-20T01:00:00Z e 22:00 de SEGUNDA em Sao Paulo. O calculo antigo
+      // via "terca" e partia dali; o certo e partir de segunda e, por ser
+      // depois das 11h, cair em terca — o mesmo resultado por outro caminho,
+      // mas que deixa de depender de coincidencia.
+      expect(data('2026-10-20T01:00:00Z')).toBe('2026-10-20'); // seg 22:00 BRT
+    });
+
+    it('sexta depois das 11h pula o fim de semana inteiro', () => {
+      expect(data('2026-10-23T17:00:00Z')).toBe('2026-10-26'); // sex 14:00 BRT -> seg
+    });
+
+    it('fim de semana cai na segunda, qualquer que seja a hora', () => {
+      expect(data('2026-10-24T12:00:00Z')).toBe('2026-10-26'); // sab 09:00 BRT
+      expect(data('2026-10-24T20:00:00Z')).toBe('2026-10-26'); // sab 17:00 BRT
+      expect(data('2026-10-25T12:00:00Z')).toBe('2026-10-26'); // dom 09:00 BRT
+    });
+
+    it('sabado 22h BRT nao escorrega para domingo pelo fuso', () => {
+      // 2026-10-25T01:00:00Z e 22:00 de SABADO em Sao Paulo. Em UTC ja e
+      // domingo; se o calculo usasse UTC, o desvio partiria de domingo.
+      // Qualquer dos dois caminhos tem de terminar na segunda.
+      expect(data('2026-10-25T01:00:00Z')).toBe('2026-10-26');
+    });
+
+    it('devolve sempre YYYY-MM-DD', () => {
+      expect(data('2026-10-19T12:00:00Z')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+  });
 });

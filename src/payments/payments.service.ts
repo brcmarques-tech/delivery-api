@@ -25,6 +25,9 @@ import { PLAN_CONFIGS } from '../common/plan-config';
 import { PubSub } from 'graphql-subscriptions';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { linhasAfetadas } from '../common/utils/db-claim';
+// Perf/fuso: a data de antecipacao tem de ser decidida no fuso do NEGOCIO, nao
+// em UTC — ver dataDeAntecipacao.
+import { businessMinutes, businessToday } from '../common/utils/business-time';
 
 // L5: Centralized descriptor constant
 const STATEMENT_DESCRIPTOR = 'BCMTECH';
@@ -3395,6 +3398,51 @@ export class PaymentsService implements OnModuleDestroy {
   // ─── Recipient Balance & Anticipation ─────────────────────────────────
 
   /**
+   * Data de pagamento valida para uma antecipacao, no formato "YYYY-MM-DD".
+   *
+   * A regra e do proprio Pagar.me e veio da mensagem de validacao dele:
+   *   "prazo minimo de antecipacao: D+0 ate 11AM ou D+1"
+   * Ou seja: ate as 11h da manha da-se para antecipar no MESMO dia; depois
+   * disso, o mais cedo possivel e o proximo dia util.
+   *
+   * O codigo anterior nao tratava esse corte de 11h de jeito nenhum: montava a
+   * data com `new Date()` + `toISOString()`, ou seja em UTC, e so desviava de
+   * sabado e domingo. Dois problemas:
+   *
+   *  - Entre 11h e 21h de um dia util (a faixa em que o lojista mais usa o app),
+   *    mandava D+0, que o Pagar.me RECUSA com "data de pagamento invalida".
+   *  - O desvio de fim de semana lia o dia da semana em UTC. Entre 21h e
+   *    meia-noite de Brasilia a data UTC ja e a de amanha, entao a conta do fim
+   *    de semana era feita sobre o dia errado.
+   *
+   * Aqui tudo e decidido no fuso do NEGOCIO (America/Sao_Paulo), com os helpers
+   * de business-time.ts — que existem exatamente por causa desta classe de bug
+   * e nunca tinham chegado neste arquivo.
+   *
+   * Feriado nacional nao e tratado (nem era antes): nao ha calendario de
+   * feriados no projeto. Nesse caso o Pagar.me recusa a data e o erro chega ao
+   * lojista — o que e visivel, ao contrario de uma data silenciosamente errada.
+   */
+  private static dataDeAntecipacao(agora: Date = new Date()): string {
+    const CORTE_MINUTOS = 11 * 60; // 11:00 no fuso do negocio
+    // Parte do dia comercial de hoje e caminha em dias inteiros sobre ele.
+    const [ano, mes, dia] = businessToday(agora).split('-').map(Number);
+    const data = new Date(Date.UTC(ano, mes - 1, dia));
+
+    // Passou das 11h? O mais cedo possivel ja e amanha.
+    if (businessMinutes(agora) >= CORTE_MINUTOS) {
+      data.setUTCDate(data.getUTCDate() + 1);
+    }
+    // E anda para o proximo dia util. getUTCDay() aqui e seguro: `data` foi
+    // construida a partir da data BRASILEIRA ao meio-dia-zero UTC, entao o dia
+    // da semana e o brasileiro.
+    while (data.getUTCDay() === 0 || data.getUTCDay() === 6) {
+      data.setUTCDate(data.getUTCDate() + 1);
+    }
+    return data.toISOString().split('T')[0];
+  }
+
+  /**
    * Centavos a liberar ("waiting funds") de um recebedor, a partir da resposta
    * de `GET /recipients/{id}/balance`.
    *
@@ -3450,12 +3498,12 @@ export class PaymentsService implements OnModuleDestroy {
   }
 
   /**
-   * ATENCAO — A INTEGRACAO DE ANTECIPACAO ESTA QUEBRADA NA RAIZ.
+   * HISTORICO — O CAMINHO DE ANTECIPACAO ESTAVA ERRADO (corrigido em 15/10/2026).
    *
-   * O caminho usado aqui e no requestAnticipation, `/recipients/{id}/anticipations`,
-   * NAO EXISTE na API v5 do Pagar.me: e nome da v4. Na v5 o recurso vive em
-   * `/recipients/{id}/bulk_anticipations` (e a simulacao em
-   * `/bulk_anticipations/simulate`, que na v5 virou POST).
+   * O caminho usado aqui e no requestAnticipation era
+   * `/recipients/{id}/anticipations`, que NAO EXISTE na v5: e nome da v4. Na v5 o
+   * recurso vive em `/recipients/{id}/bulk_anticipations`, e a simulacao e uma
+   * rota propria, `/bulk_anticipations/simulate`.
    *
    * Verificado contra o sandbox em 14/10/2026, usando o recebedor da PLATAFORMA
    * (que existe: GET /recipients/{id} responde 200):
@@ -3496,14 +3544,35 @@ export class PaymentsService implements OnModuleDestroy {
         return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0, isEstimate: false };
       }
 
-      // Simulate anticipation
-      const result = await this.pagarmePost(`/recipients/${recipientId}/anticipations`, {
-        payment_date: new Date().toISOString().split('T')[0],
-        timeframe: 'start',
-        requested_amount: waitingCents,
-        type: 'full',
-        simulate: true,
-      });
+      // CAMINHO CORRIGIDO. Era `POST /recipients/{id}/anticipations` com
+      // `simulate: true`, e nenhuma das duas coisas existe na v5: a rota e
+      // `/bulk_anticipations` e a simulacao e uma ROTA PROPRIA, nao um campo.
+      //
+      // Contrato confirmado contra a API em 15/10/2026, interrogando o endpoint
+      // de simulacao (que devolve 400 com a lista de campos e, ao contrario da
+      // rota de criacao, NAO e barrado pelo allowlist de IP):
+      //   {}                                   -> "valor esta faltando, data de pagamento invalida
+      //                                          (prazo minimo: D+0 ate 11AM ou D+1), tipo de
+      //                                          antecipacao invalido (opcoes: 'start','end')"
+      //   { amount: ... }                      -> continua "valor esta faltando"  => NAO e `amount`
+      //   { requested_amount: ... }            -> a reclamacao de valor SAI       => e `requested_amount`
+      //   { type: 'start' }                    -> continua "tipo invalido"        => NAO e `type`
+      //   { timeframe: 'start' }               -> a reclamacao de tipo SAI        => e `timeframe`
+      // Com os tres campos validos, o erro passa a ser de regra de negocio
+      // ("O valor requisitado esta fora do permitido para este recebedor"), o
+      // que confirma que a rota existe e valida de verdade.
+      //
+      // Ou seja: os NOMES dos campos no codigo ja estavam certos; o que estava
+      // errado era o caminho, mais o `type: 'full'` e o `simulate: true`, que
+      // nao sao campos de nada.
+      const result = await this.pagarmePost(
+        `/recipients/${recipientId}/bulk_anticipations/simulate`,
+        {
+          payment_date: PaymentsService.dataDeAntecipacao(),
+          timeframe: 'start',
+          requested_amount: waitingCents,
+        },
+      );
 
       const originalAmount = waitingCents / 100;
       const anticipatedAmount = (result.amount || 0) / 100;
@@ -3525,8 +3594,8 @@ export class PaymentsService implements OnModuleDestroy {
       this.logger.error(
         `[ANTECIPACAO_INDISPONIVEL] simulacao falhou para ${recipientId}: ` +
           `${err.response?.data?.message || err.message}. ` +
-          `Conferir o caminho da API (v5 usa /bulk_anticipations, nao /anticipations) ` +
-          `e a allowlist de IP do Pagar.me.`,
+          `O caminho ja esta no formato v5 (/bulk_anticipations); o bloqueio provavel ` +
+          `e a allowlist de IP do Pagar.me, a mesma que barra o /transfers.`,
       );
       // Fallback: estimativa de ~3,5%, MARCADA como estimativa. O valor serve
       // para a pessoa ter uma nocao de ordem de grandeza; o que nao pode e ele
@@ -3558,18 +3627,25 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     try {
-      // Use next business day if today is weekend
-      const today = new Date();
-      const day = today.getDay();
-      if (day === 0) today.setDate(today.getDate() + 1); // Sunday → Monday
-      if (day === 6) today.setDate(today.getDate() + 2); // Saturday → Monday
-      const paymentDate = today.toISOString().split('T')[0];
+      // Data pela regra do provedor (D+0 ate 11h, senao proximo dia util), no
+      // fuso do negocio. Ver dataDeAntecipacao: o calculo anterior era em UTC e
+      // ignorava o corte das 11h.
+      const paymentDate = PaymentsService.dataDeAntecipacao();
 
-      const result = await this.pagarmePost(`/recipients/${recipientId}/anticipations`, {
+      // CAMINHO CORRIGIDO: /bulk_anticipations (v5), nao /anticipations (v4).
+      // Os nomes dos campos foram confirmados contra a API — ver o comentario em
+      // simulateAnticipation. O `type: 'full'` saiu porque nao e campo.
+      //
+      // ATENCAO: esta rota (diferente da de simulacao) e barrada pelo allowlist
+      // de IP do Pagar.me — "IP de origem nao autorizado a realizar essa
+      // operacao." —, o mesmo bloqueio que o /transfers tem. Enquanto o IP de
+      // saida da API nao estiver liberado, a antecipacao continua falhando, mas
+      // agora falha com 401 e mensagem clara em vez de 404 silencioso. Nao tive
+      // como exercitar o caminho de sucesso daqui.
+      const result = await this.pagarmePost(`/recipients/${recipientId}/bulk_anticipations`, {
         payment_date: paymentDate,
         timeframe: 'start',
         requested_amount: waitingCents,
-        type: 'full',
       });
 
       return {
@@ -3585,8 +3661,8 @@ export class PaymentsService implements OnModuleDestroy {
       this.logger.error(
         `[ANTECIPACAO_INDISPONIVEL] pedido falhou para ${recipientId}: ` +
           `${JSON.stringify(errorData || err.message)}. ` +
-          `Conferir o caminho da API (v5 usa /bulk_anticipations, nao /anticipations) ` +
-          `e a allowlist de IP do Pagar.me.`,
+          `O caminho ja esta no formato v5 (/bulk_anticipations); o bloqueio provavel ` +
+          `e a allowlist de IP do Pagar.me, a mesma que barra o /transfers.`,
       );
       // A mensagem do provedor so e repassada quando ELE respondeu algo. Num 404
       // de rota inexistente — o caso de hoje — nao ha mensagem, e o lojista via
