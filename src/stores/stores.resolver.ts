@@ -70,9 +70,27 @@ export class StoresResolver {
     return this.storesService.update(input, user);
   }
 
+  // Perf (F6): argumentos todos opcionais — sem nenhum, o retorno e o mesmo de
+  // antes. Os filtros existem para a aba de busca do app parar de baixar a
+  // tabela de lojas inteira e filtrar no cliente.
   @Query(() => [Store])
-  stores(): Promise<Store[]> {
-    return this.storesService.findAll();
+  stores(
+    @Args('limit', { type: () => Int, nullable: true }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true }) offset?: number,
+    @Args('search', { type: () => String, nullable: true }) search?: string,
+    @Args('storeType', { type: () => String, nullable: true }) storeType?: string,
+    @Args('onlyOpen', { type: () => Boolean, nullable: true }) onlyOpen?: boolean,
+    @Args('onlyFreeDelivery', { type: () => Boolean, nullable: true })
+    onlyFreeDelivery?: boolean,
+  ): Promise<Store[]> {
+    return this.storesService.findAll({
+      limit,
+      offset,
+      search,
+      storeType,
+      onlyOpen,
+      onlyFreeDelivery,
+    });
   }
 
   @Query(() => Store)

@@ -415,12 +415,83 @@ export class StoresService implements OnApplicationBootstrap {
     return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
-  async findAll(): Promise<Store[]> {
-    const stores = await this.storesRepository.find({
-      where: { isActive: true },
-      relations: ['owner', 'categories'],
-    });
-    return this.sortByPriority(stores);
+  /**
+   * Vitrine publica de lojas. Perf (F6): era SEMPRE a tabela inteira de lojas
+   * ativas, com owner e categories, e o unico consumidor (a aba de busca do app)
+   * ainda filtrava tudo no cliente — nome, tipo, "aberto agora" e "frete gratis".
+   * Cada loja nova entrava na carga de todo mundo, para sempre.
+   *
+   * Agora os filtros existem no servidor e a lista e paginada. Todos os
+   * argumentos sao OPCIONAIS e, sem nenhum deles, o comportamento e identico ao
+   * de antes — nada mais no sistema depende desta query, mas a compatibilidade
+   * fica de graca.
+   *
+   * Sobre a ORDEM, que aqui e regra de negocio e nao detalhe tecnico: a
+   * prioridade por plano pago (sortByPriority) depende do plano do dono e nao sai
+   * em SQL. Entao ha dois caminhos, e eles espelham como a propria tela ordena:
+   *
+   *  - COM busca: a tela ordena por NOME. Ordenamos e paginamos no banco, sem
+   *    carregar o resto. Paginacao de verdade.
+   *  - SEM busca (vitrine): a tela mostra o ranking pago. Rankeamos o conjunto
+   *    filtrado INTEIRO e so depois cortamos a pagina, para que o recorte
+   *    respeite a ordem GLOBAL. Isso mantem o ranking exatamente como era — o
+   *    servidor continua lendo as lojas ativas para ordenar, e o ganho aqui e do
+   *    lado do app (payload e montagem de tela), nao do banco. Trocar isso por
+   *    ordenacao em SQL mudaria QUAL loja aparece primeiro, e isso e decisao
+   *    comercial (ver KAN-281), nao otimizacao.
+   */
+  async findAll(opcoes?: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    storeType?: string;
+    onlyOpen?: boolean;
+    onlyFreeDelivery?: boolean;
+  }): Promise<Store[]> {
+    const busca = (opcoes?.search || '').trim();
+    const limite = Math.min(Math.max(Number(opcoes?.limit) || 0, 0), 100) || undefined;
+    const deslocamento = Math.max(Number(opcoes?.offset) || 0, 0);
+
+    const qb = this.storesRepository
+      .createQueryBuilder('loja')
+      .leftJoinAndSelect('loja.owner', 'owner')
+      .leftJoinAndSelect('loja.categories', 'categories')
+      .where('loja.isActive = :ativa', { ativa: true });
+
+    if (opcoes?.storeType) {
+      // storeType nulo historicamente significa PRODUCTS (mesma leitura que o
+      // app faz com `s.storeType || 'PRODUCTS'`).
+      if (opcoes.storeType === 'PRODUCTS') {
+        qb.andWhere('(loja."storeType" = :tipo OR loja."storeType" IS NULL)', { tipo: 'PRODUCTS' });
+      } else {
+        qb.andWhere('loja."storeType" = :tipo', { tipo: opcoes.storeType });
+      }
+    }
+    if (opcoes?.onlyOpen) qb.andWhere('loja."isOpen" = true');
+    if (opcoes?.onlyFreeDelivery) qb.andWhere('loja."freeDelivery" = true');
+    if (busca) {
+      // Nome OU descricao, como o filtro do cliente fazia. Com unaccent, igual a
+      // busca de PRODUTOS (storeProducts): e o mesmo campo de busca na tela, e
+      // seria estranho "acougue" achar o produto e nao achar a loja. O filtro
+      // client-side que isto substitui era um includes() cru, sem acento — entao
+      // aqui a busca passa a achar mais, nunca menos.
+      qb.andWhere(
+        "(unaccent(loja.name) ILIKE unaccent(:busca) OR (loja.description IS NOT NULL AND unaccent(loja.description) ILIKE unaccent(:busca)))",
+        { busca: `%${busca}%` },
+      );
+    }
+
+    if (busca) {
+      qb.orderBy('loja.name', 'ASC');
+      if (limite !== undefined) qb.take(limite);
+      if (deslocamento) qb.skip(deslocamento);
+      return qb.getMany();
+    }
+
+    const stores = await qb.getMany();
+    const ordenadas = await this.sortByPriority(stores);
+    if (limite === undefined && !deslocamento) return ordenadas;
+    return ordenadas.slice(deslocamento, deslocamento + (limite ?? ordenadas.length));
   }
 
   async findById(id: string): Promise<Store> {
