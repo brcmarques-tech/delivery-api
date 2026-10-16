@@ -487,9 +487,33 @@ export class DeliveryCodesService {
 
     const informado = String(codigo || '').replace(/\D/g, '');
     if (informado !== esperado) {
-      await this.registrarTentativaErrada(pedido, parte, digitadoPor);
-      // Não diz qual código está errado nem quantos dígitos faltam.
-      throw new BadRequestException('Código incorreto.');
+      const { bloqueou, restantes } = await this.registrarTentativaErrada(
+        pedido,
+        parte,
+        digitadoPor,
+      );
+      // Continua sem dizer QUAL código está errado, nem quantos dígitos batem,
+      // nem qual é o certo. Isso é o que importa esconder.
+      //
+      // Mas as TENTATIVAS RESTANTES passaram a entrar na mensagem, e isso é
+      // uma correção — achada em 15/10/2026, exercitando a tela do lojista no
+      // navegador. Antes a resposta era só "Código incorreto.", e a pessoa ia
+      // do nada ao bloqueio de 15 minutos sem aviso: de pé na porta do
+      // cliente, sem saber que estava na última chance.
+      //
+      // Não há o que esconder aqui. Quem tenta força bruta CONTA AS PRÓPRIAS
+      // tentativas — a informação já é dele. Quem não sabia era o entregador
+      // ou o lojista legítimo, que é exatamente quem precisa dela.
+      if (bloqueou) {
+        throw new BadRequestException(
+          `Código incorreto. Por segurança, novas tentativas ficam bloqueadas por ${BLOQUEIO_MINUTOS} minutos.`,
+        );
+      }
+      throw new BadRequestException(
+        restantes === 1
+          ? 'Código incorreto. Resta 1 tentativa antes do bloqueio — confira o número antes de enviar.'
+          : `Código incorreto. Restam ${restantes} tentativas.`,
+      );
     }
 
     return this.gravarAcerto(pedido, parte, params.latitude, params.longitude);
@@ -572,11 +596,18 @@ export class DeliveryCodesService {
     return pedido.codigoCliente;
   }
 
+  /**
+   * Conta a tentativa errada e diz ao chamador o que a pessoa precisa ouvir.
+   *
+   * Devolve `{ bloqueou, restantes }` porque a mensagem de erro depende disso,
+   * e recalcular lá fora significaria duplicar a regra do bloqueio em dois
+   * lugares — que é como as duas cópias começam a divergir.
+   */
   private async registrarTentativaErrada(
     pedido: Order,
     parte: ParteDoCodigo,
     digitadoPor: string,
-  ): Promise<void> {
+  ): Promise<{ bloqueou: boolean; restantes: number }> {
     const tentativas = (pedido.codigoTentativas || 0) + 1;
     const bloquear = tentativas >= MAX_TENTATIVAS;
     await this.ordersRepository.update(pedido.id, {
@@ -598,6 +629,8 @@ export class DeliveryCodesService {
         `usuario=${digitadoPor} tentativa=${tentativas}` +
         (bloquear ? ` — BLOQUEADO por ${BLOQUEIO_MINUTOS} min` : ''),
     );
+
+    return { bloqueou: bloquear, restantes: Math.max(0, MAX_TENTATIVAS - tentativas) };
   }
 
   /**
