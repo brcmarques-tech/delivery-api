@@ -23,6 +23,7 @@ import { ProductsService } from '../products/products.service';
 import { CouponsService } from '../coupons/coupons.service';
 import { AppUser } from '../users/entities/app-user.entity';
 import { Store } from '../stores/entities/store.entity';
+import { VendorUser } from '../users/entities/vendor-user.entity';
 import { OrderStatus } from '../common/enums';
 import { brazilPhoneCandidates } from '../common/utils/phone';
 
@@ -102,6 +103,61 @@ export class N8nAgentController {
       name: store.name,
       city: store.city,
       state: store.state,
+    };
+  }
+
+  /**
+   * KAN-199 — o lojista escreve do telefone DELE, nao do telefone da loja.
+   *
+   * O roteador do WhatsApp so procurava a loja por `stores.whatsappNumber`, um
+   * campo que o lojista preenche no painel — e que a maioria deixa em branco.
+   * Quando ele manda mensagem do proprio celular, o roteador nao achava loja,
+   * concluia "nao e vendedor" e jogava a conversa no agente do CLIENTE: prompt
+   * errado, ferramentas erradas, e o vendedor sem saber por que o assistente
+   * nao entende nada do negocio dele.
+   *
+   * Aqui a busca e pela conta do LOJISTA (vendor_users.phone). Devolve a loja
+   * quando ha exatamente UMA — com duas ou mais, o agente nao tem como saber
+   * de qual ele esta falando, e adivinhar seria pior: mandaria o pedido para a
+   * loja errada. Nesse caso devolve a lista para o roteador perguntar.
+   */
+  @Get('vendors/by-phone')
+  async vendorByPhone(
+    @Query('phone') phone: string,
+    @Headers('x-n8n-key') key: string,
+  ) {
+    this.checkAuth(key);
+    const cands = brazilPhoneCandidates(phone);
+    if (!cands.length) return null;
+
+    const vendors = await this.storesRepository.manager
+      .getRepository(VendorUser)
+      .createQueryBuilder('v')
+      .where("regexp_replace(v.phone, '[^0-9]', '', 'g') IN (:...cands)", { cands })
+      .andWhere('v.role = :role', { role: 'VENDOR' })
+      .andWhere('v."approvedAt" IS NOT NULL')
+      .getMany();
+
+    // Telefone nao e unico no cadastro: casar com dois lojistas significa que
+    // nao da para saber quem esta falando. Recusar e o unico caminho seguro —
+    // o mesmo criterio ja usado no users/by-phone.
+    if (vendors.length !== 1) return null;
+    const vendor = vendors[0];
+
+    const stores = await this.storesRepository.find({
+      where: { owner: { id: vendor.id } } as any,
+      select: ['id', 'name', 'city', 'state'] as any,
+    });
+    if (!stores.length) return null;
+
+    return {
+      vendorId: vendor.id,
+      vendorName: vendor.name,
+      // Uma loja: o roteador ja segue para o agente com ela.
+      id: stores.length === 1 ? stores[0].id : null,
+      name: stores.length === 1 ? stores[0].name : null,
+      // Mais de uma: a lista vai junto para o roteador poder perguntar.
+      stores: stores.map((st) => ({ id: st.id, name: st.name })),
     };
   }
 
