@@ -11,6 +11,7 @@ import { Product } from '../products/entities/product.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
 
 @Injectable()
 export class PromotionsService implements OnModuleInit {
@@ -26,6 +27,7 @@ export class PromotionsService implements OnModuleInit {
     private whatsAppService: WhatsAppService,
     @Inject(PUB_SUB) private pubSub: PubSub,
     @InjectDataSource() private dataSource: DataSource,
+    private fidelidadeService: FidelidadeService,
   ) {}
 
   onModuleInit() {
@@ -429,6 +431,25 @@ export class PromotionsService implements OnModuleInit {
 
     if (promotion.store?.owner?.phone) {
       this.whatsAppService.notifyPromotionPaid(promotion.store.owner.phone, promotion.title).catch(() => {});
+    }
+
+    // KAN-12: os clientes FIÉIS da loja sao avisados da campanha.
+    //
+    // Aqui e nao no createPromotion de propósito: campanha nao paga pode nunca
+    // entrar no ar, e avisar sobre oferta que nao existe queima o canal — o
+    // cliente aprende a ignorar as notificacoes da loja, e aí nem a oferta boa
+    // chega. O service tem teto de destinatarios pelo mesmo motivo.
+    if (promotion.store?.id) {
+      this.fidelidadeService
+        .avisarClientesFieis(
+          promotion.store.id,
+          `Oferta em ${promotion.store.name || 'uma loja que voce curte'}`,
+          promotion.promotionalPrice
+            ? `${promotion.title} — agora por R$ ${Number(promotion.promotionalPrice).toFixed(2)}`
+            : promotion.title,
+          { promotionId: promotion.id },
+        )
+        .catch(() => {});
     }
 
     if (promotion.product && promotion.promotionalPrice) {

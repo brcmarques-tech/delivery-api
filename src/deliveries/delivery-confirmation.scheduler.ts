@@ -5,6 +5,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { comTravaDistribuida } from '../common/utils/trava-distribuida';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
 
 @Injectable()
 export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDestroy {
@@ -22,6 +23,7 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
     private ordersService: OrdersService,
     private deliveryCodesService: DeliveryCodesService,
     private paymentsService: PaymentsService,
+    private fidelidadeService: FidelidadeService,
     @InjectDataSource() private dataSource: DataSource,
   ) {}
 
@@ -57,9 +59,32 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
         await this.liberarEntregasSemCodigoVencidas();
         await this.retryFailedSettlements();
         await this.drenarPassivos();
+        await this.varrerFidelidade();
       });
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  /**
+   * KAN-12: rede de seguranca da fidelidade.
+   *
+   * O premio e avaliado na CONCLUSAO do pedido, que e quando ele significa
+   * alguma coisa para o cliente. Esta varredura existe para o caso de aquele
+   * caminho ter falhado (processo reiniciado no meio, erro de rede): ela
+   * reavalia as conclusoes recentes. O codigo do cupom e deterministico e a
+   * unicidade e constraint, entao reavaliar NAO premia de novo.
+   */
+  private async varrerFidelidade() {
+    try {
+      const premiados = await this.fidelidadeService.varrerPendentes(2);
+      if (premiados > 0) {
+        this.logger.log(
+          `[FIDELIDADE] varredura premiou ${premiados} cliente(s) que o caminho normal nao premiou`,
+        );
+      }
+    } catch (err) {
+      this.logger.error('Varredura de fidelidade falhou:', err);
     }
   }
 

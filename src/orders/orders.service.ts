@@ -31,6 +31,7 @@ import { PUB_SUB } from '../pubsub/pubsub.module';
 import { linhasAfetadas } from '../common/utils/db-claim';
 import { DeliveryCodesService } from './delivery-codes.service';
 import { DistanciaService } from '../common/geo/distancia.service';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
 
 type OnOrderReadyCallback = (order: Order) => void;
 
@@ -102,6 +103,7 @@ export class OrdersService {
     private whatsAppService: WhatsAppService,
     private mailService: MailService,
     private distanciaService: DistanciaService,
+    private fidelidadeService: FidelidadeService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -2249,6 +2251,11 @@ export class OrdersService {
         )
         .catch(() => {});
     }
+
+    // KAN-12: marco de fidelidade. Depois das notificacoes de propósito — o
+    // premio e bonus, e nada aqui pode atrasar ou atrapalhar a conclusao de um
+    // pedido ja pago e entregue. O service nunca lanca.
+    this.fidelidadeService.avaliarAposConclusao(updated).catch(() => {});
 
     // Notify vendor (completeOrderWithPayment bypasses updateStatus, so replicate vendor notification)
     if (updated.store?.owner?.id) {

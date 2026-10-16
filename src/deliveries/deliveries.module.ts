@@ -18,6 +18,7 @@ import { UsersModule } from '../users/users.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PlatformConfigModule } from '../config/platform-config.module';
+import { FidelidadeModule } from '../loyalty/fidelidade.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { PlatformConfigModule } from '../config/platform-config.module';
     forwardRef(() => OrdersModule),
     forwardRef(() => UsersModule),
     forwardRef(() => PaymentsModule),
+    FidelidadeModule,
     NotificationsModule,
     PlatformConfigModule,
   ],

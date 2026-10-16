@@ -5,6 +5,7 @@ import { OrdersService } from '../orders/orders.service';
 import { DeliveryCodesService } from '../orders/delivery-codes.service';
 import { PaymentsService } from '../payments/payments.service';
 import { Order } from '../orders/entities/order.entity';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
 
 describe('DeliveryConfirmationScheduler', () => {
   let scheduler: DeliveryConfirmationScheduler;
@@ -56,6 +57,13 @@ describe('DeliveryConfirmationScheduler', () => {
         // repasses recusados pelo bloqueio de IP). Mock minimo: nenhum teste
         // deste arquivo exercita a drenagem; ela so precisa existir para o
         // Nest montar o scheduler.
+        {
+          // KAN-12: o tick tambem varre a fidelidade (rede de seguranca do
+          // premio). Mock minimo: nenhum teste deste arquivo exercita a
+          // varredura — ela tem prova propria em prova-cliente-fiel.mjs.
+          provide: FidelidadeService,
+          useValue: { varrerPendentes: jest.fn().mockResolvedValue(0) },
+        },
         {
           provide: PaymentsService,
           useValue: { drenarPassivos: jest.fn().mockResolvedValue({ pagos: 0, bloqueado: false }) },

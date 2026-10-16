@@ -7,9 +7,11 @@ import { PromotionsResolver } from './promotions.resolver';
 import { StoresModule } from '../stores/stores.module';
 import { PlatformConfigModule } from '../config/platform-config.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { FidelidadeModule } from '../loyalty/fidelidade.module';
 
 @Module({
   imports: [
+    FidelidadeModule,
     TypeOrmModule.forFeature([Promotion, Product]),
     StoresModule,
     PlatformConfigModule,

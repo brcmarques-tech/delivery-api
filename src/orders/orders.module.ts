@@ -16,10 +16,14 @@ import { AddressesModule } from '../addresses/addresses.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CouponsModule } from '../coupons/coupons.module';
 import { MailModule } from '../mail/mail.module';
+import { FidelidadeModule } from '../loyalty/fidelidade.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Order, OrderItem, Delivery, OrderStatusLog]),
+    // KAN-12: a conclusao do pedido e o momento em que o marco de fidelidade e
+    // avaliado — o premio chega com a pessoa ainda com o app na mao.
+    FidelidadeModule,
     ProductsModule,
     forwardRef(() => StoresModule),
     forwardRef(() => DeliveriesModule),

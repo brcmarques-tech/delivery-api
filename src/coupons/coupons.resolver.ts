@@ -100,12 +100,20 @@ export class CouponsResolver {
 
   @Query(() => CouponValidation)
   @UseGuards(GqlAuthGuard)
+  // KAN-12: a previa passa a identificar o CLIENTE.
+  //
+  // Antes ela chamava a validacao sem customerId, e com isso pulava duas
+  // regras que o createOrder aplica: o limite de 1 uso por cliente e (agora) o
+  // dono do cupom nominal. Resultado: a tela dizia "cupom aplicado" e o pedido
+  // era recusado no ultimo toque — e, no caso do premio de fidelidade, a previa
+  // diria "valido" para QUALQUER UM que digitasse o codigo alheio.
   async validateCoupon(
     @Args('code') code: string,
     @Args('storeId') storeId: string,
     @Args('subtotal', { type: () => Float }) subtotal: number,
+    @CurrentUser() user?: any,
   ): Promise<CouponValidation> {
-    const { coupon, discount } = await this.couponsService.validateAndCalculate(code, storeId, subtotal);
+    const { coupon, discount } = await this.couponsService.validateAndCalculate(code, storeId, subtotal, user?.id);
     return { valid: true, discount, couponId: coupon.id, message: `Desconto de R$ ${discount.toFixed(2)} aplicado!` };
   }
 }

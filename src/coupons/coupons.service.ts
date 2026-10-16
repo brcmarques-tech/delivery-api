@@ -9,6 +9,7 @@ import { UpdateCouponInput } from './dto/update-coupon.input';
 import { Store } from '../stores/entities/store.entity';
 import { Order } from '../orders/entities/order.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
 
 @Injectable()
 export class CouponsService {
@@ -18,6 +19,7 @@ export class CouponsService {
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
     private platformConfigService: PlatformConfigService,
+    private fidelidadeService: FidelidadeService,
   ) {}
 
   async create(input: CreateCouponInput, userId: string): Promise<Coupon> {
@@ -65,7 +67,25 @@ export class CouponsService {
       store,
     });
 
-    return this.couponsRepository.save(coupon);
+    const salvo = await this.couponsRepository.save(coupon);
+
+    // KAN-12: cupom novo da loja e motivo para chamar quem ja compra ali.
+    // So vale para cupom ABERTO: premio de fidelidade (nominal) nao se anuncia
+    // para a base — ele e de uma pessoa so.
+    if (!salvo.appUserId && salvo.isActive) {
+      this.fidelidadeService
+        .avisarClientesFieis(
+          store.id,
+          `Cupom novo em ${store.name}`,
+          salvo.discountType === 'PERCENT'
+            ? `${salvo.discountValue}% de desconto com o codigo ${salvo.code}`
+            : `R$ ${Number(salvo.discountValue).toFixed(2)} de desconto com o codigo ${salvo.code}`,
+          { couponCode: salvo.code },
+        )
+        .catch(() => {});
+    }
+
+    return salvo;
   }
 
   async update(input: UpdateCouponInput, userId: string): Promise<Coupon> {
@@ -191,6 +211,16 @@ export class CouponsService {
 
     if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
       throw new BadRequestException('Este cupom expirou');
+    }
+
+    // KAN-12: cupom NOMINAL (premio de fidelidade) so vale para quem ganhou.
+    // Sem esta checagem bastava o codigo circular num grupo de WhatsApp para a
+    // recompensa — que sai do bolso da loja — ir para quem nunca comprou.
+    //
+    // A mensagem NAO diz "este cupom e de outra pessoa": isso confirmaria a
+    // existencia do codigo para quem esta testando codigos alheios.
+    if (coupon.appUserId && coupon.appUserId !== customerId) {
+      throw new BadRequestException('Cupom nao encontrado');
     }
 
     if (coupon.maxUses > 0 && coupon.usesCount >= coupon.maxUses) {

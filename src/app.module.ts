@@ -43,6 +43,7 @@ import { buildPostgresSsl } from './config/db-ssl.config';
 import { HttpThrottlerGuard } from './common/guards/http-throttler.guard';
 import { GeoModule } from './common/geo/geo.module';
 import { SentryContextoInterceptor } from './common/sentry/sentry-contexto.interceptor';
+import { FidelidadeModule } from './loyalty/fidelidade.module';
 
 @Module({
   providers: [
@@ -69,6 +70,7 @@ import { SentryContextoInterceptor } from './common/sentry/sentry-contexto.inter
     // concorrente — e aí o relatorio aponta a pessoa errada.
     SentryModule.forRoot(),
     GeoModule,
+    FidelidadeModule,
     ConfigModule.forRoot({ isGlobal: true }),
 
     // Input#1 / A#4: base do rate limiting. O guard só é aplicado (escopado) nas
