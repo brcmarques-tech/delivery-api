@@ -1828,7 +1828,28 @@ export class OrdersService {
       // ponto forjado. A substituição é intencional: sem o código do cliente, a
       // liberação passa pelo registro de "entrega sem código", que abre janela
       // de contestação em vez de pagar no escuro.
-      .andWhere('order."codigoVendedor" IS NULL')
+      //
+      // ATENÇÃO À FORMA DESTE andWhere. Era `order."codigoVendedor" IS NULL`,
+      // com a coluna entre aspas e o alias cru — e isso DERRUBAVA a query
+      // inteira: `order` é palavra reservada em SQL, então o Postgres respondia
+      // `syntax error at or near "order"` (42601). Os outros andWhere deste
+      // builder funcionam porque usam caminho de PROPRIEDADE (`order.status`),
+      // que o TypeORM traduz e aspeia; aqui eu misturei SQL cru com o alias e
+      // ele passou o texto adiante como estava.
+      //
+      // O preço disso não foi deixar pedido com código entrar no auto-confirm —
+      // foi o auto-confirm PARAR DE EXISTIR. A query lançava em toda rodada de
+      // 60s, o catch do scheduler engolia, e nenhum pedido era mais
+      // auto-confirmado. Nos pedidos SEM código (retirada, pagamento na
+      // entrega, loja com frota própria) este job é o que paga vendedor e
+      // entregador quando o cliente nunca aperta "confirmar recebimento": esse
+      // dinheiro ficou parado.
+      //
+      // Entrou com a própria feature de códigos (1e73fab) e passou por
+      // typecheck, 95 testes e três E2E — nada disso olha o log de uma rodada
+      // de scheduler. Por isso a auditoria passou a incluir
+      // `scripts/provas/audita-log-de-runtime.mjs`.
+      .andWhere('order.codigoVendedor IS NULL')
       .getMany();
 
     for (const order of expiredOrders) {

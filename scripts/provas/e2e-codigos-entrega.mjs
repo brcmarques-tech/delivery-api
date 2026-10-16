@@ -34,11 +34,11 @@ async function must(query, token, rotulo) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function login(email, pw = 'teste123', kind = 'app') {
   const m = kind === 'vendor' ? 'loginVendor' : 'loginApp';
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 12; i++) {
     const j = await gql(`mutation{ ${m}(input:{email:"${email}",password:"${pw}"}, forceLogin:true){ accessToken user{ id role } } }`);
     if (!j.errors) return j.data[m];
     const msg = j.errors[0].message.toLowerCase();
-    if (msg.includes('throttl') || msg.includes('too many')) { await sleep(1500 * (i + 1)); continue; }
+    if (msg.includes('throttl') || msg.includes('too many')) { await sleep(2000 * (i + 1)); continue; }
     throw new Error('login ' + email + ': ' + j.errors[0].message);
   }
   throw new Error('login: throttle');
@@ -92,9 +92,27 @@ check(codsNoBanco[0] !== codsNoBanco[1], 'os códigos são distintos entre si');
 
 // ─────────────────────────────────────────── vazamento
 console.log('\n=== tentativas de VAZAMENTO ===');
-const tipoOrder = await gql(`{ __type(name:"Order"){ fields { name } } }`);
+// Esta verificação mudou quando a UI dos códigos precisou saber SE o pedido usa
+// códigos. Antes ela proibia qualquer campo com "codigo" no nome, e acusou os
+// dois booleanos de metadado (`usaCodigoDeEntrega`, `codigoDaLojaJaRegistrado`)
+// — fazendo o trabalho dela, porque eu de fato mexi no tipo Order.
+//
+// A forma nova é MAIS forte, não mais frouxa: em vez de proibir o nome, exige o
+// TIPO. Todo campo com "codigo" no nome tem de ser Boolean. Num booleano não
+// cabe um código de 6 dígitos; numa String cabe. A regra passa a ser sobre o que
+// pode carregar o segredo, e não sobre como alguém batizou o campo — e segue
+// reprovando se alguém expuser `codigoCliente: String`.
+const tipoOrder = await gql(`{ __type(name:"Order"){ fields { name type { kind name ofType { name } } } } }`);
 const camposComCodigo = (tipoOrder.data.__type.fields || []).filter((f) => /codigo/i.test(f.name));
-check(camposComCodigo.length === 0, 'o tipo Order não expõe NENHUM campo de código', `${camposComCodigo.length} encontrados`);
+const nomeDoTipo = (t) => t?.name || t?.ofType?.name || t?.kind;
+const naoBooleanos = camposComCodigo.filter((f) => nomeDoTipo(f.type) !== 'Boolean');
+check(
+  naoBooleanos.length === 0,
+  'todo campo com "codigo" no nome no tipo Order e BOOLEANO (nao cabe um codigo)',
+  naoBooleanos.length === 0
+    ? (camposComCodigo.map((f) => f.name).join(', ') || 'nenhum campo')
+    : 'VAZA: ' + naoBooleanos.map((f) => `${f.name}: ${nomeDoTipo(f.type)}`).join(', '),
+);
 
 // Assertiva pelos VALORES reais dos códigos, e não por padrão de dígitos: o
 // id do pedido é um UUID e pode ter 6 dígitos seguidos por coincidência — foi

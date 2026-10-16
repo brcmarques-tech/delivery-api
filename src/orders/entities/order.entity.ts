@@ -329,6 +329,41 @@ export class Order {
   @Column({ type: 'varchar', length: 300, nullable: true })
   entregaSemCodigoMotivo: string | null;
 
+  // ─── Metadados dos códigos: o FATO, nunca o VALOR ─────────────────────
+  //
+  // Estes dois TÊM @Field(), e isso não contradiz a regra acima. O que não pode
+  // vazar é o valor de um código; saber que o pedido usa códigos, ou que a
+  // coleta já foi registrada, não entrega segredo nenhum — e sem isso os apps
+  // não conseguem escolher entre o fluxo de códigos e o antigo, nem dizer ao
+  // entregador o que falta fazer.
+  //
+  // São getters, não colunas: nada a migrar, e nenhum lugar novo onde um valor
+  // possa ser gravado por engano.
+  //
+  // O limite que separa um do outro: BOOLEANO sim, string nunca. O E2E
+  // `scripts/provas/e2e-entrega-sem-codigo.mjs` e o
+  // `e2e-codigos-entrega.mjs` cobram isso — eles varrem o tipo Order por
+  // campos com "codigo" no nome e exigem que todos sejam Boolean.
+
+  /** Este pedido é confirmado por códigos? Decide qual fluxo o app mostra. */
+  @Field(() => Boolean)
+  get usaCodigoDeEntrega(): boolean {
+    return !!this.codigoVendedor;
+  }
+
+  /**
+   * O entregador já digitou o código da loja?
+   *
+   * Serve para o app dele distinguir "ainda preciso coletar" de "coletei, falta
+   * a loja confirmar o meu código" — dois estados que, sem isto, ficam ambos
+   * parecendo READY e deixam o entregador sem saber o que fazer na porta da
+   * loja.
+   */
+  @Field(() => Boolean)
+  get codigoDaLojaJaRegistrado(): boolean {
+    return !!this.codigoVendedorUsadoEm;
+  }
+
   @Field()
   @CreateDateColumn()
   createdAt: Date;

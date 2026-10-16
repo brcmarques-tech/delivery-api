@@ -396,6 +396,36 @@ export class DeliveriesService implements OnModuleInit {
       }
     }
 
+    // ENTREGA RÁPIDA NÃO PODIA SER CONFIRMADA (achado em 15/10/2026).
+    //
+    // A máquina de estados só aceita DELIVERING -> DELIVERER_CONFIRMED_DELIVERY.
+    // Mas `confirmPickup` deixa o pedido em PICKED_UP, e quem o move para
+    // DELIVERING é o scheduler `autoAdvanceVendorConfirmedPickup`, que exige
+    // `updatedAt <= agora - 5min`.
+    //
+    // Resultado: nos primeiros 5 minutos depois da coleta, o entregador que
+    // aperta "Confirmar entrega" — botão que o app mostra justamente em
+    // PICKED_UP — recebia "Nao pode mudar de PICKED_UP para
+    // DELIVERER_CONFIRMED_DELIVERY", que o app traduz para "Nao foi possivel
+    // confirmar a entrega." Entrega de 3 minutos é o normal em Pelotas, e era
+    // exatamente a que não dava para fechar.
+    //
+    // Isto é ANTERIOR à feature de códigos (a lista de transições vem de
+    // 324c981) e vale para o fluxo antigo — que segue sendo o fluxo dos pedidos
+    // criados antes do deploy dos códigos.
+    //
+    // O conserto atravessa DELIVERING em vez de afrouxar a máquina de estados.
+    // É o mesmo raciocínio do registro de entrega sem código: "eu entreguei"
+    // implica "eu estava entregando", então o passo intermediário é dado, e não
+    // dispensado. Afrouxar a máquina abriria DELIVERER_CONFIRMED_DELIVERY a
+    // qualquer origem, e é dela que o dinheiro sai.
+    if (
+      order.status === OrderStatus.PICKED_UP ||
+      order.status === OrderStatus.VENDOR_CONFIRMED_PICKUP
+    ) {
+      await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERING);
+    }
+
     // Muda pra DELIVERER_CONFIRMED_DELIVERY (aguarda confirmação do cliente)
     await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERER_CONFIRMED_DELIVERY);
 

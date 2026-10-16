@@ -59,11 +59,11 @@ async function must(query, token, rotulo) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function login(email, pw = 'teste123', kind = 'app') {
   const m = kind === 'vendor' ? 'loginVendor' : 'loginApp';
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 12; i++) {
     const j = await gql(`mutation{ ${m}(input:{email:"${email}",password:"${pw}"}, forceLogin:true){ accessToken user{ id role } } }`);
     if (!j.errors) return j.data[m];
     const msg = j.errors[0].message.toLowerCase();
-    if (msg.includes('throttl') || msg.includes('too many')) { await sleep(1500 * (i + 1)); continue; }
+    if (msg.includes('throttl') || msg.includes('too many')) { await sleep(2000 * (i + 1)); continue; }
     throw new Error('login ' + email + ': ' + j.errors[0].message);
   }
   throw new Error('login: throttle');
