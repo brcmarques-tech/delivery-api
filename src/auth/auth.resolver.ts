@@ -69,6 +69,7 @@ export class AuthResolver {
       return this.otpService.verifyPhoneCode(input.value, input.code);
     }
     return this.otpService.verifyEmailCode(input.value, input.code);
+    // (ambos devolvem Promise<boolean> desde o KAN-295 — o GraphQL resolve.)
   }
 
   // ---- Verificação de email (autenticado, pós-login) ----
@@ -87,7 +88,11 @@ export class AuthResolver {
     @Args('userType', { defaultValue: 'app' }) userType: string,
     @CurrentUser() user: any,
   ): Promise<boolean> {
-    this.otpService.verifyEmailCode(user.email, code);
+    // KAN-295: o verify virou assincrono. Sem o await, a excecao de codigo
+    // errado viraria uma Promise rejeitada IGNORADA e o e-mail seria marcado
+    // como verificado de qualquer jeito — ou seja, verificacao de e-mail
+    // desligada por um await esquecido.
+    await this.otpService.verifyEmailCode(user.email, code);
     await this.authService.markEmailVerified(user.id, userType);
     return true;
   }
