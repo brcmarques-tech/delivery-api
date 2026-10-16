@@ -203,6 +203,52 @@ check(
   virouDisputa ? 'virou DISPUTED' : `RECUSADO: ${contesta.errors?.[0]?.message?.slice(0, 80)}`,
 );
 
+// ═══════════════════════════════════ a evidência que decide a disputa
+//
+// O pedido está DISPUTED: é exatamente o caso em que alguém da plataforma
+// precisa decidir, e precisa dos DOIS lados. A aba de disputas mostrava só o
+// motivo escrito pelo cliente.
+console.log('\n=== a EVIDÊNCIA que a plataforma lê para decidir ===');
+
+const EVIDENCIA = `{ evidenciaDeEntrega(orderId:"${orderId}"){
+  usaCodigo codigoDaLojaEm codigoDoEntregadorEm codigoDoClienteEm
+  coletaLat coletaLng entregaLat entregaLng
+  entregaSemCodigoEm entregaSemCodigoMotivo
+  janelaDeContestacaoHoras janelaVenceEm
+  tentativasErradas bloqueadoAte confirmadoPeloClienteEm
+} }`;
+
+// A guarda primeiro: ninguém além do superadmin lê isso.
+for (const [quem, token] of [['CLIENTE', C.accessToken], ['ENTREGADOR', D.accessToken], ['LOJISTA', V.accessToken]]) {
+  const r = await gql(EVIDENCIA, token);
+  check(!!r.errors, `o ${quem} NÃO acessa a evidência`, r.errors?.[0]?.message?.slice(0, 60));
+}
+
+// Reusa o token do superadmin ja logado. Logar de novo DERRUBARIA a sessao
+// anterior (sessao unica) e o resto do script morreria com SESSION_EXPIRED —
+// foi o que aconteceu na primeira versao desta checagem.
+const ev = await gql(EVIDENCIA, sup.accessToken);
+check(!ev.errors, 'o SUPERADMIN acessa', ev.errors?.[0]?.message?.slice(0, 80));
+
+const e = ev.data?.evidenciaDeEntrega || {};
+check(e.usaCodigo === true, 'a evidência diz que o pedido usa código');
+check(!!e.codigoDaLojaEm && !!e.codigoDoEntregadorEm, 'traz QUANDO a coleta foi confirmada pelos dois lados');
+check(e.codigoDoClienteEm === null, 'e que o código do cliente NUNCA foi registrado (é a alegação em disputa)');
+check(e.coletaLat !== null && e.entregaLat !== null, 'traz o GPS da coleta E o da entrega',
+  `coleta=${e.coletaLat} entrega=${e.entregaLat}`);
+check(e.entregaSemCodigoMotivo === MOTIVO, 'traz o motivo que o entregador escreveu, íntegro');
+check(!!e.janelaVenceEm && e.janelaDeContestacaoHoras === 24,
+  'traz o prazo da janela calculado pelo servidor (o painel não tem como saber)',
+  `${e.janelaDeContestacaoHoras}h, vence ${e.janelaVenceEm}`);
+check(e.confirmadoPeloClienteEm === null, 'e deixa claro que não houve confirmação do cliente');
+
+// A disciplina do tipo: evidência não carrega segredo.
+const corpoEvidencia = JSON.stringify(e);
+check(
+  ![codLoja, codEnt, codCli].some((c) => corpoEvidencia.includes(c)),
+  'a evidência NÃO devolve nenhum dos 3 códigos, nem para o superadmin',
+);
+
 // ═══════════════════════════════════ ramo 1: contestado NAO libera
 console.log('\n=== a JANELA vence num pedido CONTESTADO ===');
 sql(`UPDATE orders SET "entregaSemCodigoEm" = now() - interval '48 hours' WHERE id='${orderId}'`);

@@ -31,6 +31,57 @@ function wsUserIsOrderParty(order: any, user: any): boolean {
   );
 }
 
+/**
+ * A evidência de uma entrega, para a plataforma decidir uma disputa.
+ *
+ * NENHUM CAMPO AQUI É UM CÓDIGO, e isso é a regra do tipo, não um descuido.
+ * O que decide uma disputa é SE e QUANDO cada código foi registrado, com qual
+ * GPS e com que motivo — nunca qual era o número. Devolver o valor abriria uma
+ * rota de leitura para o segredo sem utilidade nenhuma na tela de quem decide.
+ *
+ * Quem for acrescentar campo aqui: datas, coordenadas, contadores e texto
+ * escrito por pessoas, sim. Os seis dígitos, não.
+ */
+@ObjectType()
+export class EvidenciaDeEntrega {
+  @Field(() => ID) orderId: string;
+
+  /** Pedido antigo (criado antes do deploy) não tem código nenhum. */
+  @Field() usaCodigo: boolean;
+
+  @Field(() => Date, { nullable: true }) codigoDaLojaEm: Date | null;
+  @Field(() => Date, { nullable: true }) codigoDoEntregadorEm: Date | null;
+  @Field(() => Date, { nullable: true }) codigoDoClienteEm: Date | null;
+
+  /** Onde o entregador estava ao registrar o código da LOJA. */
+  @Field(() => Float, { nullable: true }) coletaLat: number | null;
+  @Field(() => Float, { nullable: true }) coletaLng: number | null;
+
+  /** Onde ele estava ao registrar o código do CLIENTE, ou a entrega sem código. */
+  @Field(() => Float, { nullable: true }) entregaLat: number | null;
+  @Field(() => Float, { nullable: true }) entregaLng: number | null;
+
+  @Field(() => Date, { nullable: true }) entregaSemCodigoEm: Date | null;
+  // Tipo EXPLÍCITO. Com `string | null` o reflect-metadata entrega `Object` e
+  // o Nest recusa a montar o schema — a API nem sobe. O typecheck passa liso;
+  // quem denuncia é o boot.
+  @Field(() => String, { nullable: true }) entregaSemCodigoMotivo: string | null;
+
+  @Field(() => Int) janelaDeContestacaoHoras: number;
+  @Field(() => Date, { nullable: true }) janelaVenceEm: Date | null;
+
+  /**
+   * Tentativas erradas acumuladas. Não prova má-fé por si só — digitar errado
+   * acontece —, mas cinco tentativas num pedido contestado é um fato que quem
+   * decide tem de ver.
+   */
+  @Field(() => Int) tentativasErradas: number;
+  @Field(() => Date, { nullable: true }) bloqueadoAte: Date | null;
+
+  /** A prova de recebimento, quando o cliente confirmou de verdade. */
+  @Field(() => Date, { nullable: true }) confirmadoPeloClienteEm: Date | null;
+}
+
 @ObjectType()
 class PopularProduct {
   @Field(() => ID) id: string;
@@ -319,6 +370,65 @@ export class OrdersResolver {
   // do ENTREGADOR o traria — e ele é justamente o segredo que o entregador tem
   // de receber da pessoa, não de ler no próprio app. Esse erro já aconteceu
   // três vezes neste projeto com outros dados sensíveis.
+
+  /**
+   * A EVIDÊNCIA DE UMA ENTREGA, para a plataforma decidir uma disputa.
+   *
+   * Existe porque recuperar repasse já feito é IMPOSSÍVEL (KAN-303): a defesa
+   * da plataforma num chargeback é a prova de entrega, e quem decide precisa
+   * tê-la na tela. Hoje a aba de disputas do superadmin mostra só o motivo que
+   * o cliente escreveu — ou seja, só um dos dois lados.
+   *
+   * Query DEDICADA, e não campos no tipo `Order`, por dois motivos:
+   *
+   *  1. o GPS do entregador e o motivo que ele escreveu são informação sobre
+   *     pessoas. Posto no `Order`, qualquer um que leia o pedido os recebe —
+   *     inclusive o cliente, que é a outra parte da disputa.
+   *  2. é o mesmo desenho das três queries de código acima, e por consistência
+   *     é mais fácil de auditar: dado sensível de entrega mora em query
+   *     guardada, não em campo de pedido.
+   *
+   * NÃO DEVOLVE CÓDIGO NENHUM — nem para o superadmin. Ele não precisa: o que
+   * decide uma disputa é SE e QUANDO cada código foi registrado, com qual GPS,
+   * não qual era o número. Devolver o valor aqui criaria uma rota de leitura
+   * para o segredo, e o segredo não tem utilidade nenhuma nesta tela.
+   */
+  @Query(() => EvidenciaDeEntrega)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async evidenciaDeEntrega(
+    @Args('orderId') orderId: string,
+  ): Promise<EvidenciaDeEntrega> {
+    const pedido = await this.ordersService.findById(orderId);
+    const horas = Math.max(
+      1,
+      Number(process.env.DELIVERY_NO_CODE_DISPUTE_HOURS) || 24,
+    );
+    const semCodigoEm = pedido.entregaSemCodigoEm;
+    return {
+      orderId: pedido.id,
+      usaCodigo: !!pedido.codigoVendedor,
+      codigoDaLojaEm: pedido.codigoVendedorUsadoEm ?? null,
+      codigoDoEntregadorEm: pedido.codigoEntregadorUsadoEm ?? null,
+      codigoDoClienteEm: pedido.codigoClienteUsadoEm ?? null,
+      coletaLat: pedido.codigoVendedorLat ?? null,
+      coletaLng: pedido.codigoVendedorLng ?? null,
+      entregaLat: pedido.codigoClienteLat ?? null,
+      entregaLng: pedido.codigoClienteLng ?? null,
+      entregaSemCodigoEm: semCodigoEm ?? null,
+      entregaSemCodigoMotivo: pedido.entregaSemCodigoMotivo ?? null,
+      janelaDeContestacaoHoras: horas,
+      // Quando a janela vence (ou venceu). Calculado aqui e não no cliente
+      // porque a duração é de uma env var do servidor — o painel não tem como
+      // saber, e chutar 24h daria data errada se alguém reconfigurar.
+      janelaVenceEm: semCodigoEm
+        ? new Date(semCodigoEm.getTime() + horas * 3600_000)
+        : null,
+      tentativasErradas: pedido.codigoTentativas ?? 0,
+      bloqueadoAte: pedido.codigoBloqueadoAte ?? null,
+      confirmadoPeloClienteEm: pedido.customerConfirmedAt ?? null,
+    };
+  }
 
   /** O lojista lê o código QUE O ENTREGADOR vai digitar na coleta. */
   @Query(() => String, { nullable: true })
