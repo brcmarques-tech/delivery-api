@@ -95,14 +95,49 @@ function logs(segundos) {
 console.log(`=== observando ${SEGUNDOS}s de log do container ${CONTAINER} ===`);
 console.log('   (o scheduler roda a cada 60s; isto cobre pelo menos duas rodadas)\n');
 
-// Espera sem sleep de shell: um curl com timeout longo contra uma rota que não
-// existe. O 404 chega na hora, então uso o --max-time como cronômetro.
-try {
-  execSync(`curl -s --max-time ${SEGUNDOS} -o /dev/null http://localhost:3000/__espera_do_auditor__`, {
-    encoding: 'utf8',
+// A ESPERA DE VERDADE.
+//
+// A primeira versão fazia `curl -s --max-time 130` contra uma rota
+// inexistente, com o comentário de que usava o `--max-time` como cronômetro.
+// Não funciona: `--max-time` é TIMEOUT, não espera. A API responde 404 na
+// hora, o curl volta em milissegundos, e o script seguia direto para a
+// leitura do log.
+//
+// Ou seja: ele AFIRMAVA ter observado 130s — duas rodadas do scheduler — e
+// observava zero. Lia o log que já existia naquele instante e dava OK. Por
+// sorte as rodadas anteriores de E2E deixavam log suficiente para parecer
+// que funcionava, e foi assim que ele passou o dia inteiro.
+//
+// Um auditor que mente sobre a janela que observou é pior que nenhum: ele
+// transforma "não vi erro" em "não houve erro". Agora a espera é real, e o
+// contador na tela mostra que o tempo está passando.
+const esperarDeVerdade = (segundos) =>
+  new Promise((resolve) => {
+    const fim = Date.now() + segundos * 1000;
+    const tick = () => {
+      const faltam = Math.ceil((fim - Date.now()) / 1000);
+      if (faltam <= 0) {
+        process.stdout.write('\r' + ' '.repeat(50) + '\r');
+        return resolve();
+      }
+      process.stdout.write(`\r   observando... faltam ${faltam}s   `);
+      setTimeout(tick, 1000);
+    };
+    tick();
   });
-} catch {
-  // A espera acaba pelo timeout do curl. Não é erro.
+
+const inicio = Date.now();
+await esperarDeVerdade(SEGUNDOS);
+const observadoDeFato = Math.round((Date.now() - inicio) / 1000);
+
+// Confere o próprio relógio: se a espera não aconteceu, o número não pode
+// ser reportado como se tivesse acontecido.
+if (observadoDeFato < SEGUNDOS - 5) {
+  console.error(
+    `ABORTADO: a janela de observação não foi cumprida (${observadoDeFato}s de ${SEGUNDOS}s). ` +
+      `Reportar "nenhum erro" sem ter observado seria mentira.`,
+  );
+  process.exit(2);
 }
 
 const bruto = logs(SEGUNDOS + 10);
@@ -160,7 +195,7 @@ if (tolerados.length) {
 
 if (reais.length === 0) {
   console.log('OK   a API não logou nenhum erro nesta janela.');
-  console.log(`     ${linhas.length} linhas observadas em ${SEGUNDOS}s.`);
+  console.log(`     ${linhas.length} linhas observadas em ${observadoDeFato}s de observacao REAL.`);
   process.exit(0);
 }
 
