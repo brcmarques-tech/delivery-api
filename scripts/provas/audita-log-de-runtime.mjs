@@ -35,10 +35,36 @@ const CONTAINER = 'shopping-api';
 // onde um erro real se esconde.
 const BENIGNOS = [
   ['WhatsApp desabilitado', 'WAHA não sobe na stack local; o aviso é do próprio guard do serviço'],
+  [
+    'WhatsAppService] WhatsApp falhou',
+    'timeout do WAHA. MAS LEIA O AVISO ABAIXO — o .env local aponta para o WAHA ' +
+      'de PRODUÇÃO, e isso não é benigno, é só inofensivo enquanto ele está fora do ar',
+  ],
   ['ExponentPushToken', 'push de teste vai para o Expo e falha; cliente de teste não tem token real'],
   ['expo.io', 'mesma coisa: push para o Expo'],
   ['ECONNREFUSED 127.0.0.1:3001', 'WAHA local ausente'],
 ];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AVISO QUE NÃO É SOBRE ESTE SCRIPT, e sim sobre a configuração local.
+//
+// `WAHA_API_URL` no .env de desenvolvimento aponta para o WAHA de PRODUÇÃO
+// (um IP público), não para `http://localhost:3003`, que é o default do
+// serviço. Hoje as chamadas falham por timeout porque aquele WAHA está fora do
+// ar — e é só por isso que o erro acima é inofensivo.
+//
+// No dia em que o WAHA voltar, rodar os E2E desta pasta vai DISPARAR MENSAGENS
+// DE WHATSAPP DE VERDADE, pelo gateway de produção, para os telefones que os
+// testes fabricam. Eles têm cara de número brasileiro.
+//
+// Correção de uma linha, no .env local:
+//
+//     WAHA_API_URL=http://localhost:3003
+//
+// Não fiz essa troca sozinho: é configuração do ambiente de quem desenvolve, e
+// pode haver motivo para ela estar assim (testar integração contra o WAHA real,
+// por exemplo). Fica registrado aqui, que é onde o erro aparece.
+// ─────────────────────────────────────────────────────────────────────────────
 
 function logs(segundos) {
   return execSync(`docker logs ${CONTAINER} --since ${segundos}s 2>&1`, {
