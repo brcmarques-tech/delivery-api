@@ -25,6 +25,7 @@ let sup, V1, V2, C1, D1;
 
 // ---- SQL helper via docker ----
 import { execSync } from 'node:child_process';
+import { RECEBEDOR_VENDEDOR, RECEBEDOR_ENTREGADOR } from './recebedores-de-teste.mjs';
 function sql(q){ return execSync(`docker exec shopping-postgres psql -U shopping -d shopping_db -tAc "${q.replace(/"/g,'\\"')}"`,{encoding:'utf8'}).trim(); }
 
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
@@ -49,7 +50,7 @@ async function run() {
   // Aprova o vendedor (KYC) + conecta recebimento sandbox direto no banco, ANTES do
   // login — assim o token já vem com role VENDOR. Evita chamada real de KYC ao Pagar.me.
   const vid0 = sql(`SELECT id FROM vendor_users WHERE email='${vemail}'`);
-  sql(`UPDATE vendor_users SET role='VENDOR', "approvedAt"=now(), "mpConnected"=true, "pagarmeRecipientId"='re_test_seed_v1' WHERE id='${vid0}'`);
+  sql(`UPDATE vendor_users SET role='VENDOR', "approvedAt"=now(), "mpConnected"=true, "pagarmeRecipientId"='${RECEBEDOR_VENDEDOR}' WHERE id='${vid0}'`);
   V1 = await login(vemail, "teste123", "vendor");
   const vid = V1.user.id;
   check(V1.user.role==='VENDOR','vendedor aprovado (role VENDOR)');
@@ -74,7 +75,7 @@ async function run() {
   await must(`mutation{ approveAppUser(id:"${D1.user.id}"){ id role } }`,sup.accessToken,'approveAppUser D1');
   D1 = await login(demail); // re-login pra pegar role DELIVERER no token
   check(D1.user.role==='DELIVERER','entregador aprovado (role DELIVERER)');
-  sql(`UPDATE app_users SET "mpConnected"=true, "pagarmeRecipientId"='re_test_seed_d1' WHERE id='${D1.user.id}'`);
+  sql(`UPDATE app_users SET "mpConnected"=true, "pagarmeRecipientId"='${RECEBEDOR_ENTREGADOR}' WHERE id='${D1.user.id}'`);
 
   // ===== FLUXO FELIZ =====
   console.log('\n--- FLUXO FELIZ (compra→venda→entrega→repasse) ---');
@@ -133,7 +134,7 @@ async function run() {
   const v2email=`v2_${ts}@t.com`;
   await must(`mutation{ registerVendor(input:{name:"Vend2",email:"${v2email}",password:"teste123",phone:"5394${String(ts).slice(-6)}",cpf:"${cpf()}"}){ accessToken } }`,null,'registerVendor V2');
   const v2id0 = sql(`SELECT id FROM vendor_users WHERE email='${v2email}'`);
-  sql(`UPDATE vendor_users SET role='VENDOR', "approvedAt"=now(), "mpConnected"=true, "pagarmeRecipientId"='re_test_seed_v2' WHERE id='${v2id0}'`);
+  sql(`UPDATE vendor_users SET role='VENDOR', "approvedAt"=now(), "mpConnected"=true, "pagarmeRecipientId"='${RECEBEDOR_VENDEDOR}' WHERE id='${v2id0}'`);
   V2 = await login(v2email, "teste123", "vendor");
   const st2 = await must(`mutation{ createStore(input:{name:"Loja Own ${ts}",phone:"5391",street:"R",number:"2",neighborhood:"C",city:"Pelotas",state:"RS",zipCode:"96000000",hasOwnDelivery:true,latitude:-31.77,longitude:-52.34}){ id } }`,V2.accessToken,'createStore V2 own-delivery');
   const cat2 = await must(`mutation{ createCategory(name:"Cat2",storeId:"${st2.createStore.id}"){ id } }`,V2.accessToken,'createCategory2');

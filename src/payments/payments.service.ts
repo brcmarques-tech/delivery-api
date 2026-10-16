@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, HttpException, Inject, forwardRef, Logger, OnModuleDestroy } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -891,12 +891,63 @@ export class PaymentsService implements OnModuleDestroy {
       // Use a placeholder preferenceId since we no longer create a separate Pagar.me order
       return { checkoutUrl, preferenceId: `link-${order.id}-${Date.now()}` };
     } catch (err: any) {
+      // createPaymentLink JA traduz o bloqueio de origem numa instrucao util
+      // ("finalize com PIX"). Sem este repasse, este catch trocava aquela
+      // mensagem por "Erro ao criar pagamento no Pagar.me" e o cliente ficava
+      // sem saber o que fazer — era a mensagem que chegava na tela do site.
+      if (err instanceof HttpException) throw err;
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me checkout failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(
         errorData?.message || 'Erro ao criar pagamento no Pagar.me',
       );
     }
+  }
+
+  // ─── HTTP 200 NAO SIGNIFICA COBRANCA CRIADA ────────────────────────────
+  //
+  // O Pagar.me responde 200 ao POST /orders e devolve a cobranca FALHADA
+  // dentro do corpo — o mesmo engano do /refund (ver estornarCobranca).
+  // Medido no sandbox: split apontando para recebedor inexistente devolve
+  //   200 { charges:[{ status:'failed', last_transaction:{ status:'failed',
+  //         gateway_response:{ code:'404',
+  //         errors:[{ message:'Recipient not found' }] } } }] }
+  // e NENHUM qr_code.
+  //
+  // O que acontecia sem esta guarda: o metodo logava sucesso e devolvia qrCode
+  // vazio. O pedido era salvo em AWAITING_PAYMENT, o cliente via "pedido
+  // criado" numa tela sem QR e sem copia-e-cola, e o pedido morria 30 min
+  // depois no expirador — sem aviso para o cliente, sem erro no log e sem nada
+  // para o lojista cobrar. Falhar aqui devolve o erro a quem chamou, que recusa
+  // a operacao e deixa o cliente escolher outro meio de pagamento na hora.
+  //
+  // Vale para TODO PIX da casa (pedido, agendamento e plano do lojista): o
+  // gateway e o mesmo e o engano e o mesmo.
+  private extrairPixDaResposta(
+    result: any,
+    rotulo: string,
+  ): { qrCode: string; qrCodeUrl: string } {
+    const charge = result?.charges?.[0];
+    const tx = charge?.last_transaction;
+    const qrCode = tx?.qr_code || '';
+    const qrCodeUrl = tx?.qr_code_url || '';
+    const status = String(charge?.status || tx?.status || '');
+
+    if (/failed|canceled|not_authorized/i.test(status) || !qrCode) {
+      const motivo =
+        tx?.gateway_response?.errors?.[0]?.message ||
+        tx?.acquirer_message ||
+        status ||
+        'resposta sem qr_code';
+      this.logger.error(
+        `[PIX_NAO_GERADO] ${rotulo} | pagarme_order: ${result?.id} | ` +
+          `cobranca: ${status || 'ausente'} | motivo: ${motivo}`,
+      );
+      throw new BadRequestException(
+        'Nao foi possivel gerar a cobranca PIX agora. Tente novamente ou use outro metodo de pagamento.',
+      );
+    }
+    return { qrCode, qrCodeUrl };
   }
 
   // ─── Order PIX ─────────────────────────────────────────────────────────
@@ -1029,11 +1080,12 @@ export class PaymentsService implements OnModuleDestroy {
     try {
       const result = await this.pagarmePost('/orders', orderBody);
 
-      // Extract PIX data from charge
-      const charge = result.charges?.[0];
-      const lastTransaction = charge?.last_transaction;
-      const qrCode = lastTransaction?.qr_code || '';
-      const qrCodeUrl = lastTransaction?.qr_code_url || '';
+      // Extract PIX data from charge — e falha alto se a cobranca falhou
+      // (ver extrairPixDaResposta).
+      const { qrCode, qrCodeUrl } = this.extrairPixDaResposta(
+        result,
+        `pedido #${order.orderNumber}`,
+      );
 
       this.logger.log(
         `Pagar.me PIX order created for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id} | split: ${splitApplied ? splitRules.map((r) => `${r.recipient_id}:${r.amount}`).join(',') : 'NONE'}`,
@@ -1047,6 +1099,11 @@ export class PaymentsService implements OnModuleDestroy {
         settledViaSplit: splitApplied,
       };
     } catch (err: any) {
+      // A guarda do [PIX_NAO_GERADO] acima lanca BadRequestException de dentro
+      // deste try. Sem este repasse, o catch a reembrulhava na mensagem
+      // generica do gateway e a razao real (e a instrucao de usar outro meio
+      // de pagamento) se perdia no caminho ate o cliente.
+      if (err instanceof HttpException) throw err;
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me PIX order failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(
@@ -1872,8 +1929,34 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       const result = await this.pagarmePost('/paymentlinks', body);
+      if (!result?.url && !result?.id) {
+        this.logger.error(
+          `[LINK_NAO_GERADO] pedido #${order.orderNumber} | resposta sem url e sem id`,
+        );
+        throw new BadRequestException(
+          'Nao foi possivel abrir a pagina de pagamento com cartao. Use PIX ou tente novamente.',
+        );
+      }
       return result.url || `https://pagar.me/pay/${result.id}`;
     } catch (err: any) {
+      if (err instanceof HttpException) throw err;
+
+      // MEDIDO no sandbox (2026-10-16): POST /paymentlinks responde 401 com
+      // CORPO VAZIO deste IP, a mesma assinatura do bloqueio de origem que
+      // trava /transfers (KAN-299/300). Ou seja: o cartao pelo site depende do
+      // allowlist de IP do Pagar.me, nao de codigo. "Tente novamente" era a
+      // pior mensagem possivel para esse caso — repetir nao resolve, e o
+      // cliente ficava sem saber que o PIX funciona.
+      if (PaymentsService.ehBloqueioDeOrigem(err)) {
+        this.logger.error(
+          `[LINK_BLOQUEADO] pedido #${order.orderNumber} | /paymentlinks recusou a origem. ` +
+            `Liberar o IP de saida no allowlist do Pagar.me (mesmo bloqueio do repasse).`,
+        );
+        throw new BadRequestException(
+          'Pagamento com cartao indisponivel neste momento. Finalize com PIX ou pague na retirada.',
+        );
+      }
+
       this.logger.error(`Payment link creation failed: ${JSON.stringify(err.response?.data || err.message)}`);
       throw new BadRequestException('Erro ao gerar link de pagamento. Tente novamente.');
     }
@@ -2011,10 +2094,13 @@ export class PaymentsService implements OnModuleDestroy {
       };
 
       const result = await this.pagarmePost('/orders', orderBody);
-      const charge = result.charges?.[0];
-      const lastTransaction = charge?.last_transaction;
-      const qrCode = lastTransaction?.qr_code || '';
-      const qrCodeUrl = lastTransaction?.qr_code_url || '';
+      // Mesmo engano do 200-com-falha: sem esta guarda o painel do lojista
+      // ganhava um pagamento "pendente" com QR vazio, e ele ficava esperando
+      // um plano que nunca seria concedido.
+      const { qrCode, qrCodeUrl } = this.extrairPixDaResposta(
+        result,
+        `plano ${plan} do vendor ${user.id}`,
+      );
 
       // registra o vínculo do customer (o plano só é concedido no webhook do pagamento)
       await this.paymentsRepository.manager.getRepository(VendorUser).update(user.id, {
@@ -4388,10 +4474,10 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       const result = await this.pagarmePost('/orders', orderBody);
-      const charge = result.charges?.[0];
-      const lastTransaction = charge?.last_transaction;
-      const qrCode = lastTransaction?.qr_code || '';
-      const qrCodeUrl = lastTransaction?.qr_code_url || '';
+      const { qrCode, qrCodeUrl } = this.extrairPixDaResposta(
+        result,
+        `agendamento ${appointment.appointmentNumber}`,
+      );
 
       this.logger.log(`Pagar.me PIX for appointment ${appointment.appointmentNumber} | total: ${appointment.price} | pagarme_order: ${result.id}`);
 
@@ -4402,6 +4488,8 @@ export class PaymentsService implements OnModuleDestroy {
         qrCodeUrl,
       };
     } catch (err: any) {
+      // Repassa o [PIX_NAO_GERADO] sem reembrulhar na mensagem generica.
+      if (err instanceof HttpException) throw err;
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me appointment PIX failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(errorData?.message || 'Erro ao criar pagamento PIX no Pagar.me');

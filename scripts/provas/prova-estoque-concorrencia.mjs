@@ -18,6 +18,7 @@
 //   A. N clientes, 1 unidade em estoque  -> exatamente 1 pode passar
 //   B. N clientes, K unidades            -> exatamente K podem passar
 import { execSync } from 'node:child_process';
+import { RECEBEDOR_VENDEDOR } from './recebedores-de-teste.mjs';
 
 const URL = 'http://localhost:3000/graphql';
 const ok = [], fail = [];
@@ -67,7 +68,7 @@ console.log('=== montando a loja e os clientes ===');
 const vemail = `est_v_${ts}@t.com`;
 await must(`mutation{ registerVendor(input:{name:"VEst",email:"${vemail}",password:"teste123",phone:"5321${suf}",cpf:"${cpf()}"}){ accessToken } }`, null, 'registerVendor');
 const vid = sql(`SELECT id FROM vendor_users WHERE email='${vemail}'`);
-sql(`UPDATE vendor_users SET role='VENDOR', "approvedAt"=now(), "mpConnected"=true, "pagarmeRecipientId"='re_est_v' WHERE id='${vid}'`);
+sql(`UPDATE vendor_users SET role='VENDOR', "approvedAt"=now(), "mpConnected"=true, "pagarmeRecipientId"='${RECEBEDOR_VENDEDOR}' WHERE id='${vid}'`);
 const V = await login(vemail, 'vendor');
 
 const st = await must(`mutation{ createStore(input:{name:"Loja Estoque ${suf}",phone:"5391000",street:"R",number:"1",neighborhood:"C",city:"Pelotas",state:"RS",zipCode:"96000000",hasOwnDelivery:true,latitude:-31.77,longitude:-52.34}){ id } }`, V, 'createStore');

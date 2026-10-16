@@ -27,6 +27,7 @@
 // aritmética do split está provada ao centavo em src/payments/split-matriz.spec.ts,
 // contra as funções que montam as regras de divisão.
 import { execSync } from 'node:child_process';
+import { RECEBEDOR_VENDEDOR, RECEBEDOR_ENTREGADOR } from './recebedores-de-teste.mjs';
 
 const URL = 'http://localhost:3000/graphql';
 const ok = [], fail = [];
@@ -93,7 +94,7 @@ check(aprovadoAntes === '-', 'nasce PENDENTE de aprovação (não opera ainda)')
 // permite criar propaganda: FREE tem freePromosPerWeek = 0).
 sql(
   `UPDATE vendor_users SET role='VENDOR', "approvedAt"=now(), "mpConnected"=true, ` +
-  `"pagarmeRecipientId"='re_cc_vendedor', "vendorPlan"='PRO', "acceptedSubscriptionTermsAt"=now() WHERE id='${vid}'`,
+  `"pagarmeRecipientId"='${RECEBEDOR_VENDEDOR}', "vendorPlan"='PRO', "acceptedSubscriptionTermsAt"=now() WHERE id='${vid}'`,
 );
 const V = await login(vemail, 'vendor');
 check(!!V, 'aprovado, com recebedor no Pagar.me e plano PRO');
@@ -325,7 +326,7 @@ await must(
   null, 'registerApp entregador',
 );
 const did = sql(`SELECT id FROM app_users WHERE email='${demail}'`);
-sql(`UPDATE app_users SET role='DELIVERER', "isDeliverer"=true, "mpConnected"=true, "pagarmeRecipientId"='re_cc_entregador' WHERE id='${did}'`);
+sql(`UPDATE app_users SET role='DELIVERER', "isDeliverer"=true, "mpConnected"=true, "pagarmeRecipientId"='${RECEBEDOR_ENTREGADOR}' WHERE id='${did}'`);
 const D = await login(demail);
 
 await must(`mutation{ acceptDelivery(orderId:"${orderId}"){ id } }`, D, 'acceptDelivery');

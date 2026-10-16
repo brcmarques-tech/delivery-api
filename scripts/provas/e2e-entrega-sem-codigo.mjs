@@ -19,6 +19,7 @@
 // E depois: a janela realmente libera quando vence, e o registro guarda a
 // evidência (motivo, GPS, horário) que sustenta a decisão humana numa disputa.
 import { execSync } from 'node:child_process';
+import { RECEBEDOR_VENDEDOR, RECEBEDOR_ENTREGADOR } from './recebedores-de-teste.mjs';
 
 const URL = 'http://localhost:3000/graphql';
 const ok = [], fail = [];
@@ -83,7 +84,7 @@ console.log('=== montando: loja sem frota própria, pedido PIX com entrega pelo 
 const vemail = `snc_v_${ts}@t.com`;
 await must(`mutation{ registerVendor(input:{name:"VendSnc",email:"${vemail}",password:"teste123",phone:"5381${String(ts).slice(-6)}",cpf:"${cpf()}"}){ accessToken } }`, null, 'registerVendor');
 const vid = sql(`SELECT id FROM vendor_users WHERE email='${vemail}'`);
-sql(`UPDATE vendor_users SET role='VENDOR', "approvedAt"=now(), "mpConnected"=true, "pagarmeRecipientId"='re_test_snc_v' WHERE id='${vid}'`);
+sql(`UPDATE vendor_users SET role='VENDOR', "approvedAt"=now(), "mpConnected"=true, "pagarmeRecipientId"='${RECEBEDOR_VENDEDOR}' WHERE id='${vid}'`);
 const V = await login(vemail, 'teste123', 'vendor');
 
 const st = await must(`mutation{ createStore(input:{name:"Loja Snc ${ts}",phone:"5391000",street:"Rua A",number:"1",neighborhood:"Centro",city:"Pelotas",state:"RS",zipCode:"96000000",hasOwnDelivery:false,latitude:-31.77,longitude:-52.34}){ id } }`, V.accessToken, 'createStore');
@@ -99,7 +100,7 @@ const cid = sql(`SELECT id FROM app_users WHERE email='${cemail}'`);
 const demail = `snc_d_${ts}@t.com`;
 await must(`mutation{ registerApp(input:{name:"EntSnc",email:"${demail}",password:"teste123",phone:"5383${String(ts).slice(-6)}",cpf:"${cpf()}"}){ accessToken } }`, null, 'registerApp (entregador)');
 const did = sql(`SELECT id FROM app_users WHERE email='${demail}'`);
-sql(`UPDATE app_users SET role='DELIVERER', "isDeliverer"=true, "mpConnected"=true, "pagarmeRecipientId"='re_test_snc_d' WHERE id='${did}'`);
+sql(`UPDATE app_users SET role='DELIVERER', "isDeliverer"=true, "mpConnected"=true, "pagarmeRecipientId"='${RECEBEDOR_ENTREGADOR}' WHERE id='${did}'`);
 const D = await login(demail);
 
 const ped = await must(`mutation{ createOrder(input:{storeId:"${storeId}",items:[{productId:"${prod.createProduct.id}",quantity:1}],paymentMethod:"PIX",deliveryAddress:"Rua Cliente 50",deliveryLatitude:-31.76,deliveryLongitude:-52.33}){ id orderNumber } }`, C.accessToken, 'createOrder');

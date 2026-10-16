@@ -44,6 +44,7 @@ const ETAPAS = [
   { nome: 'migrations ensaiadas', script: 'ensaia-migration-codigos.mjs', cota: false },
   { nome: 'migration dos códigos (texto)', script: 'audita-migration-codigos.mjs', cota: false },
   { nome: 'preço de propaganda', script: 'prova-promocoes-preco.mjs', cota: false },
+  { nome: 'baseline do schema (banco vazio)', script: 'ensaia-baseline-do-schema.mjs', cota: false },
 
   // ── o caminho, pela API ─────────────────────────────────────────────────
   { nome: 'CAMINHO COMPLETO (loja → dinheiro)', script: 'e2e-caminho-completo.mjs', cota: true },
@@ -54,6 +55,11 @@ const ETAPAS = [
   { nome: 'estoque em concorrência', script: 'prova-estoque-concorrencia.mjs', cota: true },
   { nome: 'cupom em concorrência', script: 'prova-cupom-maxuses.mjs', cota: true },
   { nome: 'aviso antes do bloqueio', script: 'prova-aviso-de-bloqueio.mjs', cota: true },
+  { nome: 'checkout do site: PIX e cartão', script: 'prova-checkout-web-pagamento.mjs', cota: true },
+  // Esta precisa do SITE rodando (next dev). Quando ele não está no ar o
+  // script sai com código 2 e a etapa aparece como PULADA — melhor que uma
+  // falha vermelha que não é do produto.
+  { nome: 'sessão do site (token fora do JS)', script: 'prova-sessao-do-site.mjs', cota: true, pulaSe: 2 },
 
   // ── por último: o log, para pegar o que as outras deixaram no caminho ───
   { nome: 'log de runtime (130s)', script: 'audita-log-de-runtime.mjs', cota: false },
@@ -106,9 +112,9 @@ function rodar(etapa) {
       stdio: ['pipe', 'pipe', 'pipe'],
       maxBuffer: 64 * 1024 * 1024,
     });
-    return { ok: true, saida };
+    return { ok: true, saida, codigo: 0 };
   } catch (e) {
-    return { ok: false, saida: (e.stdout || '') + (e.stderr || '') };
+    return { ok: false, saida: (e.stdout || '') + (e.stderr || ''), codigo: e.status ?? 1 };
   }
 }
 
@@ -147,8 +153,15 @@ for (const etapa of ETAPAS) {
   const r = rodar(etapa);
   const seg = ((Date.now() - t0) / 1000).toFixed(0);
   const linha = resumo(etapa, r.saida);
-  console.log(`${r.ok ? 'OK' : 'FALHOU'} (${seg}s)`);
+  // Pré-condição de ambiente ausente (ex.: o site não está rodando) não é
+  // falha do produto: a etapa é PULADA e o relatório diz por quê.
+  const pulada = etapa.pulaSe != null && r.codigo === etapa.pulaSe;
+  console.log(`${pulada ? 'PULADA' : r.ok ? 'OK' : 'FALHOU'} (${seg}s)`);
   if (linha) console.log(`   ${linha}`);
+  if (pulada) {
+    resultados.push({ nome: etapa.nome, ok: true, pulada: true, linha });
+    continue;
+  }
   if (!r.ok) {
     // Só as linhas que ajudam: a asserção que falhou, não o dump inteiro.
     const pistas = r.saida
