@@ -14,6 +14,8 @@ import { Order } from './entities/order.entity';
 import { OrderStatus } from '../common/enums';
 import { OrdersService } from './orders.service';
 import { DeliveriesService } from '../deliveries/deliveries.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { linhasAfetadas } from '../common/utils/db-claim';
 
 /** Qual das três partes o código pertence. */
@@ -81,6 +83,10 @@ export class DeliveryCodesService {
     // do `deliveredAt`, a prova de recebimento e o tracking de repasse.
     @Inject(forwardRef(() => DeliveriesService))
     private deliveriesService: DeliveriesService,
+    // Avisar o cliente NAO e enfeite: a janela de contestacao so e legitima se
+    // ele souber que ela abriu. Ver registrarEntregaSemCodigo.
+    private notificationsService: NotificationsService,
+    private whatsAppService: WhatsAppService,
   ) {}
 
   /** Liga/desliga a GERAÇÃO de códigos. Pedido já criado não é afetado. */
@@ -283,8 +289,10 @@ export class DeliveryCodesService {
    *   4. com contestação, a plataforma decide com a evidência na mão.
    *
    * A liberação ao fim da janela NÃO acontece aqui — ela é feita pelo scheduler
-   * que varre as janelas vencidas. Isto aqui só registra e notifica, para que a
-   * decisão e a prova fiquem separadas no tempo e auditáveis.
+   * que varre as janelas vencidas. Isto aqui registra, move o pedido para
+   * DELIVERER_CONFIRMED_DELIVERY (para o cliente PODER contestar) e avisa o
+   * cliente, de modo que a decisão e a prova fiquem separadas no tempo e
+   * auditáveis.
    *
    * Exige a coleta confirmada pelos dois códigos: sem passar na loja não há
    * entrega para alegar.
@@ -344,7 +352,94 @@ export class DeliveryCodesService {
         (params.latitude != null ? ` gps=${params.latitude},${params.longitude}` : ' SEM GPS'),
     );
 
+    // ─────────────────────────────────────────────────────────────────────
+    // A JANELA DE CONTESTAÇÃO ERA DECORATIVA NAS DUAS PONTAS.
+    //
+    // Achado pelo E2E `scripts/provas/e2e-entrega-sem-codigo.mjs`, escrito
+    // justamente porque este desvio não tinha cobertura. Ele mede o que o
+    // comentário acima promete — "abre uma janela de contestação para o
+    // cliente" — e encontrou as duas metades da promessa quebradas:
+    //
+    //  1. o cliente NÃO era avisado. Nenhuma notificação saía deste arquivo
+    //     (nem push, nem WhatsApp). A janela corria em silêncio e o dinheiro
+    //     saía em 24h sem ele nunca ter sabido que havia algo a contestar.
+    //
+    //  2. mesmo que soubesse, ele NÃO CONSEGUIRIA contestar. O registro não
+    //     mudava o status, então o pedido ficava em DELIVERING, e
+    //     `customerDenyDelivery` exige DELIVERER_CONFIRMED_DELIVERY —
+    //     respondia "Este pedido nao esta aguardando confirmacao de entrega".
+    //     A máquina de estados nem permite DELIVERING -> DISPUTED.
+    //
+    // O conserto das duas é o mesmo gesto, e ele é o gesto honesto: registrar
+    // entrega sem código É o entregador afirmando que entregou. Então o pedido
+    // vai para DELIVERER_CONFIRMED_DELIVERY, que é exatamente esse significado,
+    // e de onde DISPUTED já é alcançável.
+    //
+    // Por que isso não abre atalho para o dinheiro sair antes da hora:
+    //
+    //  - `autoConfirmExpiredDeliveries` (o auto-confirm de 10 min) filtra
+    //    `codigoVendedor IS NULL`, então pedido com código fica de fora dele;
+    //  - `completeOrderWithPayment` tem guarda atômica de status;
+    //  - quem libera este pedido é só o scheduler da janela, ou o próprio
+    //    cliente via `confirmReceipt` — e esse caso é bom: ele diz "recebi", o
+    //    entregador é pago na hora em vez de esperar 24h, e a prova gravada é
+    //    verdadeira.
+    //
+    // O scheduler já estava preparado para as duas formas: ele só chama
+    // `confirmDelivery` quando encontra o pedido ainda em DELIVERING.
+    const entregaId = (pedido as any).delivery?.id;
+    const entregadorDaEntrega = (pedido as any).delivery?.deliverer?.id;
+    if (entregaId && entregadorDaEntrega) {
+      await this.deliveriesService.confirmDelivery(
+        entregaId,
+        entregadorDaEntrega,
+        true,
+      );
+    }
+
+    await this.avisarClienteDaJanela(pedido, motivo);
+
     return this.ordersService.findById(pedido.id);
+  }
+
+  /**
+   * Avisa o cliente de que a entrega foi registrada SEM o código dele e de que
+   * ele tem uma janela para contestar.
+   *
+   * Dois canais, os dois sem bloquear: push para quem tem o app aberto,
+   * WhatsApp para alcançar quem não tem. Falha de notificação NUNCA pode
+   * derrubar o registro da entrega — o entregador já está na porta e o registro
+   * dele é o que sustenta o pagamento. Por isso `.catch(() => {})` nos dois,
+   * no mesmo padrão do resto do projeto.
+   *
+   * A mensagem diz o PRAZO porque um aviso sem prazo não é oportunidade de
+   * contestar, é notificação de que algo aconteceu.
+   */
+  private async avisarClienteDaJanela(pedido: Order, motivo: string): Promise<void> {
+    const horas = Math.max(
+      1,
+      Number(process.env.DELIVERY_NO_CODE_DISPUTE_HOURS) || 24,
+    );
+    const titulo = 'Entrega registrada sem o seu código';
+    const corpo =
+      `O entregador registrou a entrega do pedido #${pedido.orderNumber} sem o seu ` +
+      `código de confirmação. Motivo informado: "${motivo}". Se você não recebeu, ` +
+      `conteste em até ${horas}h pelo app — depois disso o pagamento é liberado.`;
+
+    if (pedido.customer?.id) {
+      this.notificationsService
+        .sendToAppUser(pedido.customer.id, titulo, corpo, {
+          type: 'DELIVERY_WITHOUT_CODE',
+          orderId: pedido.id,
+          disputeHours: horas,
+        })
+        .catch(() => {});
+    }
+    if (pedido.customer?.phone) {
+      this.whatsAppService
+        .sendText(pedido.customer.phone, `*${titulo}*\n\n${corpo}`)
+        .catch(() => {});
+    }
   }
 
   /** De quem é o código de cada parte. */
