@@ -939,7 +939,10 @@ export class PaymentsService implements OnModuleDestroy {
           amount: vendorAmount,
           recipient_id: vendorRecipientId,
           type: 'flat',
-          options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
+          // `liable: true` NO VENDEDOR — ver RESPONSABILIDADE POR CHARGEBACK,
+          // no cabeçalho de `captureWithSplit`. A regra é a mesma nos dois
+          // meios de pagamento, de propósito.
+          options: { charge_processing_fee: false, liable: true, charge_remainder_fee: false },
         });
       }
 
@@ -1172,7 +1175,38 @@ export class PaymentsService implements OnModuleDestroy {
         amount: vendorAmount,
         recipient_id: vendorRecipientId,
         type: 'flat',
-        options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
+        // ─── RESPONSABILIDADE POR CHARGEBACK (16/10/2026, KAN-303) ─────────
+        //
+        // `liable: true` no VENDEDOR. Antes só a plataforma era responsável, e
+        // isso significa o que parece: num chargeback, o Pagar.me debitava da
+        // plataforma o valor INTEIRO da transação — inclusive a mercadoria que
+        // o vendedor já tinha recebido e já tinha entregue.
+        //
+        // Isso não tinha conserto por código: recuperar repasse já feito é
+        // impossível na v5 (não existe empurrão de um recebedor para outro —
+        // provado em scripts/provas/sonda-repasse.mjs). A plataforma absorvia e
+        // pronto.
+        //
+        // O `liable` é o único lugar onde essa conta se decide, e ele se decide
+        // ANTES, na montagem do split. Testado contra o sandbox: o provedor
+        // aceita vários responsáveis, e aceita a plataforma não ser um deles.
+        //
+        // O desenho escolhido:
+        //
+        //   VENDEDOR    liable — é dele a mercadoria, e é dele a prova de que
+        //               entregou (código do cliente, GPS, horário). Quem tem a
+        //               evidência é quem pode contestar.
+        //   PLATAFORMA  liable pela PRÓPRIA fatia, abaixo. Se a venda é
+        //               revertida, é justo perder a comissão que não ganhou.
+        //   ENTREGADOR  NÃO liable, e isto é deliberado. Ele fez a corrida; o
+        //               chargeback é entre cliente e loja. Um entregador que
+        //               ganha R$ 9 num frete não pode ser debitado em R$ 110
+        //               por uma disputa que não tem como contestar — isso
+        //               destruiria a retenção de entregador no primeiro caso.
+        //
+        // O que muda na prática: a plataforma passa a perder, no pior caso, a
+        // comissão daquele pedido, em vez do valor cheio.
+        options: { charge_processing_fee: false, liable: true, charge_remainder_fee: false },
       });
     }
 
@@ -3757,6 +3791,153 @@ export class PaymentsService implements OnModuleDestroy {
       err?.response?.data?.message || err?.message || '',
     ).toLowerCase();
     return status === 401 || msg.includes('ip de origem') || msg.includes('not authorized');
+  }
+
+  /**
+   * DRENA OS PASSIVOS: paga automaticamente o que está registrado como devido.
+   *
+   * ─── Por que isto existe, e por que não resolve nada hoje ──────────────
+   *
+   * Três situações deixam dinheiro devido e registrado em coluna própria:
+   *
+   *   `delivererPayableCents` em orders       — frete retido no split do PIX
+   *   `vendorPayableCents`    em orders       — transferência recusada
+   *   `vendorPayableCents`    em appointments — idem, em serviços
+   *
+   * Todas eram pagas à mão. Este job tenta pagá-las pelo `POST /transfers` do
+   * Pagar.me, que é o mesmo caminho que o settle já usa.
+   *
+   * HOJE ELE NÃO VAI CONSEGUIR, e isso é esperado: aquela rota responde 401
+   * "IP de origem não autorizado" porque está atrás da allowlist de IP da
+   * conta (KAN-299). Não existe rota de API para configurar essa allowlist —
+   * conferi, todas as formas plausíveis dão 404; é ajuste no painel
+   * dash.pagar.me.
+   *
+   * Então por que escrever agora: no minuto em que o IP for liberado, este job
+   * zera a dívida acumulada sozinho, na primeira rodada, sem ninguém abrir a
+   * tela de repasses e dar baixa em cada linha. A alternativa seria descobrir
+   * depois que havia semanas de passivo para conciliar à mão.
+   *
+   * ─── Comportamento diante do bloqueio ─────────────────────────────────
+   *
+   * Ao detectar bloqueio de origem, PARA A RODADA INTEIRA. Insistir nos
+   * outros itens é gastar requisição contra um 401 que vale para todos, e
+   * encher o log de ruído idêntico — o mesmo erro que o retry de 48h cometia
+   * antes de aprender a reconhecer o bloqueio.
+   *
+   * A chave de idempotência é por PASSIVO, não por rodada: se a resposta se
+   * perder na rede, a tentativa seguinte não paga duas vezes.
+   */
+  async drenarPassivos(): Promise<{ pagos: number; bloqueado: boolean }> {
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const aptRepo = this.paymentsRepository.manager.getRepository(Appointment);
+    let pagos = 0;
+
+    type Item = {
+      rotulo: string;
+      recipientId?: string | null;
+      centavos: number;
+      chave: string;
+      baixa: () => Promise<any>;
+    };
+    const itens: Item[] = [];
+
+    // 1. frete retido do entregador (PIX com split-on-charge)
+    const pedidosEntregador = await orderRepo
+      .createQueryBuilder('pedido')
+      .leftJoinAndSelect('pedido.delivery', 'delivery')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .where('pedido.delivererPayableCents > 0')
+      .andWhere('pedido.delivererPayablePaidAt IS NULL')
+      .take(100)
+      .getMany();
+    for (const p of pedidosEntregador) {
+      itens.push({
+        rotulo: `pedido #${p.orderNumber} entregador`,
+        recipientId: (p as any).delivery?.deliverer?.pagarmeRecipientId,
+        centavos: Number(p.delivererPayableCents),
+        chave: `payable-deliverer-${p.id}`,
+        baixa: () => orderRepo.update(p.id, { delivererPayablePaidAt: new Date() } as any),
+      });
+    }
+
+    // 2. repasse do lojista recusado
+    const pedidosLojista = await orderRepo
+      .createQueryBuilder('pedido')
+      .leftJoinAndSelect('pedido.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .where('pedido.vendorPayableCents > 0')
+      .andWhere('pedido.vendorPayablePaidAt IS NULL')
+      .take(100)
+      .getMany();
+    for (const p of pedidosLojista) {
+      itens.push({
+        rotulo: `pedido #${p.orderNumber} lojista`,
+        recipientId: p.store?.owner?.pagarmeRecipientId,
+        centavos: Number(p.vendorPayableCents),
+        chave: `payable-vendor-${p.id}`,
+        baixa: () => orderRepo.update(p.id, { vendorPayablePaidAt: new Date() } as any),
+      });
+    }
+
+    // 3. repasse do prestador de serviço recusado
+    const agendamentos = await aptRepo
+      .createQueryBuilder('apt')
+      .leftJoinAndSelect('apt.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .where('apt.vendorPayableCents > 0')
+      .andWhere('apt.vendorPayablePaidAt IS NULL')
+      .take(100)
+      .getMany();
+    for (const a of agendamentos) {
+      itens.push({
+        rotulo: `agendamento ${a.appointmentNumber} prestador`,
+        recipientId: a.store?.owner?.pagarmeRecipientId,
+        centavos: Number(a.vendorPayableCents),
+        chave: `payable-apt-vendor-${a.id}`,
+        baixa: () => aptRepo.update(a.id, { vendorPayablePaidAt: new Date() } as any),
+      });
+    }
+
+    if (itens.length === 0) return { pagos: 0, bloqueado: false };
+
+    for (const item of itens) {
+      if (!item.recipientId) {
+        // Sem recebedor não há para onde mandar. Não é falha do job: a pessoa
+        // ainda não concluiu o cadastro no Pagar.me, e o passivo continua
+        // registrado esperando por isso.
+        continue;
+      }
+      try {
+        const r = await this.pagarmePost(
+          '/transfers',
+          {
+            amount: item.centavos,
+            recipient_id: item.recipientId,
+            metadata: { tipo: 'drenagem_de_passivo', referencia: item.chave },
+          },
+          item.chave,
+        );
+        await item.baixa();
+        pagos++;
+        this.logger.log(
+          `[PASSIVO_PAGO] ${item.rotulo} | ${item.centavos} centavos | transfer: ${r?.id || '-'}`,
+        );
+      } catch (err: any) {
+        if (PaymentsService.ehBloqueioDeOrigem(err)) {
+          this.logger.warn(
+            `[PASSIVO_BLOQUEADO] a allowlist de IP do Pagar.me segue barrando o repasse ` +
+              `(KAN-299). ${itens.length} passivo(s) aguardando; nenhum foi pago nesta rodada. ` +
+              `Parando aqui em vez de repetir o mesmo 401 para cada um.`,
+          );
+          return { pagos, bloqueado: true };
+        }
+        this.logger.error(
+          `[PASSIVO_FALHOU] ${item.rotulo}: ${JSON.stringify(err?.response?.data || err?.message)}`,
+        );
+      }
+    }
+    return { pagos, bloqueado: false };
   }
 
   private static centavosAguardando(balance: any): number {

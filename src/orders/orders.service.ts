@@ -2144,8 +2144,40 @@ export class OrdersService {
     return settled;
   }
 
-  // L9: TODO — ON_DELIVERY orders have no payment guarantee; platform commission is not collected.
-  // Consider implementing a post-delivery invoice/billing system for ON_DELIVERY commission collection.
+  /**
+   * ─── COMISSÃO: QUANDO A PLATAFORMA COBRA ─────────────────────────────────
+   *
+   * Decisão do Bruno em 16/10/2026, substituindo o TODO que vivia aqui
+   * ("ON_DELIVERY orders have no payment guarantee; platform commission is not
+   * collected. Consider implementing a post-delivery invoice/billing system"):
+   *
+   *   A plataforma cobra comissão quando ENTRA no serviço — com entregador do
+   *   app, ou com meio de pagamento da plataforma. Fora disso, não cobra.
+   *
+   * Então o pedido de RETIRADA ou de loja com FROTA PRÓPRIA pago em DINHEIRO
+   * não gera comissão, e isso deixa de ser lacuna: é o desenho. A plataforma
+   * não entrou com pagamento nem com entrega, e o dinheiro nunca passou por
+   * ela — não há o que dividir nem o que faturar depois.
+   *
+   * Por isso NÃO existe aqui cobrança posterior, boleto de comissão ou
+   * conciliação de dinheiro: não é uma peça faltando, é uma peça que não
+   * deveria existir. Quem for implementar faturamento de comissão em dinheiro
+   * está mudando a regra de negócio, não fechando um buraco.
+   *
+   * As combinações possíveis, e o que a plataforma leva em cada uma:
+   *
+   *   PIX ou cartão, qualquer entrega ....... comissão (meio de pagamento é dela)
+   *   dinheiro + entregador do app .......... comissão (a entrega é dela)
+   *                                           — hoje nem é aceito: entrega por
+   *                                             app exige cartão, porque o
+   *                                             entregador precisa de garantia
+   *                                             de recebimento
+   *   dinheiro + retirada ................... nada, por decisão
+   *   dinheiro + frota própria da loja ...... nada, por decisão
+   *
+   * O guard que recusa dinheiro com entrega por app está em `createOrder`, e a
+   * flag `APP_DELIVERY_REQUIRES_CARD` controla o estado dele (padrão: ligado).
+   */
   async completeOrderWithPayment(order: Order): Promise<Order> {
     // Idempotency guard: skip if already completed (race between geolocation + scheduler)
     if (order.status === OrderStatus.COMPLETED) {

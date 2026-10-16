@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { OrdersService } from '../orders/orders.service';
 import { DeliveryCodesService } from '../orders/delivery-codes.service';
+import { PaymentsService } from '../payments/payments.service';
 
 @Injectable()
 export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDestroy {
@@ -17,6 +18,7 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
   constructor(
     private ordersService: OrdersService,
     private deliveryCodesService: DeliveryCodesService,
+    private paymentsService: PaymentsService,
   ) {}
 
   onModuleInit() {
@@ -44,8 +46,33 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
       await this.alertNoDeliverer();
       await this.liberarEntregasSemCodigoVencidas();
       await this.retryFailedSettlements();
+      await this.drenarPassivos();
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  /**
+   * Paga automaticamente o que esta registrado como devido (passivos).
+   *
+   * Hoje nao vai conseguir: a rota de transferencia do Pagar.me esta atras da
+   * allowlist de IP da conta (KAN-299). Fica no tick de proposito — no minuto
+   * em que o IP for liberado, a divida acumulada zera sozinha na primeira
+   * rodada, em vez de alguem descobrir semanas de passivo para conciliar a
+   * mao na tela de repasses.
+   *
+   * O `bloqueado: true` so vira log em nivel WARN, e uma vez por rodada: o
+   * detalhe de POR QUE esta bloqueado ja esta no proprio metodo, e repetir
+   * aqui so encheria o log.
+   */
+  private async drenarPassivos() {
+    try {
+      const r = await this.paymentsService.drenarPassivos();
+      if (r.pagos > 0) {
+        this.logger.log(`Drenagem de passivos: ${r.pagos} repasse(s) pago(s)`);
+      }
+    } catch (err) {
+      this.logger.error('Falha na drenagem de passivos:', err);
     }
   }
 

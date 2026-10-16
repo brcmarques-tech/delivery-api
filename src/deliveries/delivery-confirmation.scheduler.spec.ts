@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { DeliveryConfirmationScheduler } from './delivery-confirmation.scheduler';
 import { OrdersService } from '../orders/orders.service';
 import { DeliveryCodesService } from '../orders/delivery-codes.service';
+import { PaymentsService } from '../payments/payments.service';
 import { Order } from '../orders/entities/order.entity';
 
 describe('DeliveryConfirmationScheduler', () => {
@@ -34,6 +35,14 @@ describe('DeliveryConfirmationScheduler', () => {
         { provide: OrdersService, useValue: mockOrdersService },
         // O scheduler passou a liberar as entregas registradas SEM o código do
         // cliente cuja janela de contestação venceu.
+        // O tick tambem drena os passivos registrados (frete retido no PIX e
+        // repasses recusados pelo bloqueio de IP). Mock minimo: nenhum teste
+        // deste arquivo exercita a drenagem; ela so precisa existir para o
+        // Nest montar o scheduler.
+        {
+          provide: PaymentsService,
+          useValue: { drenarPassivos: jest.fn().mockResolvedValue({ pagos: 0, bloqueado: false }) },
+        },
         {
           provide: DeliveryCodesService,
           useValue: { liberarEntregasSemCodigoVencidas: jest.fn().mockResolvedValue(0) },

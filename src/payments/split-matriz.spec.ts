@@ -236,19 +236,41 @@ describe('MATRIZ DO SPLIT — vendedor, entregador e marketplace', () => {
   }
 
   /**
-   * A invariante que vale em TODOS os casos.
+   * As invariantes que valem em TODOS os casos.
    *
-   * Se a soma não fecha com o total, o gateway recusa a cobrança — e num
-   * pedido já entregue isso quer dizer que a plataforma não recebe nada.
-   * E tem de haver exatamente um responsável (`liable`), senão o split sai
-   * sem ninguém pagando a taxa da adquirente.
+   * SOMA: se não fecha com o total, o gateway recusa a cobrança — e num pedido
+   * já entregue isso quer dizer que a plataforma não recebe nada.
+   *
+   * TAXA DA ADQUIRENTE: exatamente um pagador. Sem ninguém, o gateway recusa;
+   * com dois, alguém paga MDR duas vezes.
+   *
+   * RESPONSABILIDADE (`liable`): mudou em 16/10/2026, com o KAN-303. Antes era
+   * "exatamente um" — só a plataforma — e isso significava que num chargeback
+   * ela era debitada no valor INTEIRO, inclusive a mercadoria que o vendedor
+   * já havia recebido e entregue. Recuperar repasse feito é impossível na v5,
+   * então a plataforma absorvia e pronto.
+   *
+   * Agora o VENDEDOR responde pela fatia dele e a PLATAFORMA pela dela, e o
+   * ENTREGADOR não responde por nada — ele fez a corrida, e um frete de R$ 9
+   * não pode virar um débito de R$ 110 numa disputa que ele não tem como
+   * contestar. Por isso a asserção é sobre QUEM responde, não sobre quantos:
+   * contar daria o mesmo número num split em que o entregador respondesse no
+   * lugar do vendedor.
    */
   function conferirInvariantes(r: { porRecebedor: Record<string, number>; regras: any[]; totalCents: number }) {
     const soma = Object.values(r.porRecebedor).reduce((s, v) => s + v, 0);
     expect(soma).toBe(r.totalCents);
     expect(r.regras.every((x) => x.amount > 0)).toBe(true);
-    expect(r.regras.filter((x) => x.options?.liable).length).toBe(1);
     expect(r.regras.filter((x) => x.options?.charge_processing_fee).length).toBe(1);
+
+    const responsaveis = r.regras.filter((x) => x.options?.liable).map((x) => x.recipient_id);
+    expect(responsaveis.length).toBeGreaterThan(0);
+    expect(responsaveis).not.toContain(RECEBEDOR_ENTREGADOR);
+    // Toda regra que não é do entregador responde pela própria fatia.
+    const naoEntregador = r.regras
+      .filter((x) => x.recipient_id !== RECEBEDOR_ENTREGADOR)
+      .map((x) => x.recipient_id);
+    for (const id of naoEntregador) expect(responsaveis).toContain(id);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -437,9 +459,15 @@ describe('MATRIZ DO SPLIT — vendedor, entregador e marketplace', () => {
     });
 
     it('e alguém continua sendo o responsável, pagando a taxa', async () => {
+      // Aqui a regra da plataforma não existe (ela ficaria com zero), então
+      // quem herda a taxa E a responsabilidade é o vendedor — que fica com
+      // 100%. É o unico caso em que uma regra acumula as duas coisas.
       const r = await splitDoPix(cenario);
-      expect(r.regras.filter((x) => x.options?.liable).length).toBe(1);
-      expect(r.regras.filter((x) => x.options?.charge_processing_fee).length).toBe(1);
+      const unica = r.regras[0];
+      expect(r.regras).toHaveLength(1);
+      expect(unica.recipient_id).toBe(RECEBEDOR_VENDEDOR);
+      expect(unica.options.liable).toBe(true);
+      expect(unica.options.charge_processing_fee).toBe(true);
       conferirInvariantes(r);
     });
 
