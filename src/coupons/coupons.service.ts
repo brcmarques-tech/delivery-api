@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, In, EntityManager } from 'typeorm';
+import { claimGanho } from '../common/utils/db-claim';
 import { OrderStatus } from '../common/enums';
 import { Coupon } from './entities/coupon.entity';
 import { CreateCouponInput } from './dto/create-coupon.input';
@@ -272,11 +273,29 @@ export class CouponsService {
    */
   async incrementUsage(couponId: string, manager?: EntityManager): Promise<boolean> {
     const runner = manager ?? this.couponsRepository.manager;
-    const rows = await runner.query(
+    const claim = await runner.query(
       `UPDATE coupons SET "usesCount" = "usesCount" + 1 WHERE id = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses") RETURNING id`,
       [couponId],
     );
-    return Array.isArray(rows) && rows.length > 0;
+    // ESTE CLAIM ESTAVA INERTE (achado na auditoria de 15/10/2026).
+    //
+    // A decisao era `Array.isArray(rows) && rows.length > 0`. Com o driver do
+    // TypeORM, UPDATE com RETURNING devolve `[linhas, contagem]` — array de
+    // comprimento 2 SEMPRE, inclusive quando a condicao do WHERE nao casou e
+    // nenhuma linha foi afetada. Ou seja: a funcao respondia "reservei" mesmo
+    // com o cupom esgotado, e o `if (!reservado) throw` em createOrder nunca
+    // disparava.
+    //
+    // Na pratica o limite seguia valendo por causa do pre-check nao-atomico do
+    // `validateAndCalculate` — e e exatamente esse pre-check que o comentario
+    // acima descreve como insuficiente: entre a validacao e a reserva existe uma
+    // janela em que N clientes leem `usesCount` igual. A rede de seguranca
+    // contra essa janela e este claim, e ela estava desligada.
+    //
+    // Mesma classe dos 23 claims corrigidos em delivery-api@44ca510; este
+    // arquivo ficou fora daquela varredura, que cobriu orders, payments e
+    // verification.
+    return claimGanho(claim);
   }
 
   /** H2: Decrement usage count when order is cancelled/rejected/expired */

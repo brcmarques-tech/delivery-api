@@ -1143,6 +1143,85 @@ describe('PaymentsService', () => {
       const [, config] = httpService.axiosRef.delete.mock.calls.at(-1);
       expect(config.headers['Idempotency-Key']).toBe('chave-x');
     });
+
+    // A FORMA QUE O PROVEDOR DEVOLVE NUM VOID DE PRE-AUTORIZACAO.
+    //
+    // Medida no sandbox em 15/10/2026 e copiada daqui para o mock, para que o
+    // teste falhe se alguem apertar a condicao do helper sem saber que o mesmo
+    // helper atende dois casos diferentes: estorno de cobranca paga e anulacao
+    // de pre-auth nao capturada.
+    it('aceita o VOID de pre-auth (canceled + refunded, sem captura nenhuma)', async () => {
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'canceled', last_transaction: { status: 'refunded', amount: 200 } },
+      });
+      await expect(estornar('ch_preauth')).resolves.toBeUndefined();
+    });
+  });
+
+  // ─── cancelPreAuth: liberar o limite do cliente ──────────────
+  //
+  // Este metodo anula a pre-autorizacao quando o pedido cai. Ele usava
+  // `pagarmeDelete` cru e descartava a resposta — e nesta rota o provedor
+  // responde 200 mesmo recusando. Quem paga por nao olhar e o cliente: o pedido
+  // consta cancelado e o limite do cartao segue preso por dias.
+  describe('cancelPreAuth — void conferido', () => {
+    let erros: string[];
+    let avisos: string[];
+
+    beforeEach(() => {
+      erros = [];
+      avisos = [];
+      jest.spyOn((service as any).logger, 'error').mockImplementation((m: any) => { erros.push(String(m)); });
+      jest.spyOn((service as any).logger, 'warn').mockImplementation((m: any) => { avisos.push(String(m)); });
+      jest.spyOn((service as any).logger, 'log').mockImplementation(() => {});
+    });
+
+    it('nao chama o provedor quando o pedido nao tem pre-autorizacao', async () => {
+      httpService.axiosRef.delete.mockClear();
+      await service.cancelPreAuth(makeOrder({ preAuthChargeId: null }) as any);
+      expect(httpService.axiosRef.delete).not.toHaveBeenCalled();
+    });
+
+    it('anula pela rota DELETE /charges/{id} sem corpo', async () => {
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'canceled', last_transaction: { status: 'refunded' } },
+      });
+      await service.cancelPreAuth(makeOrder({ preAuthChargeId: 'ch_void_ok' }) as any);
+      const [url, config] = httpService.axiosRef.delete.mock.calls.at(-1);
+      expect(url).toContain('/charges/ch_void_ok');
+      expect(config.data).toBeUndefined();
+      expect(erros).toHaveLength(0);
+    });
+
+    it('GRITA quando o provedor devolve 200 mas recusa a anulacao', async () => {
+      // O caso que passava calado. O pedido ainda cancela (nao lanca), mas o
+      // problema vira ERROR com marcador proprio, porque e dinheiro preso.
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: {
+          status: 'paid',
+          last_transaction: { status: 'failed', acquirer_message: 'operacao nao permitida' },
+        },
+      });
+      await expect(
+        service.cancelPreAuth(makeOrder({ preAuthChargeId: 'ch_void_recusado' }) as any),
+      ).resolves.toBeUndefined();
+      expect(erros.join(' ')).toContain('[PREAUTH_NAO_LIBERADA]');
+      expect(erros.join(' ')).toContain('ch_void_recusado');
+      expect(avisos).toHaveLength(0);
+    });
+
+    it('segue como AVISO no 412 do provedor (ja anulada ou caducada)', async () => {
+      // Medido: anular duas vezes responde 412. E benigno e idempotente — nao
+      // deve poluir o monitoramento junto com o caso acima.
+      const e: any = new Error('Request failed with status code 412');
+      e.response = { status: 412, data: { message: 'charge nao pode ser cancelada' } };
+      httpService.axiosRef.delete.mockRejectedValue(e);
+      await expect(
+        service.cancelPreAuth(makeOrder({ preAuthChargeId: 'ch_412' }) as any),
+      ).resolves.toBeUndefined();
+      expect(avisos.join(' ')).toContain('may already be expired');
+      expect(erros).toHaveLength(0);
+    });
   });
 
   // ─── data de pagamento da antecipacao ────────────────────────

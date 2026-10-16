@@ -315,6 +315,25 @@ export class PaymentsService implements OnModuleDestroy {
       // resolve o caso total. Nao vale para parcial: ali a cobranca segue "paid".
       (!statusTransacao && (statusCobranca === 'canceled' || statusCobranca === 'refunded'));
 
+    // VOID DE PRE-AUTORIZACAO passa por aqui e passa limpo — medido no sandbox
+    // em 15/10/2026 (bcmTech/experimento-void-preauth.mjs):
+    //
+    //   DELETE numa pre-auth nao capturada -> HTTP 200
+    //     charge.status            = "canceled"
+    //     last_transaction.status  = "refunded"
+    //
+    // Ou seja: o provedor usa a palavra "refunded" mesmo quando nao houve
+    // captura e nada de dinheiro se moveu. Eu esperava outra palavra (algo como
+    // "voided") e teria escrito uma excecao desnecessaria no helper por causa
+    // disso. As duas condicoes acima aceitam o void, entao os dois pontos que
+    // anulam pre-auth podem usar este helper sem adaptacao.
+    //
+    // A outra metade da medicao: anular DUAS vezes, capturar uma cobranca ja
+    // anulada e recapturar uma ja capturada respondem HTTP 412 — erro de
+    // verdade, que o axios transforma em excecao. Isso delimita o problema do
+    // 200-mascarando-falha: ele e do ESTORNO DE COBRANCA PAGA, nao de toda
+    // operacao de cobranca.
+
     if (estornou) return;
 
     const motivo =
@@ -1219,11 +1238,35 @@ export class PaymentsService implements OnModuleDestroy {
     if (!order.preAuthChargeId) return;
 
     try {
-      await this.pagarmeDelete(`/charges/${order.preAuthChargeId}`);
+      // Era `pagarmeDelete` cru, com o resultado descartado. O provedor
+      // responde 200 nesta rota mesmo quando recusa a operacao, e o preco de
+      // nao olhar recai no CLIENTE: o pedido vira cancelado e o limite do
+      // cartao dele segue preso ate a pre-auth caducar, o que leva dias. E ele
+      // nao tem a quem recorrer, porque para a plataforma deu tudo certo.
+      await this.estornarCobranca(order.preAuthChargeId);
       this.logger.log(`Pre-auth cancelled for order #${order.orderNumber} | charge: ${order.preAuthChargeId}`);
     } catch (err: any) {
-      // Se falhar, pode já ter expirado ou sido cancelada
-      this.logger.warn(`Pre-auth cancel failed (may already be expired): ${err.response?.data?.message || err.message}`);
+      // Aqui chegam DUAS coisas diferentes, e tratar as duas como aviso foi o
+      // que escondeu o problema:
+      //
+      //  - HTTP 412 do provedor: a cobranca ja estava anulada, capturada ou
+      //    caducada. E benigno e idempotente — segue sendo warn.
+      //  - excecao do `estornarCobranca`: veio 200 mas a anulacao FOI RECUSADA.
+      //    Isso e dinheiro preso no cartao do cliente e precisa aparecer no
+      //    monitoramento, nao se esconder entre avisos de rotina.
+      //
+      // Os dois continuam sem interromper o cancelamento do pedido: o pedido
+      // cancelou de fato, e nao ter conseguido liberar a pre-auth nao e motivo
+      // para desfazer isso. A diferenca e so o quanto o erro grita.
+      const recusaDoProvedor = String(err?.message || '').startsWith('estorno recusado');
+      if (recusaDoProvedor) {
+        this.logger.error(
+          `[PREAUTH_NAO_LIBERADA] pedido #${order.orderNumber} | charge ${order.preAuthChargeId} ` +
+            `| o limite do cliente pode seguir preso: ${err.message}`,
+        );
+      } else {
+        this.logger.warn(`Pre-auth cancel failed (may already be expired): ${err.response?.data?.message || err.message}`);
+      }
     }
   }
 
@@ -1564,14 +1607,35 @@ export class PaymentsService implements OnModuleDestroy {
             order.delivererSettledAt = new Date();
           } catch (err: any) {
             const errorDetail = JSON.stringify(err.response?.data || err.message);
-            this.logger.error(`Transfer to deliverer failed for order #${order.orderNumber}: ${errorDetail}`);
-            settlementErrors.push(`deliverer:${delivererAmount}:${errorDetail}`);
-            this.notificationsService.sendToVendorUser(
-              store.owner?.id,
-              'Falha na transferência',
-              `Transferência para entregador do pedido #${order.orderNumber} falhou (R$ ${(delivererAmount / 100).toFixed(2)}). Verifique no painel.`,
-              { type: 'TRANSFER_FAILED', orderId: order.id },
-            ).catch(() => {});
+
+            if (PaymentsService.ehBloqueioDeOrigem(err)) {
+              // Bloqueio de origem (allowlist de IP do Pagar.me). Re-tentar não
+              // resolve: a causa é configuração NOSSA, não uma indisponibilidade
+              // do provedor. Então o valor vira PASSIVO rastreável — mesmo
+              // tratamento do PIX com split-on-charge, logo acima — em vez de
+              // ficar 48h em retry e de o lojista receber, a cada rodada, um
+              // aviso de falha que não é problema dele.
+              await orderRepo.update(order.id, {
+                delivererSettledAt: new Date(),
+                delivererPayableCents: delivererAmount,
+                notes: `${order.notes || ''}\n[DELIVERER_PAYABLE] R$ ${(delivererAmount / 100).toFixed(2)} a repassar ao entregador (repasse bloqueado: allowlist de IP do Pagar.me).`.trim(),
+              } as any);
+              order.delivererSettledAt = new Date();
+              this.logger.error(
+                `[REPASSE_BLOQUEADO] pedido #${order.orderNumber} | entregador | ` +
+                  `${delivererAmount} centavos viraram passivo. Liberar o IP de saída no ` +
+                  `allowlist do Pagar.me (mesmo bloqueio da antecipação).`,
+              );
+            } else {
+              this.logger.error(`Transfer to deliverer failed for order #${order.orderNumber}: ${errorDetail}`);
+              settlementErrors.push(`deliverer:${delivererAmount}:${errorDetail}`);
+              this.notificationsService.sendToVendorUser(
+                store.owner?.id,
+                'Falha na transferência',
+                `Transferência para entregador do pedido #${order.orderNumber} falhou (R$ ${(delivererAmount / 100).toFixed(2)}). Verifique no painel.`,
+                { type: 'TRANSFER_FAILED', orderId: order.id },
+              ).catch(() => {});
+            }
           }
         }
       } else {
@@ -1603,14 +1667,38 @@ export class PaymentsService implements OnModuleDestroy {
           order.vendorSettledAt = new Date();
         } catch (err: any) {
           const errorDetail = JSON.stringify(err.response?.data || err.message);
-          this.logger.error(`Transfer to vendor failed for order #${order.orderNumber}: ${errorDetail}`);
-          settlementErrors.push(`vendor:${vendorAmount}:${errorDetail}`);
-          this.notificationsService.sendToVendorUser(
-            store.owner?.id,
-            'Falha na transferência',
-            `A transferência do pedido #${order.orderNumber} (R$ ${(vendorAmount / 100).toFixed(2)}) falhou. Entre em contato com o suporte.`,
-            { type: 'TRANSFER_FAILED', orderId: order.id },
-          ).catch(() => {});
+
+          if (PaymentsService.ehBloqueioDeOrigem(err)) {
+            // Mesmo raciocínio do entregador. A diferença é que não existe
+            // coluna `vendorPayableCents`, então o passivo fica no marcador em
+            // `notes` — consultável por LIKE, mas não somável. Vale criar a
+            // coluna junto da tela de passivos; anotado como pendência em vez de
+            // eu abrir uma migration no meio de uma auditoria.
+            //
+            // NÃO marco `vendorSettledAt`: diferente do caso do PIX com split
+            // (onde o vendedor REALMENTE recebeu), aqui ele não recebeu nada.
+            // Marcar como liquidado esconderia a dívida. O custo é que o retry
+            // continua tentando — e é por isso que o erro vai como ERROR com
+            // marcador próprio, para aparecer no monitoramento.
+            await orderRepo.update(order.id, {
+              notes: `${order.notes || ''}\n[VENDOR_PAYABLE] R$ ${(vendorAmount / 100).toFixed(2)} a repassar ao vendedor (repasse bloqueado: allowlist de IP do Pagar.me).`.trim(),
+            } as any);
+            this.logger.error(
+              `[REPASSE_BLOQUEADO] pedido #${order.orderNumber} | vendedor | ` +
+                `${vendorAmount} centavos pendentes. Liberar o IP de saída no allowlist ` +
+                `do Pagar.me (mesmo bloqueio da antecipação).`,
+            );
+            settlementErrors.push(`vendor_bloqueado:${vendorAmount}`);
+          } else {
+            this.logger.error(`Transfer to vendor failed for order #${order.orderNumber}: ${errorDetail}`);
+            settlementErrors.push(`vendor:${vendorAmount}:${errorDetail}`);
+            this.notificationsService.sendToVendorUser(
+              store.owner?.id,
+              'Falha na transferência',
+              `A transferência do pedido #${order.orderNumber} (R$ ${(vendorAmount / 100).toFixed(2)}) falhou. Entre em contato com o suporte.`,
+              { type: 'TRANSFER_FAILED', orderId: order.id },
+            ).catch(() => {});
+          }
         }
       } else {
         // H4: Cap vendor amount at 0 (never negative) and notify vendor
@@ -3510,7 +3598,12 @@ export class PaymentsService implements OnModuleDestroy {
         // recusado pelo Pagar.me -> [REFUND_FAILED] em loop e o limite do cliente
         // fica preso até a pré-auth caducar (dias). O correto é VOID (DELETE /charges),
         // que libera a autorização na hora e não move dinheiro (não houve captura).
-        await this.pagarmeDelete(`/charges/${chargeId}`);
+        // Mesma troca do `cancelPreAuth`: o void agora e conferido. Aqui a
+        // excecao SOBE — e o certo neste caminho. O bloco externo marca
+        // [REFUND_FAILED] e permite nova tentativa; dar o estorno por feito sem
+        // ter liberado a autorizacao seria pior, porque e justamente o cenario
+        // que o comentario acima descreve como o bug original.
+        await this.estornarCobranca(chargeId);
         this.logger.log(`Pre-auth voided (refund path) for order #${order.orderNumber} | charge: ${chargeId}`);
       } else if (st === 'paid' || st === 'captured') {
         // Dinheiro ja capturado: estorno de verdade. O helper confere
@@ -3642,6 +3735,24 @@ export class PaymentsService implements OnModuleDestroy {
    * forma antiga custa uma linha e evita que o campo volte a zerar em silencio
    * se a resposta variar entre ambientes.
    */
+  /**
+   * O erro do provedor e o bloqueio de ORIGEM (allowlist de IP), e nao uma falha
+   * passageira?
+   *
+   * Importa porque muda o que fazer: falha passageira merece retry; bloqueio de
+   * configuracao nossa nao melhora com repeticao. O settlement re-tentava a cada
+   * 60s por ate 48h contra um 401 que nunca ia mudar, e a cada rodada avisava o
+   * LOJISTA que "a transferencia falhou - entre em contato com o suporte", o que
+   * joga nele um problema que e nosso.
+   */
+  private static ehBloqueioDeOrigem(err: any): boolean {
+    const status = err?.response?.status;
+    const msg = String(
+      err?.response?.data?.message || err?.message || '',
+    ).toLowerCase();
+    return status === 401 || msg.includes('ip de origem') || msg.includes('not authorized');
+  }
+
   private static centavosAguardando(balance: any): number {
     const plano = balance?.waiting_funds_amount;
     if (typeof plano === 'number') return plano;

@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
+import { linhasAfetadas } from '../common/utils/db-claim';
 import { HttpService } from '@nestjs/axios';
 import { PubSub } from 'graphql-subscriptions';
 import { firstValueFrom } from 'rxjs';
@@ -205,7 +206,7 @@ export class ProductsService {
    * pedido (orders.service) e nos estornos (payments.service).
    */
   async decrementStock(id: string, quantity: number): Promise<void> {
-    const rows = await this.productsRepository.query(
+    const claim = await this.productsRepository.query(
       `UPDATE products
           SET stock = stock - $1,
               "isAvailable" = CASE WHEN stock - $1 <= 0 THEN false ELSE "isAvailable" END
@@ -214,7 +215,17 @@ export class ProductsService {
       [quantity, id],
     );
 
-    if (!rows.length) {
+    // `!rows.length` estava inerte (auditoria de 15/10/2026): escrita com
+    // RETURNING devolve [linhas, contagem], comprimento 2 SEMPRE, entao a
+    // excecao de estoque insuficiente NUNCA era lancada — a falta de estoque
+    // passava em silencio.
+    //
+    // Hoje este metodo nao tem chamador (a criacao do pedido usa o decremento
+    // proprio dela, em orders.service, que ja decide por linhasAfetadas). Entao
+    // nao havia consequencia em producao — mas um metodo publico com a guarda
+    // desligada e mina para quem for usa-lo depois, e e justamente o tipo de
+    // coisa que se descobre com dinheiro na mesa.
+    if (linhasAfetadas(claim) === 0) {
       // Nao afetou nenhuma linha: ou o produto sumiu, ou o estoque acabou
       // entre a leitura do cliente e este UPDATE.
       const product = await this.findById(id);
@@ -235,7 +246,7 @@ export class ProductsService {
    * dos incrementos sumia, deixando o lojista com menos estoque do que tem.
    */
   async restoreStock(id: string, quantity: number): Promise<void> {
-    const rows = await this.productsRepository.query(
+    const claim = await this.productsRepository.query(
       `UPDATE products
           SET stock = stock + $1,
               "isAvailable" = CASE WHEN stock + $1 > 0 THEN true ELSE "isAvailable" END
@@ -243,7 +254,9 @@ export class ProductsService {
         RETURNING id`,
       [quantity, id],
     );
-    if (!rows.length) return; // produto nao existe mais — mesmo comportamento de antes
+    // Mesma correcao do decrementStock. Aqui a consequencia era menor (seguia
+    // para um findOne que nao acha nada), mas a guarda tambem estava desligada.
+    if (linhasAfetadas(claim) === 0) return; // produto nao existe mais
 
     const updated = await this.productsRepository.findOne({ where: { id } });
     if (updated) {
