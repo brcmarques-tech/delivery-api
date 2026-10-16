@@ -4324,15 +4324,39 @@ export class PaymentsService implements OnModuleDestroy {
     // Cartao pre-autorizado e nao capturado: basta soltar a reserva.
     if (appointment.preAuthChargeId) {
       try {
-        await this.pagarmeDelete(`/charges/${appointment.preAuthChargeId}`);
+        // Era `pagarmeDelete` cru, com o resultado descartado — o mesmo ponto
+        // cego que o cancelPreAuth dos pedidos tinha.
+        //
+        // O detalhe que torna isto pior aqui: o comentario deste metodo, logo
+        // acima, descreve como BUG exatamente o estado que o silencio
+        // reproduzia — "os R$ X ficavam bloqueados no limite do cliente ate a
+        // pre-autorizacao caducar sozinha na adquirente, dias depois". Este
+        // metodo foi escrito para resolver isso e, ao nao conferir se a soltura
+        // de fato aconteceu, devolvia o cliente ao mesmo lugar sem avisar
+        // ninguem. O provedor responde 200 nesta rota mesmo quando recusa.
+        await this.estornarCobranca(appointment.preAuthChargeId);
         this.logger.log(
           `Pre-auth liberada no cancelamento do agendamento ${appointment.appointmentNumber}`,
         );
       } catch (err: any) {
-        this.logger.warn(
-          `Falha ao liberar pre-auth do agendamento ${appointment.appointmentNumber} ` +
-            `(pode ja ter expirado): ${err.response?.data?.message || err.message}`,
-        );
+        // Mesma separacao do cancelPreAuth: 412 do provedor e benigno (ja
+        // caducou, ja foi solta); recusa dentro de um 200 e dinheiro preso no
+        // cartao do cliente e precisa aparecer no monitoramento.
+        //
+        // Nenhum dos dois lanca: como o doc diz, o cancelamento do agendamento
+        // nao pode falhar por causa do estorno.
+        if (String(err?.message || '').startsWith('estorno recusado')) {
+          this.logger.error(
+            `[PREAUTH_NAO_LIBERADA] agendamento ${appointment.appointmentNumber} ` +
+              `| charge ${appointment.preAuthChargeId} | o limite do cliente pode seguir ` +
+              `preso: ${err.message}`,
+          );
+        } else {
+          this.logger.warn(
+            `Falha ao liberar pre-auth do agendamento ${appointment.appointmentNumber} ` +
+              `(pode ja ter expirado): ${err.response?.data?.message || err.message}`,
+          );
+        }
       }
       return;
     }

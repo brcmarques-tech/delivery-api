@@ -79,11 +79,39 @@ console.log('='.repeat(74));
     }
   }
 
+  // TRIAGEM DE 15/10/2026: dois falsos positivos, verificados por LEITURA.
+  //
+  // A heuristica olha 14 linhas acima procurando UPDATE/INSERT/DELETE. Quando o
+  // SQL que ela acha na janela e de escrita, mas o `.length` daquela linha e de
+  // outra coisa, ela acusa sem motivo.
+  const triados1 = [
+    [
+      'lockedOrder.length === 0',
+      'FALSO POSITIVO: e um SELECT ... FOR UPDATE. SELECT devolve a lista de linhas de verdade, entao .length esta correto ali.',
+    ],
+    [
+      'return expiredOrders.length',
+      'FALSO POSITIVO: expiredOrders vem de um .find() do repositorio, nao de query(). E a contagem de retorno do scheduler.',
+    ],
+  ];
+  const nota1 = (l) => (triados1.find(([p]) => l.includes(p)) || [])[1];
+  const novos1 = suspeitos.filter((s) => !nota1(s.l));
+  const velhos1 = suspeitos.filter((s) => nota1(s.l));
+
   if (suspeitos.length === 0) {
     console.log('  Nenhuma. Todo claim de escrita decide por linhasAfetadas/claimGanho.');
   } else {
-    aConferir += suspeitos.length;
-    for (const s of suspeitos) console.log(`  !! ${s.f}:${s.n}\n       ${s.l}`);
+    if (novos1.length) {
+      aConferir += novos1.length;
+      console.log('  NAO TRIADOS:');
+      for (const s of novos1) console.log(`  !! ${s.f}:${s.n}\n       ${s.l}`);
+    } else {
+      console.log('  NAO TRIADOS: nenhum.');
+    }
+    if (velhos1.length) {
+      console.log('\n  JA TRIADOS (nao contam como pendencia):');
+      for (const s of velhos1) console.log(`  -- ${s.f}:${s.n}\n       ${s.l}\n       ${nota1(s.l)}`);
+    }
   }
   console.log(`  (contra-prova: ${usosDoHelper} usos do helper em ${arquivosComHelper.size} arquivos)`);
 }
@@ -107,8 +135,19 @@ console.log('='.repeat(74));
     }
   }
   console.log('\n 2a) leitura ANINHADA de campo de saldo (v5 e plano):');
+  // TRIAGEM DE 15/10/2026: a unica ocorrencia e o FALLBACK deliberado do helper
+  // `centavosAguardando`, que le o campo PLANO `waiting_funds_amount` da v5 e so
+  // entao tenta a forma aninhada — para nao zerar em silencio se o provedor
+  // variar a forma. Tem teste. Nao e heranca da v4; e defesa contra ela.
+  const fallbackDoHelper = (x) => x.includes('payments/payments.service.ts') && x.includes('waiting_funds?.amount');
+  const novos2a = r2a.filter((x) => !fallbackDoHelper(x));
+  const velhos2a = r2a.filter(fallbackDoHelper);
   if (r2a.length === 0) console.log('   nenhuma');
-  else { aConferir += r2a.length; r2a.forEach((x) => console.log('   !! ' + x)); }
+  else {
+    if (novos2a.length) { aConferir += novos2a.length; novos2a.forEach((x) => console.log('   !! ' + x)); }
+    else console.log('   NAO TRIADOS: nenhum.');
+    velhos2a.forEach((x) => console.log('   -- ' + x + '   (TRIADO: fallback deliberado do helper centavosAguardando, com teste)'));
+  }
 
   const rotasV4 = [
     ['/anticipations`', 'v5 usa /bulk_anticipations'],
@@ -129,8 +168,19 @@ console.log('='.repeat(74));
       }
     }
   }
+  // TRIAGEM DE 15/10/2026: as ocorrencias de /transfers ja foram investigadas
+  // (KAN-299). A rota coletiva responde 401 por allowlist de IP; a por recebedor
+  // e SAQUE do saldo dele, nao empurrao da plataforma. Seguem listadas, e nao
+  // apagadas, porque no dia em que o IP for liberado elas voltam a importar.
+  const ehTransfer = (x) => x.includes("'/transfers'");
+  const novos2b = r2b.filter((x) => !ehTransfer(x));
+  const velhos2b = r2b.filter(ehTransfer);
   if (r2b.length === 0) console.log('   nenhuma');
-  else { aConferir += r2b.length; r2b.forEach((x) => console.log('   !! ' + x)); }
+  else {
+    if (novos2b.length) { aConferir += novos2b.length; novos2b.forEach((x) => console.log('   !! ' + x)); }
+    else console.log('   NAO TRIADOS: nenhum.');
+    velhos2b.forEach((x) => console.log('   -- ' + x));
+  }
 }
 
 // ─────────────────────────────────────────────── CLASSE 3
@@ -153,18 +203,58 @@ console.log('='.repeat(74));
       if (!atribui && !inspeciona) r3.push({ f: rel(f), n: i + 1, l: l.trim() });
     }
   }
+  // TRIAGEM DE 15/10/2026.
+  //
+  // Sem isto, cada rodada reapresenta os mesmos pontos como se fossem novidade,
+  // e quem rodar daqui a tres meses refaz a investigacao inteira — ou pior, le
+  // como achado em aberto o que ja foi medido e descartado.
+  //
+  // Casa por TRECHO da linha, nao por numero de linha: numero envelhece a cada
+  // edicao do arquivo e a anotacao passa a mentir sobre o ponto errado.
+  const jaTriados = [
+    [
+      "'/transfers'",
+      'TRIADO: repasse por transferencia. A rota coletiva responde 401 (allowlist de IP,' +
+      ' KAN-299) e a por recebedor e SAQUE, nao empurrao da plataforma. O bloqueio de' +
+      ' origem e reconhecido e o valor vira passivo em vez de retry por 48h (9a79460).',
+    ],
+    [
+      '/capture`',
+      'TRIADO E DESCARTADO POR MEDICAO: captura nao tem caminho silencioso. Toda falha' +
+      ' que consegui produzir no sandbox volta como HTTP 412, que lanca e cai no' +
+      ' try/catch — diferente do estorno, onde o 200 mascarando falha foi PROVADO.' +
+      ' Ver scripts/provas/experimento-void-preauth.mjs.',
+    ],
+  ];
+  const nota = (l) => (jaTriados.find(([p]) => l.includes(p)) || [])[1];
+
+  const novos = r3.filter((s) => !nota(s.l));
+  const velhos = r3.filter((s) => nota(s.l));
+
   if (r3.length === 0) {
     console.log('  Toda chamada de dinheiro tem o retorno atribuido ou inspecionado.');
   } else {
-    aConferir += r3.length;
-    for (const s of r3) console.log(`  ?? ${s.f}:${s.n}\n       ${s.l}`);
-    console.log('\n  (?? = retorno nem atribuido nem inspecionado nas 16 linhas seguintes.');
-    console.log('   Nao e automaticamente bug: ha chamada cujo 200 basta. Conferir uma a uma.)');
+    if (novos.length) {
+      aConferir += novos.length;
+      console.log('  NAO TRIADOS:');
+      for (const s of novos) console.log(`  ?? ${s.f}:${s.n}\n       ${s.l}`);
+      console.log('\n  (?? = retorno nem atribuido nem inspecionado nas 16 linhas seguintes.');
+      console.log('   Nao e automaticamente bug: ha chamada cujo 200 basta. Conferir uma a uma.)');
+    } else {
+      console.log('  NAO TRIADOS: nenhum.');
+    }
+    if (velhos.length) {
+      console.log('\n  JA TRIADOS (nao contam como pendencia):');
+      for (const s of velhos) console.log(`  -- ${s.f}:${s.n}\n       ${s.l}\n       ${nota(s.l)}`);
+    }
   }
 }
 
 console.log('\n' + '='.repeat(74));
+// O numero so vale alguma coisa se distinguir "novo" de "ja investigado".
+// Antes da triagem ele contava 11 pontos que eu ja tinha conferido um a um — um
+// alarme que toca sempre e um alarme que ninguem escuta.
 console.log(aConferir === 0
-  ? 'RESULTADO: nenhuma ocorrencia das tres classes.'
-  : `RESULTADO: ${aConferir} ponto(s) a conferir acima.`);
+  ? 'RESULTADO: nada NOVO. O que a heuristica acusa ja foi investigado, e o porque\n           esta anotado em cada linha acima.'
+  : `RESULTADO: ${aConferir} ponto(s) NAO TRIADOS acima — investigar.`);
 console.log('='.repeat(74));
