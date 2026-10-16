@@ -227,6 +227,26 @@ export class Order {
   @Column({ type: 'timestamp', nullable: true })
   delivererPayablePaidAt: Date;
 
+  // Repasse de LOJISTA retido na plataforma.
+  //
+  // Nasceu do bloqueio de origem do Pagar.me (allowlist de IP, KAN-299): quando
+  // a transferência é recusada por configuração NOSSA, o valor vira passivo em
+  // vez de ficar 48h em retry contra um 401 que nunca muda — e em vez de o
+  // lojista receber, a cada rodada, um aviso de falha que não é problema dele.
+  //
+  // ASSIMETRIA DELIBERADA com o entregador: ali `delivererSettledAt` É marcado,
+  // porque naquele caminho o repasse nunca chegou a ser tentado (o split já
+  // tinha acontecido sem ele). Aqui `vendorSettledAt` NÃO é marcado: o lojista
+  // deveria ter recebido e não recebeu, e marcar como liquidado esconderia a
+  // dívida.
+  @Field(() => Int, { nullable: true })
+  @Column({ type: 'int', nullable: true })
+  vendorPayableCents: number;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  vendorPayablePaidAt: Date;
+
   // Foto do valor que o cliente JA pagou/autorizou online, tirada no PRIMEIRO
   // ajuste de peso (adjustItemWeight e o unico lugar que muda `total` depois da
   // criacao — depois do primeiro ajuste o `total` deixa de dizer quanto foi

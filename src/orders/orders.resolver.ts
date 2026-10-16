@@ -669,6 +669,33 @@ export class OrdersResolver {
     return this.ordersService.markDelivererPayablePaid(orderId);
   }
 
+  /**
+   * Repasses de LOJISTA retidos. Origem diferente da do entregador: aqui o
+   * repasse FOI tentado e o provedor recusou por bloqueio de origem (KAN-299).
+   *
+   * Usa `@Permission('finance')` e não `'deliveries'`: isto é dívida com a
+   * loja, não com quem entrega, e quem concilia uma coisa não é
+   * necessariamente quem concilia a outra.
+   */
+  @Query(() => [Order])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('finance')
+  vendorPayables(
+    @Args('apenasAbertos', { nullable: true, defaultValue: true })
+    apenasAbertos: boolean,
+  ): Promise<Order[]> {
+    return this.ordersService.vendorPayables(apenasAbertos);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('finance')
+  markVendorPayablePaid(@Args('orderId') orderId: string): Promise<Order> {
+    return this.ordersService.markVendorPayablePaid(orderId);
+  }
+
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)

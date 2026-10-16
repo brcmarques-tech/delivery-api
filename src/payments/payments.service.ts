@@ -1669,11 +1669,16 @@ export class PaymentsService implements OnModuleDestroy {
           const errorDetail = JSON.stringify(err.response?.data || err.message);
 
           if (PaymentsService.ehBloqueioDeOrigem(err)) {
-            // Mesmo raciocínio do entregador. A diferença é que não existe
-            // coluna `vendorPayableCents`, então o passivo fica no marcador em
-            // `notes` — consultável por LIKE, mas não somável. Vale criar a
-            // coluna junto da tela de passivos; anotado como pendência em vez de
-            // eu abrir uma migration no meio de uma auditoria.
+            // Mesmo raciocínio do entregador: bloqueio de origem é
+            // configuração NOSSA e não melhora com repetição, então o valor
+            // vira passivo rastreável em vez de ficar 48h em retry.
+            //
+            // A coluna `vendorPayableCents` veio na migration
+            // 1786600000000-AddVendorPayable. Quando este tratamento foi
+            // escrito ela não existia e o passivo ficava só no marcador em
+            // `notes` — consultável por LIKE, mas não somável. O marcador
+            // CONTINUA sendo escrito: ele é o rastro legível de POR QUE o
+            // valor ficou retido, e a coluna guarda só quanto.
             //
             // NÃO marco `vendorSettledAt`: diferente do caso do PIX com split
             // (onde o vendedor REALMENTE recebeu), aqui ele não recebeu nada.
@@ -1681,6 +1686,7 @@ export class PaymentsService implements OnModuleDestroy {
             // continua tentando — e é por isso que o erro vai como ERROR com
             // marcador próprio, para aparecer no monitoramento.
             await orderRepo.update(order.id, {
+              vendorPayableCents: vendorAmount,
               notes: `${order.notes || ''}\n[VENDOR_PAYABLE] R$ ${(vendorAmount / 100).toFixed(2)} a repassar ao vendedor (repasse bloqueado: allowlist de IP do Pagar.me).`.trim(),
             } as any);
             this.logger.error(

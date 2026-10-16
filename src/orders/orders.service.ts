@@ -2072,6 +2072,54 @@ export class OrdersService {
     return this.findById(orderId);
   }
 
+  /**
+   * Pedidos com repasse de LOJISTA retido na plataforma e ainda não pago.
+   *
+   * Irmã da `delivererPayables`, com uma origem diferente: aqui o repasse FOI
+   * tentado e o provedor recusou por bloqueio de origem (allowlist de IP,
+   * KAN-299). O dinheiro está com a plataforma e é devido à loja.
+   *
+   * Por isso estes pedidos seguem com `vendorSettledAt` nulo: o lojista não
+   * recebeu, e marcar como liquidado esconderia a dívida.
+   */
+  async vendorPayables(apenasAbertos = true): Promise<Order[]> {
+    const qb = this.ordersRepository
+      .createQueryBuilder('pedido')
+      .leftJoinAndSelect('pedido.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      // Alias 'pedido' e nao 'order': ORDER e palavra reservada no Postgres.
+      // Esta armadilha ja estava documentada aqui e eu cai nela assim mesmo,
+      // em autoConfirmExpiredDeliveries — ver o comentario de la.
+      .where('pedido.vendorPayableCents IS NOT NULL')
+      .andWhere('pedido.vendorPayableCents > 0');
+    if (apenasAbertos) {
+      qb.andWhere('pedido.vendorPayablePaidAt IS NULL');
+    }
+    return qb
+      .orderBy('pedido.completedAt', 'ASC')
+      .addOrderBy('pedido.id', 'ASC')
+      .take(500)
+      .getMany();
+  }
+
+  /** Dá baixa no repasse do lojista. Idempotente, como a do entregador. */
+  async markVendorPayablePaid(orderId: string): Promise<Order> {
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "vendorPayablePaidAt" = NOW()
+         WHERE id = $1
+           AND "vendorPayableCents" IS NOT NULL
+           AND "vendorPayablePaidAt" IS NULL
+         RETURNING id`,
+      [orderId],
+    );
+    if (linhasAfetadas(claim) === 0) {
+      throw new BadRequestException(
+        'Este repasse não está em aberto (já foi baixado ou não existe).',
+      );
+    }
+    return this.findById(orderId);
+  }
+
   async retryFailedSettlements(): Promise<number> {
     const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const pending = await this.ordersRepository.find({
