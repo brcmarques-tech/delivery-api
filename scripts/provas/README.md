@@ -76,3 +76,18 @@ que a aplicação faz enquanto roda — estes olham.
 | `e2e-pedido-legado-sem-codigo.mjs` | O **pedido em trânsito no momento do deploy**: criado antes da migration, chega na porta do cliente sem código nenhum e só fecha pelos botões antigos. Cobre também a entrega rápida (confirmada na hora, sem esperar os 5 min do scheduler) e o auto-confirm de 10 min. |
 | `testa-flag-cartao-entrega.mjs` | A flag `APP_DELIVERY_REQUIRES_CARD`. **Não defina em produção** — o padrão ligado é o estado seguro; o compose local põe `false` só para o E2E. |
 | `testa-stores-f6.mjs` | Payload da listagem de lojas (18,7 → 8,7 KB). |
+
+## Funcionalidades novas (16/10/2026)
+
+| script | o que cobre |
+|---|---|
+| `prova-checkout-web-pagamento.mjs` | PIX e cartao no site (KAN-252), 35 asseroes. Inclui o anti-regressao do bug original (ON_DELIVERY cravado) e o **200 com cobranca FALHADA** do Pagar.me — o engano que fazia o cliente ver "pedido criado" numa tela sem nada para pagar. |
+| `prova-sessao-do-site.mjs` | O token do cliente fora do JavaScript (KAN-248), 25 asseroes. Exige o **site rodando** (`npx next dev -p 3005` no shopping-storefront); sem ele a etapa e PULADA, nao falha. |
+| `prova-frete-mostrado-x-cobrado.mjs` | O frete que a tela mostra e o que o pedido cobra sao o MESMO numero (KAN-29). Duas copias de uma conta de dinheiro divergem na primeira vez que alguem mexe numa. |
+| `prova-painel-financeiro.mjs` | A aritmetica do painel do dinheiro (KAN-102), 17 asseroes, com a invariante `volume = parte das lojas + comissao + frete da plataforma`. Confere tambem que lojista e cliente **nao** acessam o painel. |
+| `prova-cliente-fiel.mjs` | O programa de fidelidade (KAN-12), 20 asseroes: 10 compras de verdade ponta a ponta, o premio que **nao vaza** para quem nao comprou, pedido cancelado que nao conta e premio que nao duplica. |
+| `prova-contas-de-equipe.mjs` | Contas de equipe do lojista (KAN-82), 20 asseroes. A primeira coisa que ela verifica e que um lojista **qualquer** continua sem acesso a loja alheia — a mudanca tocou 31 checagens de dono, e afrouxar uma seria pior que o problema original. |
+| `prova-visual-da-loja.mjs` | A loja pinta a propria vitrine (KAN-13), 23 asseroes: a cor chega ao cliente, vitrine ilegivel e recusada, da para voltar ao padrao, e o app realmente aplica o que foi escolhido. |
+| `prova-agente-n8n.mjs` | O assistente de WhatsApp (KAN-199), 21 asseroes. Inclui a checagem que faltava: **toda ferramenta do agente aponta para uma rota que o controller expoe** — JSON versionado diverge do backend em silencio. |
+| `prova-busca-promocao-no-app.mjs` | A promocao casada aparece na busca (KAN-297), 17 asseroes, conferindo **campo por campo** que a query entrega o que a tela le. |
+| `ensaia-baseline-do-schema.mjs` | Banco VAZIO + `migration:run` = o schema de producao (KAN-283), 20 asseroes e 430 colunas conferidas contra o que as entidades produzem. Mais a deduplicacao de cupom, que evitava o boot abortar. |

@@ -56,6 +56,13 @@ const ETAPAS = [
   { nome: 'cupom em concorrência', script: 'prova-cupom-maxuses.mjs', cota: true },
   { nome: 'aviso antes do bloqueio', script: 'prova-aviso-de-bloqueio.mjs', cota: true },
   { nome: 'checkout do site: PIX e cartão', script: 'prova-checkout-web-pagamento.mjs', cota: true },
+  { nome: 'frete mostrado x cobrado', script: 'prova-frete-mostrado-x-cobrado.mjs', cota: true },
+  { nome: 'painel financeiro fecha a conta', script: 'prova-painel-financeiro.mjs', cota: true },
+  { nome: 'cliente fiel (prêmio não vaza)', script: 'prova-cliente-fiel.mjs', cota: true },
+  { nome: 'contas de equipe (sem IDOR entre lojas)', script: 'prova-contas-de-equipe.mjs', cota: true },
+  { nome: 'visual da loja (vitrine legível)', script: 'prova-visual-da-loja.mjs', cota: true },
+  { nome: 'agente do WhatsApp', script: 'prova-agente-n8n.mjs', cota: true },
+  { nome: 'busca: promoção aparece', script: 'prova-busca-promocao-no-app.mjs', cota: false },
   // Esta precisa do SITE rodando (next dev). Quando ele não está no ar o
   // script sai com código 2 e a etapa aparece como PULADA — melhor que uma
   // falha vermelha que não é do produto.

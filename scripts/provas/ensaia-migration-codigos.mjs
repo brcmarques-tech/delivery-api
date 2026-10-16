@@ -168,10 +168,17 @@ try {
   aplicadas.forEach((m) => console.log('   aplicada: ' + m));
   check(run.ok, 'o CLI do TypeORM reaplicou as migrations sem erro',
     run.ok ? '' : (run.saida.split(/\r?\n/).filter((l) => /error/i.test(l))[0] || 'veja a saida'));
-  check(aplicadas.length === QUANTAS, `reaplicou exatamente as ${QUANTAS} revertidas`,
+  // O que importa e que as REVERTIDAS voltaram. Exigir "exatamente QUANTAS"
+  // era uma suposicao sobre o estado do banco de referencia, nao sobre o
+  // produto: o ambiente de dev usa `synchronize`, entao migrations novas
+  // existem no codigo e NUNCA foram registradas na tabela `migrations`. O
+  // clone herda esse historico e o `migration:run` aplica, legitimamente, as
+  // revertidas MAIS as que nunca rodaram. A terceira vez que este script me
+  // acusou de um problema que era dele.
+  check(aplicadas.length >= QUANTAS, `reaplicou ao menos as ${QUANTAS} revertidas`,
     `${aplicadas.length} aplicada(s)`);
   check(revertidas.every((r) => aplicadas.includes(r)),
-    'as reaplicadas sao as mesmas que foram revertidas');
+    'e as reaplicadas incluem exatamente as que foram revertidas');
 
   // ══════════════════════════════ 4. o schema resultante bate?
   console.log('\n=== 4. assinatura de orders: clone x banco de referencia ===');
