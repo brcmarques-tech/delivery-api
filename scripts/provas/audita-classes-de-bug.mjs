@@ -185,7 +185,7 @@ console.log('='.repeat(74));
 
 // ─────────────────────────────────────────────── CLASSE 3
 console.log('\n' + '='.repeat(74));
-console.log('CLASSE 3 — HTTP 200 tratado como sucesso em caminho de dinheiro');
+console.log("CLASSE 3 — HTTP 200 tratado como sucesso em caminho de dinheiro");
 console.log('='.repeat(74));
 {
   const marcasDeDinheiro = ['/capture', '/charges', '/transfers', 'bulk_anticipations', '/refund', '/paymentlinks'];
@@ -247,6 +247,58 @@ console.log('='.repeat(74));
       console.log('\n  JA TRIADOS (nao contam como pendencia):');
       for (const s of velhos) console.log(`  -- ${s.f}:${s.n}\n       ${s.l}\n       ${nota(s.l)}`);
     }
+  }
+}
+
+// ─────────────────────────────────────────────── CLASSE 4
+console.log('\n' + '='.repeat(74));
+console.log('CLASSE 4 — alias de palavra RESERVADA em SQL cru dentro do QueryBuilder');
+console.log('='.repeat(74));
+{
+  // Esta classe entrou em 16/10/2026, depois de ela ter derrubado um scheduler
+  // inteiro por dias.
+  //
+  // `.andWhere('order."codigoVendedor" IS NULL')` — alias cru com a coluna
+  // entre aspas. O TypeORM so traduz e aspeia CAMINHO DE PROPRIEDADE
+  // (`order.status`); SQL cru ele repassa como esta. E `order` e palavra
+  // reservada, entao o Postgres respondia "syntax error at or near order"
+  // (42601), a query lancava a cada rodada de 60s, o catch do scheduler
+  // engolia, e o auto-confirm simplesmente deixou de existir.
+  //
+  // O gatilho e a COMBINACAO: alias reservado + SQL cru. Alias reservado com
+  // caminho de propriedade e inofensivo, e SQL cru com alias nao-reservado
+  // tambem. Por isso a heuristica procura as duas coisas juntas.
+  const RESERVADAS = [
+    'order', 'user', 'group', 'table', 'select', 'from', 'where',
+    'limit', 'offset', 'end', 'all', 'check', 'default', 'desc', 'asc',
+  ];
+  const r4 = [];
+  for (const f of todos) {
+    const linhas = fs.readFileSync(f, 'utf8').split(/\r?\n/);
+    for (let i = 0; i < linhas.length; i++) {
+      const l = linhas[i];
+      if (/^\s*\*|^\s*\/\//.test(l)) continue; // comentario
+      for (const r of RESERVADAS) {
+        // alias reservado seguido de ponto e ASPAS: o jeito que quebra.
+        if (new RegExp('\\b' + r + '\\."').test(l)) {
+          r4.push({ f: rel(f), n: i + 1, l: l.trim(), alias: r });
+          break;
+        }
+      }
+    }
+  }
+  if (r4.length === 0) {
+    console.log('  Nenhum. Nenhum alias reservado aparece colado a uma coluna entre aspas.');
+    console.log(`  (aliases vigiados: ${RESERVADAS.join(', ')})`);
+  } else {
+    aConferir += r4.length;
+    console.log('  NAO TRIADOS:');
+    for (const s of r4) {
+      console.log(`  !! ${s.f}:${s.n}  (alias "${s.alias}" e reservado)\n       ${s.l}`);
+    }
+    console.log('\n  Troque por caminho de propriedade (order.coluna) e deixe o TypeORM');
+    console.log('  aspear. Isto NAO falha em teste: a query so quebra em runtime, e se');
+    console.log('  estiver dentro de um scheduler, o catch dele engole e o job some.');
   }
 }
 
