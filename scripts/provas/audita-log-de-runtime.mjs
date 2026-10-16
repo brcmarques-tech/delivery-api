@@ -33,6 +33,18 @@ const CONTAINER = 'shopping-api';
 // Ruído esperado da stack LOCAL, que não indica defeito no código.
 // Cada entrada precisa dizer POR QUE é benigna — senão esta lista vira o lugar
 // onde um erro real se esconde.
+//
+// O terceiro campo, quando existe, é o LIMITE DE OCORRÊNCIAS. Acima dele a
+// linha volta a contar como erro.
+//
+// Isso existe por causa do `[CODIGO_ERRADO]`, que é ERROR de propósito:
+// tentativa repetida no código que libera dinheiro é evento de SEGURANÇA, e o
+// serviço eleva o nível justamente para aparecer no monitoramento. Pôr na
+// lista de benignos sem limite seria desligar esse alarme.
+//
+// Com limite, a distinção fica no lugar certo: algumas ocorrências são o E2E
+// exercitando o bloqueio por força bruta de propósito; muitas são alguém
+// tentando adivinhar código, ou uma tela mandando o valor errado em laço.
 const BENIGNOS = [
   ['WhatsApp desabilitado', 'WAHA não sobe na stack local; o aviso é do próprio guard do serviço'],
   [
@@ -43,6 +55,13 @@ const BENIGNOS = [
   ['ExponentPushToken', 'push de teste vai para o Expo e falha; cliente de teste não tem token real'],
   ['expo.io', 'mesma coisa: push para o Expo'],
   ['ECONNREFUSED 127.0.0.1:3001', 'WAHA local ausente'],
+  [
+    '[CODIGO_ERRADO]',
+    'o E2E dos códigos exercita o bloqueio por força bruta de propósito. ' +
+      'ACIMA DO LIMITE deixa de ser benigno: é tentativa de adivinhar código, ' +
+      'ou uma tela mandando valor errado em laço',
+    8,
+  ],
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,9 +115,28 @@ const erros = linhas
   .map(limpo)
   .filter((l) => /\bERROR\b/.test(l) || /QueryFailedError|UnhandledPromiseRejection|syntax error at or near/.test(l));
 
-const motivoBenigno = (l) => (BENIGNOS.find(([p]) => l.includes(p)) || [])[1];
-const reais = erros.filter((l) => !motivoBenigno(l));
-const tolerados = erros.filter((l) => motivoBenigno(l));
+const entradaBenigna = (l) => BENIGNOS.find(([p]) => l.includes(p));
+const motivoBenigno = (l) => (entradaBenigna(l) || [])[1];
+
+// O limite é por PADRÃO, não por linha: conta todas as ocorrências daquele
+// padrão na janela e, se passar do teto, a entrada deixa de valer e TODAS as
+// linhas dela voltam a ser erro. Contar por linha não serviria — cada
+// `[CODIGO_ERRADO]` traz pedido e usuário diferentes, então nenhuma linha
+// repete e o teto nunca seria alcançado.
+const excedeuOTeto = (l) => {
+  const entrada = entradaBenigna(l);
+  const teto = entrada?.[2];
+  // `typeof`, e não `!teto`: com `!teto` o teto ZERO — tolerância nenhuma —
+  // seria lido como "sem teto" e a entrada nunca disparava. Peguei isso ao
+  // testar a regra com 0 justamente para ver se ela disparava, e ela não
+  // disparou. Um teto que eu não vi funcionar é um teto em que não confio.
+  if (typeof teto !== 'number') return false;
+  const quantas = erros.filter((x) => x.includes(entrada[0])).length;
+  return quantas > teto;
+};
+
+const reais = erros.filter((l) => !motivoBenigno(l) || excedeuOTeto(l));
+const tolerados = erros.filter((l) => motivoBenigno(l) && !excedeuOTeto(l));
 
 // Agrupa por mensagem para não despejar a mesma linha 40 vezes.
 function agrupar(ls) {

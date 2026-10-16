@@ -62,39 +62,114 @@ export class PromotionsService implements OnModuleInit {
   // campanha para segunda-feira, o webhook aplicava o desconto so se `now` ja
   // estivesse dentro da janela (nao estava), e na segunda ninguem reaplicava:
   // o produto seguia com preco cheio e a campanha paga simplesmente nao rodava.
+  /**
+   * A CAMPANHA VIGENTE de um produto.
+   *
+   * Esta condição é a definição única de "está valendo agora", e os dois
+   * schedulers abaixo passaram a ser complementares em cima dela: um aplica o
+   * preço de quem está vigente, o outro limpa o preço de quem não tem ninguém
+   * vigente. Juntos determinam inteiramente o `promotionalPrice` do produto.
+   *
+   * Isso importa porque `product.promotionalPrice` É O PREÇO DE VENDA —
+   * `orders.service` calcula o subtotal com `promotionalPrice || price`, e
+   * desse subtotal saem a comissão e a fatia de cada um no split.
+   *
+   * O campo pertence exclusivamente a este módulo: além destes schedulers, só
+   * `markAsPaid`, `toggleActive`, `swapProduct` e `delete` o escrevem, e os
+   * quatro já conferem esta mesma janela. É isso que permite tratar os dois
+   * schedulers como a autoridade sobre ele.
+   */
+  private static readonly CAMPANHA_VIGENTE = `
+               pr."isPaid" = true
+           AND pr."isActive" = true
+           AND pr."startDate" <= NOW()
+           AND pr."endDate" >= NOW()
+           AND pr."promotionalPrice" IS NOT NULL`;
+
+  /**
+   * Aplica o preço da campanha vigente.
+   *
+   * BUGFIX (16/10/2026): O PREÇO OSCILAVA ENTRE RODADAS DO SCHEDULER.
+   *
+   * O `UPDATE ... FROM promotions` casava TODAS as campanhas vigentes do
+   * produto. Com duas pagas e ativas no mesmo produto — o `create` só limita a
+   * QUANTIDADE por semana pela cota do plano, nada impede duas no mesmo
+   * produto — o Postgres escolhia uma arbitrariamente, e a condição
+   * `IS DISTINCT FROM` fazia a query achar a OUTRA na rodada seguinte e trocar
+   * o preço de novo.
+   *
+   * Medido em banco descartável (scripts/provas/prova-promocoes-preco.mjs),
+   * produto de R$ 100 com campanhas de R$ 80 e de R$ 60:
+   *
+   *     1a rodada: R$ 60,00
+   *     2a rodada: R$ 80,00
+   *     3a rodada: R$ 60,00
+   *
+   * O scheduler roda a cada minuto. O cliente pagava um preço diferente
+   * conforme o minuto em que abrisse a tela, e a comissão saía desse valor.
+   *
+   * O conserto é o `DISTINCT ON`: uma campanha por produto, escolhida por
+   * regra explícita — a de início mais RECENTE, e em empate a criada mais
+   * recentemente. É o que corresponde à intuição de quem anuncia: a última
+   * campanha que eu lancei é a que está no ar.
+   */
   private async activateDuePromotions() {
     try {
       await this.productsRepository.manager.query(`
         UPDATE products p
-        SET "promotionalPrice" = pr."promotionalPrice"
-        FROM promotions pr
-        WHERE pr."productId" = p.id
-          AND pr."isPaid" = true
-          AND pr."isActive" = true
-          AND pr."startDate" <= NOW()
-          AND pr."endDate" >= NOW()
-          AND pr."promotionalPrice" IS NOT NULL
-          AND (p."promotionalPrice" IS DISTINCT FROM pr."promotionalPrice")
+        SET "promotionalPrice" = vigente."promotionalPrice"
+        FROM (
+          SELECT DISTINCT ON (pr."productId")
+                 pr."productId",
+                 pr."promotionalPrice"
+            FROM promotions pr
+           WHERE ${PromotionsService.CAMPANHA_VIGENTE}
+           ORDER BY pr."productId", pr."startDate" DESC, pr."createdAt" DESC
+        ) vigente
+        WHERE vigente."productId" = p.id
+          AND p."promotionalPrice" IS DISTINCT FROM vigente."promotionalPrice"
       `);
     } catch (err) {
       this.logger.error('Error activating due promotions', err);
     }
   }
 
+  /**
+   * Limpa o preço promocional de quem não tem campanha vigente.
+   *
+   * BUGFIX (16/10/2026): O PREÇO DE UMA CAMPANHA VENCIDA FICAVA PARA SEMPRE.
+   *
+   * O guarda do `NOT EXISTS` conferia `isPaid` mas NÃO `isActive`. Então uma
+   * campanha paga que o lojista DESLIGOU, com janela futura, bloqueava a
+   * limpeza — e nunca ia aplicar o preço dela, porque o ativador exige
+   * `isActive`. Resultado: o produto ficava preso no preço de uma campanha
+   * vencida, vendendo mais barato indefinidamente.
+   *
+   * Medido na mesma prova: produto de R$ 200 com campanha vencida de R$ 150 e
+   * uma paga-mas-desligada para a semana seguinte ficou em R$ 150,00 depois da
+   * limpeza.
+   *
+   * Havia um segundo caso pelo mesmo motivo: campanha paga e ativa com janela
+   * FUTURA também bloqueava a limpeza, então o preço da vencida continuava
+   * valendo no intervalo entre as duas, em vez de o produto voltar ao preço
+   * cheio.
+   *
+   * O conserto é o complemento exato do ativador: limpa quando NINGUÉM está
+   * vigente. Também deixei de exigir o join com uma campanha vencida — assim a
+   * limpeza alcança o preço órfão de uma campanha apagada (promoção não tem
+   * soft-delete), que antes ficava para sempre.
+   */
   private async clearExpiredPromotions() {
     try {
       await this.productsRepository.manager.query(`
         UPDATE products p
         SET "promotionalPrice" = NULL
-        FROM promotions pr
-        WHERE pr."productId" = p.id
-          AND pr."endDate" < NOW()
-          AND p."promotionalPrice" IS NOT NULL
+        WHERE p."promotionalPrice" IS NOT NULL
           AND NOT EXISTS (
-            SELECT 1 FROM promotions pr2
-            WHERE pr2."productId" = p.id
-              AND pr2."endDate" >= NOW()
-              AND pr2."isPaid" = true
+            SELECT 1
+              FROM promotions pr
+             WHERE pr."productId" = p.id
+               AND ${PromotionsService.CAMPANHA_VIGENTE}
           )
       `);
     } catch (err) {
