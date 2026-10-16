@@ -1281,4 +1281,140 @@ describe('PaymentsService', () => {
       expect(data('2026-10-19T12:00:00Z')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
   });
+
+  // ─── cancelamento de agendamento: a pre-auth foi mesmo solta? ───────────
+  //
+  // Este caminho foi alterado em 15/10/2026 (dadf4c4) e nao tinha teste
+  // nenhum. Ele mexe em dinheiro: e o que libera o limite do cartao do
+  // cliente quando um agendamento e cancelado.
+  //
+  // O comentario do proprio metodo descreve como BUG o estado que o codigo
+  // antigo reproduzia em silencio — "os R$ ficavam bloqueados no limite do
+  // cliente ate a pre-autorizacao caducar sozinha, dias depois". Ele usava
+  // `pagarmeDelete` cru e descartava a resposta, e o provedor responde 200
+  // nessa rota mesmo quando recusa.
+  describe('releaseAppointmentPayment', () => {
+    let erros: string[];
+    let avisos: string[];
+
+    function agendamento(over: any = {}) {
+      return {
+        id: 'apt-1',
+        appointmentNumber: 'AGD-9001',
+        preAuthChargeId: 'ch_apt_1',
+        capturedAt: null,
+        isSettled: false,
+        paymentStatus: 'AUTHORIZED',
+        pagarmeOrderId: null,
+        price: 120,
+        ...over,
+      } as any;
+    }
+
+    beforeEach(() => {
+      erros = [];
+      avisos = [];
+      jest.spyOn((service as any).logger, 'error').mockImplementation((m: any) => { erros.push(String(m)); });
+      jest.spyOn((service as any).logger, 'warn').mockImplementation((m: any) => { avisos.push(String(m)); });
+      jest.spyOn((service as any).logger, 'log').mockImplementation(() => {});
+      httpService.axiosRef.delete.mockReset();
+      httpService.axiosRef.get.mockReset();
+    });
+
+    it('solta a pre-auth pela rota DELETE /charges/{id}, sem corpo', async () => {
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'canceled', last_transaction: { status: 'refunded' } },
+      });
+      await service.releaseAppointmentPayment(agendamento());
+      const [url, config] = httpService.axiosRef.delete.mock.calls.at(-1);
+      expect(url).toContain('/charges/ch_apt_1');
+      expect(config.data).toBeUndefined();
+      expect(erros).toHaveLength(0);
+    });
+
+    it('GRITA quando o provedor devolve 200 mas recusa a soltura', async () => {
+      // O caso que passava calado, e que devolve o cliente exatamente ao
+      // estado que o doc do metodo descreve como bug.
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'paid', last_transaction: { status: 'failed' } },
+      });
+      await expect(service.releaseAppointmentPayment(agendamento())).resolves.toBeUndefined();
+      expect(erros.join(' ')).toContain('[PREAUTH_NAO_LIBERADA]');
+      expect(erros.join(' ')).toContain('AGD-9001');
+      expect(avisos).toHaveLength(0);
+    });
+
+    it('segue como AVISO no 412 (ja caducou ou ja foi solta)', async () => {
+      const e: any = new Error('Request failed with status code 412');
+      e.response = { status: 412, data: { message: 'charge nao pode ser cancelada' } };
+      httpService.axiosRef.delete.mockRejectedValue(e);
+      await expect(service.releaseAppointmentPayment(agendamento())).resolves.toBeUndefined();
+      expect(avisos.join(' ')).toContain('pode ja ter expirado');
+      expect(erros).toHaveLength(0);
+    });
+
+    it('NUNCA lanca — o cancelamento nao pode falhar por causa do estorno', async () => {
+      // E o que o doc do metodo promete, e o que as duas mutations de
+      // cancelamento assumem ao chamar com .catch() por fora.
+      httpService.axiosRef.delete.mockRejectedValue(new Error('rede caiu'));
+      await expect(service.releaseAppointmentPayment(agendamento())).resolves.toBeUndefined();
+    });
+
+    it('ja capturado: nao chama o provedor, e pede acao manual', async () => {
+      await service.releaseAppointmentPayment(agendamento({ capturedAt: new Date() }));
+      expect(httpService.axiosRef.delete).not.toHaveBeenCalled();
+      expect(avisos.join(' ')).toContain('acao manual');
+    });
+
+    it('ja liquidado: idem — o dinheiro ja saiu para o prestador', async () => {
+      await service.releaseAppointmentPayment(agendamento({ isSettled: true }));
+      expect(httpService.axiosRef.delete).not.toHaveBeenCalled();
+      expect(avisos.join(' ')).toContain('acao manual');
+    });
+
+    it('PIX pago: acha a cobranca paga no pedido e estorna com chave de idempotencia', async () => {
+      httpService.axiosRef.get.mockResolvedValue({
+        data: {
+          charges: [
+            { id: 'ch_cancelada', status: 'canceled' },
+            { id: 'ch_paga', status: 'paid' },
+          ],
+        },
+      });
+      httpService.axiosRef.delete.mockResolvedValue({
+        data: { status: 'canceled', last_transaction: { status: 'refunded' } },
+      });
+
+      await service.releaseAppointmentPayment(
+        agendamento({ preAuthChargeId: null, paymentStatus: 'PAID', pagarmeOrderId: 'or_apt_1' }),
+      );
+
+      const [url, config] = httpService.axiosRef.delete.mock.calls.at(-1);
+      // Escolhe a cobranca PAGA, nao a primeira da lista.
+      expect(url).toContain('/charges/ch_paga');
+      // A chave de idempotencia e por AGENDAMENTO: duas tentativas de estorno
+      // do mesmo cancelamento nao podem virar dois estornos.
+      expect(config.headers['Idempotency-Key']).toBe('appointment-refund-apt-1');
+    });
+
+    it('PIX sem cobranca paga no pedido: avisa e nao tenta estornar', async () => {
+      httpService.axiosRef.get.mockResolvedValue({
+        data: { charges: [{ id: 'ch_x', status: 'pending' }] },
+      });
+      await service.releaseAppointmentPayment(
+        agendamento({ preAuthChargeId: null, paymentStatus: 'PAID', pagarmeOrderId: 'or_apt_2' }),
+      );
+      expect(httpService.axiosRef.delete).not.toHaveBeenCalled();
+      expect(avisos.join(' ')).toContain('nenhuma cobranca paga');
+    });
+
+    it('sem pre-auth e sem PIX pago: nao faz nada (nao ha o que soltar)', async () => {
+      await service.releaseAppointmentPayment(
+        agendamento({ preAuthChargeId: null, paymentStatus: 'PENDING' }),
+      );
+      expect(httpService.axiosRef.delete).not.toHaveBeenCalled();
+      expect(httpService.axiosRef.get).not.toHaveBeenCalled();
+      expect(erros).toHaveLength(0);
+    });
+  });
 });

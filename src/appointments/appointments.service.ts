@@ -8,7 +8,8 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, In, IsNull, Between, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
+import { Repository, Not, In, IsNull, Between, LessThanOrEqual, MoreThanOrEqual, MoreThan } from 'typeorm';
+import { linhasAfetadas } from '../common/utils/db-claim';
 import { Appointment } from './entities/appointment.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Service } from '../services/entities/service.entity';
@@ -797,6 +798,50 @@ export class AppointmentsService {
       }
     }
     return liquidados;
+  }
+
+  /**
+   * Agendamentos com repasse de PRESTADOR retido na plataforma e não pago.
+   *
+   * Irmã de `vendorPayables` em orders. A transferência FOI tentada e o
+   * provedor recusou por bloqueio de origem (allowlist de IP, KAN-299).
+   *
+   * Estes seguem com `isSettled = false`: o prestador não recebeu, e marcar
+   * como liquidado esconderia a dívida. É também por isso que continuam
+   * aparecendo no retry de 48h — e isso é desejado: no dia em que o IP for
+   * liberado, o próprio retry zera o passivo sozinho, sem ninguém ter de
+   * conciliar nada à mão.
+   */
+  async vendorPayables(apenasAbertos = true): Promise<Appointment[]> {
+    const where: any = {
+      vendorPayableCents: MoreThan(0),
+      deletedAt: IsNull(),
+    };
+    if (apenasAbertos) where.vendorPayablePaidAt = IsNull();
+    return this.appointmentsRepository.find({
+      where,
+      relations: RELATIONS,
+      order: { updatedAt: 'ASC' },
+      take: 500,
+    });
+  }
+
+  /** Dá baixa no repasse manual do prestador. Idempotente, como as irmãs. */
+  async markVendorPayablePaid(appointmentId: string): Promise<Appointment> {
+    const claim = await this.appointmentsRepository.manager.query(
+      `UPDATE appointments SET "vendorPayablePaidAt" = NOW()
+         WHERE id = $1
+           AND "vendorPayableCents" IS NOT NULL
+           AND "vendorPayablePaidAt" IS NULL
+         RETURNING id`,
+      [appointmentId],
+    );
+    if (linhasAfetadas(claim) === 0) {
+      throw new BadRequestException(
+        'Este repasse não está em aberto (já foi baixado ou não existe).',
+      );
+    }
+    return this.findByIdWithRelations(appointmentId);
   }
 
   async sendUpcomingReminders(): Promise<number> {

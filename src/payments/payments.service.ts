@@ -4490,6 +4490,39 @@ export class PaymentsService implements OnModuleDestroy {
         this.logger.log(`Transfer to vendor for appointment ${appointment.appointmentNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
       } catch (err: any) {
         const errorDetail = JSON.stringify(err.response?.data || err.message);
+
+        if (PaymentsService.ehBloqueioDeOrigem(err)) {
+          // MESMA CORRECAO QUE O CAMINHO DE PEDIDO JA TINHA RECEBIDO (9a79460),
+          // e que nao foi aplicada nesta copia — classico conserto que pega um
+          // lado so.
+          //
+          // Bloqueio de origem (allowlist de IP do Pagar.me) e configuracao
+          // NOSSA: re-tentar nao melhora. Antes, este caminho gastava as 48h da
+          // janela de retry contra um 401 que nunca muda, avisando o LOJISTA a
+          // cada rodada que a transferencia dele falhou — e no fim da janela o
+          // agendamento saia da fila com o dinheiro na plataforma e nenhum
+          // registro de que havia divida.
+          //
+          // Agora o valor vira passivo rastreavel, somavel na tela de repasses
+          // retidos junto com os de pedido.
+          //
+          // `isSettled` SEGUE FALSE: o lojista nao recebeu, e marcar como
+          // liquidado esconderia a divida. O retry continua passando por aqui —
+          // e por isso o log vai como ERROR com marcador proprio, para aparecer
+          // no monitoramento em vez de se diluir entre falhas de rede.
+          await aptRepo.update(appointment.id, {
+            isSettled: false,
+            vendorPayableCents: vendorAmount,
+            notes: `${appointment.notes || ''}\n[VENDOR_PAYABLE] R$ ${(vendorAmount / 100).toFixed(2)} a repassar ao prestador (repasse bloqueado: allowlist de IP do Pagar.me).`.trim(),
+          } as any);
+          this.logger.error(
+            `[REPASSE_BLOQUEADO] agendamento ${appointment.appointmentNumber} | prestador | ` +
+              `${vendorAmount} centavos viraram passivo. Liberar o IP de saida no allowlist ` +
+              `do Pagar.me (mesmo bloqueio da antecipacao).`,
+          );
+          return;
+        }
+
         this.logger.error(`Transfer to vendor failed for appointment ${appointment.appointmentNumber}: ${errorDetail}`);
         // BUGFIX: `isSettled` foi marcado ANTES da transferencia e continuava
         // `true` mesmo com a transferencia falhando — o agendamento saia da fila

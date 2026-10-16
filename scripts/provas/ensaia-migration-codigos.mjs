@@ -41,7 +41,10 @@ import fs from 'fs';
 const RAIZ_API = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const CLONE = 'ensaio_migrations';
-const QUANTAS = 2; // migrations a reverter e reaplicar
+// Quantas migrations reverter e reaplicar. Quanto maior, mais do caminho de
+// deploy o ensaio cobre — e mais demora. 3 cobre as tres de passivo e a dos
+// codigos, que sao as que ainda nao rodaram em producao.
+const QUANTAS = Number(process.env.ENSAIO_QUANTAS) || 3;
 const ok = [], falhas = [];
 const check = (c, n, d = '') => { (c ? ok : falhas).push(n); console.log(`${c ? 'OK  ' : 'FALHOU'} ${n}${d ? ' — ' + d : ''}`); };
 
@@ -121,11 +124,41 @@ try {
   }
   check(revertidas.length === QUANTAS, `as ${QUANTAS} reverteram sem erro`, revertidas.join(', '));
 
-  const sumiram = campos.filter(
-    (c) => dentro(`SELECT count(*) FROM information_schema.columns WHERE table_name='orders' AND column_name='${c}'`, CLONE) === '0',
+  // GUARDA ANTI-VACUIDADE, e ela precisou virar GENERICA.
+  //
+  // A comparacao final (clone x referencia) passaria tambem num mundo em que o
+  // revert nao removeu nada: nada removido, nada para reaplicar, tudo igual. O
+  // que impede esse falso OK e provar que o revert MEXEU no schema.
+  //
+  // A primeira versao provava isso exigindo que as 14 colunas dos CODIGOS
+  // tivessem sumido. Funcionou enquanto AddDeliveryCodes era uma das duas
+  // ultimas migrations — e quebrou no dia em que entraram AddVendorPayable e
+  // AddAppointmentVendorPayable, porque o revert passou a derrubar outras duas.
+  // O script acusou falha sendo que o codigo estava certo: a assertiva e que
+  // tinha envelhecido.
+  //
+  // Agora a guarda e sobre o FATO, nao sobre colunas especificas: o schema de
+  // `orders` depois do revert tem de ser DIFERENTE do de referencia. Isso vale
+  // para qualquer par de migrations que venha a ser o ultimo.
+  const depoisDoRevert = assinatura(CLONE);
+  check(
+    depoisDoRevert !== esperado,
+    'o revert de fato MEXEU no schema (senao a comparacao final nao provaria nada)',
+    `${esperado.split('\n').length - depoisDoRevert.split('\n').length} coluna(s) a menos em orders`,
   );
-  check(sumiram.length === 14, 'o down() removeu as 14 colunas dos codigos (rollback nao deixa lixo)',
-    `${sumiram.length}/14 removidas`);
+
+  // E, quando a das colunas de codigo estiver entre as revertidas, confere que
+  // o down() dela nao deixou lixo.
+  if (revertidas.some((r) => r.includes('AddDeliveryCodes'))) {
+    const sumiram = campos.filter(
+      (c) => dentro(`SELECT count(*) FROM information_schema.columns WHERE table_name='orders' AND column_name='${c}'`, CLONE) === '0',
+    );
+    check(sumiram.length === 14, 'o down() removeu as 14 colunas dos codigos (rollback nao deixa lixo)',
+      `${sumiram.length}/14 removidas`);
+  } else {
+    console.log('   --   AddDeliveryCodes nao esta entre as revertidas desta rodada');
+    console.log(`        (QUANTAS=${QUANTAS}; as ultimas sao ${revertidas.join(', ')})`);
+  }
 
   // ══════════════════════════════ 3. reaplicar
   console.log('\n=== 3. migration:run no clone ===');
