@@ -316,7 +316,7 @@ export class PaymentsService implements OnModuleDestroy {
       (!statusTransacao && (statusCobranca === 'canceled' || statusCobranca === 'refunded'));
 
     // VOID DE PRE-AUTORIZACAO passa por aqui e passa limpo — medido no sandbox
-    // em 15/10/2026 (bcmTech/experimento-void-preauth.mjs):
+    // em 15/10/2026 (scripts/provas/experimento-void-preauth.mjs):
     //
     //   DELETE numa pre-auth nao capturada -> HTTP 200
     //     charge.status            = "canceled"
