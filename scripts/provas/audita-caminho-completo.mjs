@@ -59,17 +59,38 @@ const ETAPAS = [
   { nome: 'log de runtime (130s)', script: 'audita-log-de-runtime.mjs', cota: false },
 ];
 
+// Só uso `\r` para reescrever a linha quando a saída é um TERMINAL.
+//
+// Canalizada (`| tail`, redirecionada para arquivo, lida por outro script), a
+// volta de carro não limpa nada: ela vira caractere no meio do texto e come os
+// rótulos das etapas seguintes. Foi o que aconteceu na primeira execução — o
+// resultado estava certo e o relatório, ilegível: as sete etapas de API
+// apareceram como números soltos, sem nome.
+//
+// Relatório que não se lê é meia ferramenta, e numa auditoria a metade que
+// falta é justamente a que diz O QUE passou.
+const ehTerminal = !!process.stdout.isTTY;
+const progresso = (texto) => {
+  if (ehTerminal) process.stdout.write(`\r${texto}   `);
+};
+const limparLinha = () => {
+  if (ehTerminal) process.stdout.write(`\r${' '.repeat(60)}\r`);
+};
+
 const esperar = (ms) =>
   new Promise((r) => {
-    // Sem `setTimeout` gigante solto: imprime o progresso para quem está
-    // olhando não achar que travou.
     const fim = Date.now() + ms;
     const tick = () => {
       const faltam = Math.ceil((fim - Date.now()) / 1000);
-      if (faltam <= 0) return r();
-      process.stdout.write(`\r   aguardando a janela do rate limit: ${faltam}s   `);
+      if (faltam <= 0) {
+        limparLinha();
+        return r();
+      }
+      progresso(`   aguardando a janela do rate limit: ${faltam}s`);
       setTimeout(tick, 1000);
     };
+    // Fora do terminal, avisa UMA vez em vez de ficar mudo por 65s.
+    if (!ehTerminal) console.log(`   (aguardando ${Math.round(ms / 1000)}s pela janela do rate limit)`);
     tick();
   });
 
@@ -120,7 +141,7 @@ for (const etapa of ETAPAS) {
   if (etapa.cota && !primeiraComCota) await esperar(PAUSA_MS);
   if (etapa.cota) primeiraComCota = false;
 
-  process.stdout.write(`\r${' '.repeat(50)}\r`);
+  limparLinha();
   process.stdout.write(`▶ ${etapa.nome} ... `);
   const t0 = Date.now();
   const r = rodar(etapa);
@@ -139,7 +160,7 @@ for (const etapa of ETAPAS) {
   resultados.push({ nome: etapa.nome, ok: r.ok, linha });
 }
 
-process.stdout.write(`\r${' '.repeat(50)}\r`);
+limparLinha();
 console.log('\n' + '═'.repeat(76));
 const falharam = resultados.filter((r) => !r.ok);
 console.log(`${resultados.length - falharam.length} de ${resultados.length} etapas OK`);
