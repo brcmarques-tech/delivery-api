@@ -6,10 +6,31 @@ import { AppModule } from './app.module';
 import { MailService } from './mail/mail.service';
 import { fetchWithTimeout } from './common/utils/fetch-with-timeout'; // KAN-253
 
+// KAN-202 — Sentry da API.
+//
+// A init tem que acontecer ANTES de qualquer import do Nest subir (por isso é
+// a primeira linha do arquivo): é assim que a instrumentação consegue
+// envolver o que vem depois.
+//
+// SEM SENTRY_DSN isto é um no-op — e, até hoje, um no-op SILENCIOSO: dava para
+// achar que havia monitoramento de erro em produção sem haver. Agora o boot
+// diz em qual dos dois estados está.
+const DSN_SENTRY = process.env.SENTRY_DSN;
 Sentry.init({
-  dsn: process.env.SENTRY_DSN,
+  dsn: DSN_SENTRY,
   environment: process.env.NODE_ENV || 'development',
   tracesSampleRate: 0.1,
+
+  // ERRO DE CLIENTE NÃO É INCIDENTE. "Pedido minimo e R$ 20", "Codigo
+  // incorreto", "Loja fechada" são BadRequest/Unauthorized do dia a dia: são
+  // milhares por dia, afogariam o que importa e queimariam a cota do plano.
+  // Vai para o Sentry o que o cliente NÃO consegue resolver sozinho — 5xx e
+  // erro não tratado.
+  beforeSend(evento, dica) {
+    const status = (dica?.originalException as any)?.status;
+    if (typeof status === 'number' && status >= 400 && status < 500) return null;
+    return evento;
+  },
 });
 
 async function bootstrap() {
@@ -59,6 +80,13 @@ async function bootstrap() {
 
   await app.listen(port);
   console.log(`API rodando na porta ${port}`);
+  // KAN-202: o estado do Sentry dito em voz alta. Monitoramento desligado em
+  // silencio e pior que nao ter: da a sensacao de que alguem esta olhando.
+  console.log(
+    DSN_SENTRY
+      ? `Sentry ativo (env=${process.env.NODE_ENV || 'development'})`
+      : 'Sentry INATIVO: SENTRY_DSN nao definido — nenhum erro sera reportado.',
+  );
 
   // Auto-retry failed emails every hour (max 1 retry per email)
   const mailService = app.get(MailService);

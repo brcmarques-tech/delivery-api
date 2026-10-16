@@ -30,6 +30,7 @@ import { businessClock } from '../common/utils/business-time';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { linhasAfetadas } from '../common/utils/db-claim';
 import { DeliveryCodesService } from './delivery-codes.service';
+import { DistanciaService } from '../common/geo/distancia.service';
 
 type OnOrderReadyCallback = (order: Order) => void;
 
@@ -100,6 +101,7 @@ export class OrdersService {
     private verificationService: VerificationService,
     private whatsAppService: WhatsAppService,
     private mailService: MailService,
+    private distanciaService: DistanciaService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -258,21 +260,19 @@ export class OrdersService {
           await this.platformConfigService.getDeliveryPricePerKm();
         const basePrice =
           await this.platformConfigService.getDeliveryBasePrice();
-        const R = 6371;
-        const dLat =
-          ((input.deliveryLatitude - Number(store.latitude)) * Math.PI) / 180;
-        const dLng =
-          ((input.deliveryLongitude - Number(store.longitude)) * Math.PI) / 180;
-        const a =
-          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos((Number(store.latitude) * Math.PI) / 180) *
-            Math.cos((input.deliveryLatitude * Math.PI) / 180) *
-            Math.sin(dLng / 2) *
-            Math.sin(dLng / 2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        const distanceKm = R * c;
+        // KAN-29: distancia de ROTA (OpenRouteService), com a linha reta como
+        // plano B — o entregador nao voa. A conta mora no DistanciaService
+        // para ser a MESMA que o app mostrou em calculateDeliveryFee; antes a
+        // haversine estava copiada nos dois lugares, e duas copias de uma
+        // conta de dinheiro divergem na primeira vez que alguem mexe numa.
+        const distancia = await this.distanciaService.entre(
+          Number(store.latitude),
+          Number(store.longitude),
+          input.deliveryLatitude,
+          input.deliveryLongitude,
+        );
         deliveryFee =
-          Math.round((basePrice + distanceKm * pricePerKm) * 100) / 100;
+          Math.round((basePrice + distancia.km * pricePerKm) * 100) / 100;
       } else {
         // C2: pedido de entrega SEM coordenadas (ex.: o checkout do storefront
         // não envia lat/long) não conseguia calcular a distância e caía em frete
