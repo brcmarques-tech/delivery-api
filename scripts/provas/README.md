@@ -47,11 +47,32 @@ mesmo — estão marcados abaixo com 💳. Não são para rodar por hábito.
 | `medir-n1-createorder.mjs` | Mede o N+1 do `createOrder` contando SQL: 5 itens 20→1, 10 itens 40→1. |
 | `testa-paginacao-estavel.mjs` | Exatidão da união de uma varredura completa — pega item perdido ou repetido entre páginas. |
 
+## O que só aparece com o sistema RODANDO
+
+Três bugs de 15/10/2026 passaram por typecheck, 118 testes unitários e quatro
+suítes E2E, e mesmo assim estavam lá. Nenhuma ferramenta estática olha para o
+que a aplicação faz enquanto roda — estes olham.
+
+| script | o que pega |
+|---|---|
+| `audita-log-de-runtime.mjs` | Observa 130s de log (duas rodadas do scheduler) e reprova se houver `ERROR`. Achou o **auto-confirm morto**: `.andWhere('order."codigoVendedor" IS NULL')` com alias cru — `order` é palavra reservada — lançava a cada 60s, o `catch` engolia, e nenhum pedido era mais auto-confirmado. A lista de ruído benigno diz, item por item, **por que** é benigno; leia a entrada do WhatsApp, que não é benigna, é só inofensiva enquanto o WAHA está fora. |
+| `valida-graphql-dos-apps.mjs` | Valida as **269 operações GraphQL** dos quatro front-ends contra o schema vivo. `tsc` passa com qualquer bobagem dentro de um `gql`, porque para ele aquilo é uma string: campo inexistente, argumento de tipo errado e mutation renomeada só quebram na tela, no celular. |
+| `prova-aviso-de-bloqueio.mjs` | As 5 tentativas de código, uma por uma. Achou que o servidor dizia só "Código incorreto." e bloqueava por 15 min **sem nenhum aviso** — a pessoa estava na última chance e não sabia. Confere também que nenhuma mensagem revela o código certo. |
+
+## Antes de subir para produção
+
+| script | o que faz |
+|---|---|
+| `checa-prontidao-do-deploy.mjs` | **Somente leitura** — só executa SELECT, para poder ser apontado para produção com `DATABASE_URL=...`. Responde: quais migrations o deploy vai aplicar; se há dado duplicado que faria um `CREATE UNIQUE INDEX` **abortar o boot** (KAN-283 — migration que falha não deixa só de aplicar, derruba a subida da API); quais variáveis sensíveis estão definidas; e se o schema tem as colunas que o código exige. |
+| `prova-do-checador-de-deploy.mjs` | Monta o cenário ruim num banco descartável e confere que o verificador acima **acusa** — um verificador que só sabe dizer "tudo bem" não serve. |
+
 ## Fluxo ponta a ponta
 
 | script | o que cobre |
 |---|---|
 | `e2e-fluxo-compra.mjs` | O ciclo de compra inteiro, 25 asserções. Inclui estoque restaurado exatamente uma vez e webhook tardio não cancelando pedido pago. |
 | `e2e-codigos-entrega.mjs` | A garantia de entrega por códigos, 33 asserções. **Prova o não-vazamento** por três caminhos: introspecção do tipo `Order`, tentativas cruzadas de leitura entre atores, e varredura da resposta completa do pedido procurando os 3 códigos. Mais ordenação forçada, bloqueio por excesso de tentativas, GPS gravado e a prova de recebimento. |
+| `e2e-entrega-sem-codigo.mjs` | O desvio que libera dinheiro **sem** o código do cliente, 28 asserções. Achou que a janela de contestação era decorativa nas duas pontas: o cliente não era avisado **e** não conseguia contestar. Cobre os dois ramos da janela (contestado não libera; não contestado libera sem fabricar prova de recebimento) e a evidência que o superadmin lê para decidir. |
+| `e2e-pedido-legado-sem-codigo.mjs` | O **pedido em trânsito no momento do deploy**: criado antes da migration, chega na porta do cliente sem código nenhum e só fecha pelos botões antigos. Cobre também a entrega rápida (confirmada na hora, sem esperar os 5 min do scheduler) e o auto-confirm de 10 min. |
 | `testa-flag-cartao-entrega.mjs` | A flag `APP_DELIVERY_REQUIRES_CARD`. **Não defina em produção** — o padrão ligado é o estado seguro; o compose local põe `false` só para o E2E. |
 | `testa-stores-f6.mjs` | Payload da listagem de lojas (18,7 → 8,7 KB). |
