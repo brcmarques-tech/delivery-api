@@ -1,5 +1,5 @@
 import { InputType, Field, Float } from '@nestjs/graphql';
-import { IsOptional } from 'class-validator';
+import { IsOptional, Matches, IsIn } from 'class-validator';
 import { StoreType } from '../../common/enums';
 
 @InputType()
@@ -102,4 +102,38 @@ export class UpdateStoreInput {
   @Field(() => StoreType, { nullable: true })
   @IsOptional()
   storeType?: StoreType;
+
+  // ─── KAN-13: identidade visual ──────────────────────────────────────────
+  //
+  // Hexadecimal (#RGB, #RRGGBB ou #RRGGBBAA), validado aqui e DE NOVO no
+  // service — aqui para a mensagem ser boa, la porque regra de dado nao pode
+  // depender so do DTO (mutation direta existe).
+  //
+  // String vazia = voltar ao tema da plataforma. Sem isso, quem escolheu uma
+  // cor ficaria preso a ela para sempre.
+  @Field({ nullable: true })
+  @IsOptional()
+  @Matches(/^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8}))?$/, {
+    message: 'primaryColor deve ser uma cor hexadecimal, como #FF6B35',
+  })
+  primaryColor?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @Matches(/^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8}))?$/, {
+    message: 'backgroundColor deve ser uma cor hexadecimal, como #FFFFFF',
+  })
+  backgroundColor?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @Matches(/^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8}))?$/, {
+    message: 'textColor deve ser uma cor hexadecimal, como #111111',
+  })
+  textColor?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsIn(['GRID', 'LIST', ''], { message: 'productLayout deve ser GRID ou LIST' })
+  productLayout?: string;
 }

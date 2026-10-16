@@ -230,6 +230,11 @@ export class StoresService implements OnApplicationBootstrap {
       verificationLevel: store.verificationLevel,
       averageRating: avgRating,
       totalRatings,
+      // KAN-13: a identidade visual escolhida pela loja.
+      primaryColor: store.primaryColor,
+      backgroundColor: store.backgroundColor,
+      textColor: store.textColor,
+      productLayout: store.productLayout,
       categories,
     };
   }
@@ -647,6 +652,44 @@ export class StoresService implements OnApplicationBootstrap {
     );
   }
 
+  /**
+   * KAN-13 — contraste minimo entre texto e fundo.
+   *
+   * Sem isto, a loja escolhe texto branco em fundo branco e a propria vitrine
+   * fica ILEGIVEL — e quem descobre e o cliente, na hora de comprar, sem ter
+   * como avisar. A conta e a luminancia relativa da WCAG; o piso de 3:1 e o
+   * minimo para texto grande, que e o caso aqui (titulo de produto e preco).
+   *
+   * 4.5:1 seria o ideal para texto corrido, mas recusar cor demais empurra o
+   * lojista a desistir da personalizacao inteira — o equilibrio e barrar o
+   * ilegivel, nao buscar a perfeicao.
+   */
+  private static luminancia(hex: string): number | null {
+    const limpo = hex.replace('#', '');
+    const cheio =
+      limpo.length === 3
+        ? limpo.split('').map((c) => c + c).join('')
+        : limpo.slice(0, 6);
+    if (!/^[0-9a-fA-F]{6}$/.test(cheio)) return null;
+    const canal = (v: number) => {
+      const x = v / 255;
+      return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    };
+    const r = canal(parseInt(cheio.slice(0, 2), 16));
+    const g = canal(parseInt(cheio.slice(2, 4), 16));
+    const b = canal(parseInt(cheio.slice(4, 6), 16));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+
+  private static contraste(a: string, b: string): number | null {
+    const la = StoresService.luminancia(a);
+    const lb = StoresService.luminancia(b);
+    if (la === null || lb === null) return null;
+    const claro = Math.max(la, lb);
+    const escuro = Math.min(la, lb);
+    return (claro + 0.05) / (escuro + 0.05);
+  }
+
   async update(input: UpdateStoreInput, owner: VendorUser): Promise<Store> {
     // KAN-82: a autorizacao era o PROPRIO filtro da consulta (owner: { id }).
     // Isso e seguro, mas fecha a porta para o membro da equipe com SETTINGS —
@@ -662,6 +705,30 @@ export class StoresService implements OnApplicationBootstrap {
       'Voce nao tem permissao para editar esta loja.',
     );
     const { id, ...updates } = input;
+
+    // KAN-13: cor vazia volta ao tema da plataforma; cor invalida nao passa
+    // (o DTO ja barra, mas regra de dado nao pode depender so do DTO — mutation
+    // direta existe). E o par texto/fundo precisa ser legivel.
+    for (const campo of ['primaryColor', 'backgroundColor', 'textColor'] as const) {
+      const valor = (updates as any)[campo];
+      if (valor === '') (updates as any)[campo] = null;
+      else if (valor != null && !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(valor)) {
+        throw new BadRequestException(`${campo} deve ser uma cor hexadecimal, como #FF6B35`);
+      }
+    }
+    if ((updates as any).productLayout === '') (updates as any).productLayout = null;
+
+    const fundoFinal = (updates as any).backgroundColor ?? store.backgroundColor;
+    const textoFinal = (updates as any).textColor ?? store.textColor;
+    if (fundoFinal && textoFinal) {
+      const razao = StoresService.contraste(fundoFinal, textoFinal);
+      if (razao !== null && razao < 3) {
+        throw new BadRequestException(
+          `Essas cores de texto e fundo quase nao se distinguem (contraste ${razao.toFixed(1)}:1). ` +
+            'Escolha um texto mais escuro ou um fundo mais claro — senao o cliente nao consegue ler sua vitrine.',
+        );
+      }
+    }
 
     // Detecta se o endereço mudou
     const addressFields = [

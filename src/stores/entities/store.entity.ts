@@ -44,6 +44,31 @@ export class Store {
   @Column({ nullable: true })
   bannerUrl: string;
 
+  // ─── KAN-13: identidade visual da loja ──────────────────────────────────
+  //
+  // NULO = usa o tema da plataforma. Ninguem e obrigado a escolher cor, e loja
+  // antiga continua exatamente como esta.
+  //
+  // O contraste entre texto e fundo e validado no update (ver StoresService):
+  // uma loja com texto branco em fundo branco fica ILEGIVEL, e quem descobre e
+  // o cliente, na hora de comprar.
+  @Field({ nullable: true })
+  @Column({ type: 'varchar', length: 9, nullable: true })
+  primaryColor: string;
+
+  @Field({ nullable: true })
+  @Column({ type: 'varchar', length: 9, nullable: true })
+  backgroundColor: string;
+
+  @Field({ nullable: true })
+  @Column({ type: 'varchar', length: 9, nullable: true })
+  textColor: string;
+
+  /** 'GRID' (foto grande) ou 'LIST' (lista densa). Nulo = GRID. */
+  @Field({ nullable: true })
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  productLayout: string;
+
   @Field()
   @Column()
   phone: string;
