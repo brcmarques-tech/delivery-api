@@ -16,7 +16,7 @@ describe('CouponsService.incrementUsage (cupom multi-uso)', () => {
     // O 4o argumento e o FidelidadeService (KAN-12): o create avisa os
     // clientes fieis da loja. Estes testes exercitam incrementUsage, que nao
     // o usa — por isso o stub vazio.
-    service = new CouponsService(couponsRepo, {} as any, {} as any, {} as any);
+    service = new CouponsService(couponsRepo, {} as any, {} as any, {} as any, {} as any);
   });
 
   it('reserva quando ha slot (UPDATE afeta linha) -> true', async () => {

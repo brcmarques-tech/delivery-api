@@ -15,6 +15,8 @@ import { Permission } from '../auth/decorators/permission.decorator';
 import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole, OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 // KAN: escopo de ownership das subscriptions de pedido. O usuário autenticado do
 // WebSocket chega no `context.wsUser` (validado no onConnect do GraphQLModule).
@@ -154,6 +156,9 @@ export class OrdersResolver {
     @Inject(PUB_SUB) private pubSub: PubSub,
     private configService: ConfigService,
     private deliveryCodesService: DeliveryCodesService,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
   ) {}
 
   @Mutation(() => Order)
@@ -234,9 +239,12 @@ export class OrdersResolver {
     @CurrentUser() user: AppUser,
   ): Promise<Order[]> {
     const store = await this.ordersService.findStoreById(storeId);
-    if (store?.owner?.id !== user.id) {
-      throw new BadRequestException('Você não tem permissão para ver pedidos desta loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      store?.id,
+      ModuloDaLoja.ORDERS,
+      'Você não tem permissão para ver pedidos desta loja.',
+    );
     return this.ordersService.findByStore(storeId);
   }
 
@@ -303,9 +311,12 @@ export class OrdersResolver {
     @CurrentUser() user: AppUser,
   ): Promise<Order> {
     const order = await this.ordersService.findById(orderId);
-    if (order.store?.owner?.id !== user.id) {
-      throw new BadRequestException('Você não tem permissão para este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Você não tem permissão para este pedido',
+    );
     return this.ordersService.requestCancelDispute(orderId, user.id);
   }
 
@@ -574,9 +585,12 @@ export class OrdersResolver {
   ): Promise<Order> {
     // Verify vendor owns the store associated with this order
     const order = await this.ordersService.findById(id);
-    if (order.store?.owner?.id !== user.id) {
-      throw new BadRequestException('Você não tem permissão para alterar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Você não tem permissão para alterar este pedido',
+    );
     // BL#1 (CRÍTICO): o vendedor só pode AVANÇAR o pedido no preparo. Antes esta
     // mutation aceitava qualquer transição da tabela de estados — inclusive
     // READY→DELIVERING→DELIVERER_CONFIRMED_DELIVERY. O vendedor conseguia se

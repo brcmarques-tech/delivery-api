@@ -143,7 +143,10 @@ export class StoresResolver {
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   myStores(@CurrentUser() user: VendorUser): Promise<Store[]> {
-    return this.storesService.findByOwner(user.id);
+    // KAN-82: inclui as lojas em que o usuario e membro da equipe. O painel
+    // inteiro e construido sobre esta query — sem isso o funcionario convidado
+    // entra e nao ve loja nenhuma.
+    return this.storesService.findOperadasPor(user.id);
   }
 
   @Mutation(() => Store)

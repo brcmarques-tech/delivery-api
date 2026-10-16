@@ -11,6 +11,8 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole } from '../common/enums';
 import { StoresService } from '../stores/stores.service';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @ObjectType()
 class CartProductSummary {
@@ -35,6 +37,9 @@ export class CartResolver {
   constructor(
     private cartService: CartService,
     private storesService: StoresService,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
   ) {}
 
   @Mutation(() => CartItem)
@@ -99,9 +104,12 @@ export class CartResolver {
     @CurrentUser() user: any,
   ): Promise<CartProductSummary[]> {
     const store = await this.storesService.findById(storeId);
-    if (store.owner?.id !== user.id) {
-      throw new BadRequestException('Você não tem permissão para ver o carrinho desta loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      store.id,
+      ModuloDaLoja.REPORTS,
+      'Você não tem permissão para ver o carrinho desta loja.',
+    );
     return this.cartService.getStoreCartSummary(storeId);
   }
 

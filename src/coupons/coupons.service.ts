@@ -10,6 +10,8 @@ import { Store } from '../stores/entities/store.entity';
 import { Order } from '../orders/entities/order.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { FidelidadeService } from '../loyalty/fidelidade.service';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @Injectable()
 export class CouponsService {
@@ -20,6 +22,9 @@ export class CouponsService {
     private storesRepository: Repository<Store>,
     private platformConfigService: PlatformConfigService,
     private fidelidadeService: FidelidadeService,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
   ) {}
 
   async create(input: CreateCouponInput, userId: string): Promise<Coupon> {
@@ -28,9 +33,12 @@ export class CouponsService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
-    if (store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      store.id,
+      ModuloDaLoja.COUPONS,
+      'Voce nao e dono desta loja',
+    );
 
     // Check plan allows coupons
     const plan = store.owner.vendorPlan || 'FREE';
@@ -94,9 +102,12 @@ export class CouponsService {
       relations: ['store', 'store.owner'],
     });
     if (!coupon) throw new NotFoundException('Cupom nao encontrado');
-    if (coupon.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      coupon.store?.id,
+      ModuloDaLoja.COUPONS,
+      'Voce nao e dono desta loja',
+    );
 
     if (input.code) coupon.code = input.code.trim().toUpperCase();
     if (input.discountType) coupon.discountType = input.discountType;
@@ -122,9 +133,12 @@ export class CouponsService {
       relations: ['store', 'store.owner'],
     });
     if (!coupon) throw new NotFoundException('Cupom nao encontrado');
-    if (coupon.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      coupon.store?.id,
+      ModuloDaLoja.COUPONS,
+      'Voce nao e dono desta loja',
+    );
     coupon.isActive = !coupon.isActive;
     return this.couponsRepository.save(coupon);
   }
@@ -135,9 +149,12 @@ export class CouponsService {
       relations: ['store', 'store.owner'],
     });
     if (!coupon) throw new NotFoundException('Cupom nao encontrado');
-    if (coupon.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      coupon.store?.id,
+      ModuloDaLoja.COUPONS,
+      'Voce nao e dono desta loja',
+    );
     await this.couponsRepository.remove(coupon);
     return true;
   }
@@ -152,9 +169,13 @@ export class CouponsService {
         where: { id: storeId },
         relations: ['owner'],
       });
-      if (!store || store.owner?.id !== userId) {
-        throw new BadRequestException('Voce nao e dono desta loja');
-      }
+      if (!store) throw new BadRequestException('Voce nao e dono desta loja');
+      await this.equipeService.exigirPermissao(
+        userId,
+        store.id,
+        ModuloDaLoja.COUPONS,
+        'Voce nao e dono desta loja',
+      );
     }
     return this.couponsRepository.find({
       where: { store: { id: storeId } },

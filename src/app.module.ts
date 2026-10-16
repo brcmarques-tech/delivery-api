@@ -44,6 +44,7 @@ import { HttpThrottlerGuard } from './common/guards/http-throttler.guard';
 import { GeoModule } from './common/geo/geo.module';
 import { SentryContextoInterceptor } from './common/sentry/sentry-contexto.interceptor';
 import { FidelidadeModule } from './loyalty/fidelidade.module';
+import { EquipeModule } from './team/equipe.module';
 
 @Module({
   providers: [
@@ -71,6 +72,7 @@ import { FidelidadeModule } from './loyalty/fidelidade.module';
     SentryModule.forRoot(),
     GeoModule,
     FidelidadeModule,
+    EquipeModule,
     ConfigModule.forRoot({ isGlobal: true }),
 
     // Input#1 / A#4: base do rate limiting. O guard só é aplicado (escopado) nas

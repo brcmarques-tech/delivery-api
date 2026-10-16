@@ -36,6 +36,8 @@ import { RatingsService } from '../ratings/ratings.service';
 import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 import { resolvePublicUrl } from '../common/utils/public-url';
 import { brazilPhoneCandidates } from '../common/utils/phone';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @Injectable()
 export class StoresService implements OnApplicationBootstrap {
@@ -56,6 +58,8 @@ export class StoresService implements OnApplicationBootstrap {
     private configService: ConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
     private ratingsService: RatingsService,
+    // KAN-82: dono OU membro da equipe com o modulo.
+    private equipeService: EquipeService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -588,6 +592,32 @@ export class StoresService implements OnApplicationBootstrap {
     });
   }
 
+  /**
+   * KAN-82: as lojas que este usuario opera — as DELE e aquelas em que ele e
+   * membro ACEITO e nao revogado da equipe.
+   *
+   * Sem isto o funcionario convidado loga no painel e nao ve loja nenhuma: o
+   * painel inteiro e construido sobre `myStores`.
+   */
+  async findOperadasPor(userId: string): Promise<Store[]> {
+    const idsDeEquipe: { storeId: string }[] = await this.storesRepository.manager.query(
+      `SELECT DISTINCT "storeId" FROM vendor_team_members
+        WHERE "memberId" = $1 AND "acceptedAt" IS NOT NULL AND "revokedAt" IS NULL`,
+      [userId],
+    );
+    const proprias = await this.findByOwner(userId);
+    if (!idsDeEquipe.length) return proprias;
+
+    const comoMembro = await this.storesRepository.find({
+      where: idsDeEquipe.map((l) => ({ id: l.storeId })),
+      relations: ['owner', 'products', 'products.category', 'categories'],
+    });
+    // Sem duplicar caso alguem seja dono E tenha vinculo (nao deveria, mas
+    // dado antigo acontece).
+    const vistas = new Set(proprias.map((s) => s.id));
+    return [...proprias, ...comoMembro.filter((s) => !vistas.has(s.id))];
+  }
+
   async findNearby(
     lat: number,
     lng: number,
@@ -618,10 +648,19 @@ export class StoresService implements OnApplicationBootstrap {
   }
 
   async update(input: UpdateStoreInput, owner: VendorUser): Promise<Store> {
-    const store = await this.storesRepository.findOne({
-      where: { id: input.id, owner: { id: owner.id } },
-    });
+    // KAN-82: a autorizacao era o PROPRIO filtro da consulta (owner: { id }).
+    // Isso e seguro, mas fecha a porta para o membro da equipe com SETTINGS —
+    // que e justamente o modulo "editar dados da loja". Agora carrega a loja e
+    // pergunta ao servico de equipe; a loja inexistente continua 404, e quem
+    // nao tem permissao recebe 403 (que e verdade, e nao "nao existe").
+    const store = await this.storesRepository.findOne({ where: { id: input.id } });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    await this.equipeService.exigirPermissao(
+      owner.id,
+      store.id,
+      ModuloDaLoja.SETTINGS,
+      'Voce nao tem permissao para editar esta loja.',
+    );
     const { id, ...updates } = input;
 
     // Detecta se o endereço mudou
@@ -670,10 +709,16 @@ export class StoresService implements OnApplicationBootstrap {
   }
 
   async toggleOpen(id: string, owner: VendorUser): Promise<Store> {
-    const store = await this.storesRepository.findOne({
-      where: { id, owner: { id: owner.id } },
-    });
+    // KAN-82: abrir e fechar a loja e operacao de BALCAO — quem esta no caixa
+    // precisa poder fechar quando acaba o expediente. Fica em SETTINGS.
+    const store = await this.storesRepository.findOne({ where: { id } });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    await this.equipeService.exigirPermissao(
+      owner.id,
+      store.id,
+      ModuloDaLoja.SETTINGS,
+      'Voce nao tem permissao para abrir ou fechar esta loja.',
+    );
     store.isOpen = !store.isOpen;
     const saved = await this.storesRepository.save(store);
     this.pubSub.publish('storeUpdated', { storeUpdated: saved });
@@ -766,6 +811,9 @@ export class StoresService implements OnApplicationBootstrap {
     );
     if (!passwordValid) throw new UnauthorizedException('Senha incorreta');
 
+    // KAN-82: APAGAR a loja continua sendo SO do dono — de propósito. Nem o
+    // gerente com SETTINGS faz isso: e irreversivel, leva o catalogo e o
+    // historico junto, e ja exige a senha do dono logo acima.
     const store = await this.storesRepository.findOne({
       where: { id: storeId, owner: { id: vendorId } },
     });

@@ -12,6 +12,8 @@ import { VendorUser } from '../users/entities/vendor-user.entity';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { FidelidadeService } from '../loyalty/fidelidade.service';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @Injectable()
 export class PromotionsService implements OnModuleInit {
@@ -28,6 +30,9 @@ export class PromotionsService implements OnModuleInit {
     @Inject(PUB_SUB) private pubSub: PubSub,
     @InjectDataSource() private dataSource: DataSource,
     private fidelidadeService: FidelidadeService,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
   ) {}
 
   onModuleInit() {
@@ -188,9 +193,12 @@ export class PromotionsService implements OnModuleInit {
 
   async create(input: CreatePromotionInput, user: VendorUser): Promise<Promotion> {
     const store = await this.storesService.findById(input.storeId);
-    if (store.owner.id !== user.id) {
-      throw new BadRequestException('Voce nao e o dono dessa loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      store.id,
+      ModuloDaLoja.PROMOTIONS,
+      'Voce nao e o dono dessa loja.',
+    );
 
     const hasBadgeCredit = store.freePromoDaysCredit > 0;
     const planConfig = await this.platformConfigService.getPlanConfig(user.vendorPlan || 'FREE');
@@ -479,9 +487,12 @@ export class PromotionsService implements OnModuleInit {
       relations: ['store', 'store.owner', 'product'],
     });
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
-    if (promotion.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e o dono dessa promocao.');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      promotion.store?.id,
+      ModuloDaLoja.PROMOTIONS,
+      'Voce nao e o dono dessa promocao.',
+    );
     if (promotion.product && promotion.isPaid) {
       await this.productsRepository.update(promotion.product.id, { promotionalPrice: null as any });
     }
@@ -526,9 +537,12 @@ export class PromotionsService implements OnModuleInit {
       relations: ['store', 'store.owner', 'product'],
     });
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
-    if (promotion.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e o dono dessa promocao.');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      promotion.store?.id,
+      ModuloDaLoja.PROMOTIONS,
+      'Voce nao e o dono dessa promocao.',
+    );
     if (promotion.product && promotion.isPaid) {
       await this.productsRepository.update(promotion.product.id, { promotionalPrice: null as any });
     }

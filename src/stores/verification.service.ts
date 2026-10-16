@@ -9,6 +9,8 @@ import { VendorPlan } from '../common/enums/vendor-plan.enum';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { linhasAfetadas } from '../common/utils/db-claim';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 const LEVEL_ORDER = [
   VerificationLevel.NONE,
@@ -32,6 +34,8 @@ export class VerificationService {
     @Inject(forwardRef(() => PlatformConfigService))
     private configService: PlatformConfigService,
     private whatsAppService: WhatsAppService,
+    // KAN-82: dono OU membro da equipe com o modulo.
+    private equipeService: EquipeService,
   ) {}
 
   async getThresholds(): Promise<Record<string, number>> {
@@ -164,9 +168,12 @@ export class VerificationService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
-    if (store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      store.id,
+      ModuloDaLoja.SETTINGS,
+      'Voce nao e dono desta loja',
+    );
 
     const thresholds = await this.getThresholds();
     const threshold = thresholds[level];
@@ -292,7 +299,7 @@ export class VerificationService {
     const store = await this.storesRepository.findOne({ where: { id: storeId }, relations: ['owner'] });
     if (!store) throw new NotFoundException('Loja nao encontrada');
 
-    if (userId && store.owner?.id !== userId) {
+    if (userId && !(await this.equipeService.podeGerenciar(userId, store.id, ModuloDaLoja.SETTINGS))) {
       throw new ForbiddenException('Esta loja nao pertence a voce');
     }
 

@@ -14,6 +14,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from '../common/enums';
 import { StoresService } from '../stores/stores.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @ObjectType()
 class ProductDeletedPayload {
@@ -30,6 +32,9 @@ export class ProductsResolver {
     private productsService: ProductsService,
     private storesService: StoresService,
     @Inject(PUB_SUB) private pubSub: PubSub,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
   ) {}
 
   // --- Verificacao de ownership (mesmo padrao de productsByStoreAll) ---
@@ -38,9 +43,12 @@ export class ProductsResolver {
   private async assertOwnsStore(storeId: string | undefined, userId: string): Promise<void> {
     if (!storeId) throw new BadRequestException('Loja nao encontrada.');
     const store = await this.storesService.findById(storeId);
-    if (store.owner?.id !== userId) {
-      throw new BadRequestException('Voce nao tem permissao sobre esta loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      store.id,
+      ModuloDaLoja.PRODUCTS,
+      'Voce nao tem permissao sobre esta loja.',
+    );
   }
 
   private async assertOwnsProduct(productId: string, userId: string): Promise<void> {
@@ -72,9 +80,12 @@ export class ProductsResolver {
     @CurrentUser() user: any,
   ): Promise<Product[]> {
     const store = await this.storesService.findById(storeId);
-    if (store.owner?.id !== user.id) {
-      throw new BadRequestException('Você não tem permissão para ver produtos desta loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      store.id,
+      ModuloDaLoja.PRODUCTS,
+      'Você não tem permissão para ver produtos desta loja.',
+    );
     return this.productsService.findByStoreAll(storeId);
   }
 

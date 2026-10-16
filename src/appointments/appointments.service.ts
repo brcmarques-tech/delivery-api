@@ -23,6 +23,8 @@ import { RequestQuoteInput } from './dto/request-quote.input';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 const RELATIONS = ['customer', 'store', 'store.owner', 'service', 'service.category'];
 
@@ -55,6 +57,8 @@ export class AppointmentsService {
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
     private platformConfigService: PlatformConfigService,
+    // KAN-82: dono OU membro da equipe com o modulo.
+    private equipeService: EquipeService,
   ) {}
 
   // ─── Available Slots ────────────────────────────────────
@@ -394,7 +398,7 @@ export class AppointmentsService {
 
   async respondQuote(id: string, price: number, response: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.QUOTED);
 
     appointment.price = price;
@@ -527,7 +531,7 @@ export class AppointmentsService {
 
   async confirmAppointment(id: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.CONFIRMED);
 
     appointment.status = AppointmentStatus.CONFIRMED;
@@ -576,7 +580,7 @@ export class AppointmentsService {
 
   async vendorCancelAppointment(id: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.CANCELLED);
 
     appointment.status = AppointmentStatus.CANCELLED;
@@ -607,7 +611,7 @@ export class AppointmentsService {
 
   async completeAppointment(id: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.COMPLETED);
 
     appointment.status = AppointmentStatus.COMPLETED;
@@ -632,7 +636,7 @@ export class AppointmentsService {
 
   async markNoShow(id: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.NO_SHOW);
 
     appointment.status = AppointmentStatus.NO_SHOW;
@@ -665,9 +669,12 @@ export class AppointmentsService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
-    if (store.owner.id !== vendorId) {
-      throw new BadRequestException('Sem permissao');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorId,
+      store.id,
+      ModuloDaLoja.ORDERS,
+      'Sem permissao',
+    );
 
     const where: any = { storeId, deletedAt: IsNull() };
     if (date) where.scheduledDate = date;
@@ -906,10 +913,17 @@ export class AppointmentsService {
     }
   }
 
-  private validateStoreOwner(appointment: Appointment, vendorId: string): void {
-    if (appointment.store.owner.id !== vendorId) {
-      throw new BadRequestException('Sem permissao para este agendamento');
-    }
+  // KAN-82: virou assincrono porque a autorizacao agora CONSULTA a equipe da
+  // loja — nao da mais para decidir so olhando o objeto em memoria. Os cinco
+  // chamadores passaram a aguardar; sem o await, a excecao viraria uma Promise
+  // rejeitada ignorada e a checagem de permissao simplesmente nao aconteceria.
+  private async validateStoreOwner(appointment: Appointment, vendorId: string): Promise<void> {
+    await this.equipeService.exigirPermissao(
+      vendorId,
+      appointment.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Sem permissao para este agendamento',
+    );
   }
 
   private validateCustomer(appointment: Appointment, customerId: string): void {

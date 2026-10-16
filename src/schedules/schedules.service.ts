@@ -4,6 +4,8 @@ import { Repository } from 'typeorm';
 import { Schedule } from './entities/schedule.entity';
 import { SetScheduleInput } from './dto/set-schedule.input';
 import { Store } from '../stores/entities/store.entity';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @Injectable()
 export class SchedulesService {
@@ -12,6 +14,8 @@ export class SchedulesService {
     private schedulesRepository: Repository<Schedule>,
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
+    // KAN-82: dono OU membro da equipe com o modulo.
+    private equipeService: EquipeService,
   ) {}
 
   async setSchedule(input: SetScheduleInput, owner: any): Promise<Schedule[]> {
@@ -20,9 +24,12 @@ export class SchedulesService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
-    if (store.owner?.id !== owner.id) {
-      throw new BadRequestException('Voce nao tem permissao para gerenciar horarios desta loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      owner.id,
+      store.id,
+      ModuloDaLoja.SETTINGS,
+      'Voce nao tem permissao para gerenciar horarios desta loja.',
+    );
 
     // BUGFIX: o delete e o save rodavam FORA de transacao e a entrada nao era
     // validada. Com dois registros para o mesmo dia (trivial numa UI que permite

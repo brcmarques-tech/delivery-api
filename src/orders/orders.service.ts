@@ -32,6 +32,8 @@ import { linhasAfetadas } from '../common/utils/db-claim';
 import { DeliveryCodesService } from './delivery-codes.service';
 import { DistanciaService } from '../common/geo/distancia.service';
 import { FidelidadeService } from '../loyalty/fidelidade.service';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 type OnOrderReadyCallback = (order: Order) => void;
 
@@ -104,6 +106,9 @@ export class OrdersService {
     private mailService: MailService,
     private distanciaService: DistanciaService,
     private fidelidadeService: FidelidadeService,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -1157,9 +1162,12 @@ export class OrdersService {
     vendorUserId: string,
   ): Promise<Order> {
     const order = await this.findById(orderId);
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao tem permissao para este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Voce nao tem permissao para este pedido',
+    );
     if (order.status !== OrderStatus.DISPUTED) {
       throw new BadRequestException('Este pedido nao esta em disputa');
     }
@@ -1205,9 +1213,12 @@ export class OrdersService {
     reason: string,
   ): Promise<Order> {
     const order = await this.findById(orderId);
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao pode rejeitar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Voce nao pode rejeitar este pedido',
+    );
     if (order.status !== OrderStatus.PENDING) {
       throw new BadRequestException('So pode rejeitar pedidos pendentes');
     }
@@ -1236,9 +1247,12 @@ export class OrdersService {
     reason: string,
   ): Promise<Order> {
     const order = await this.findById(orderId);
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao pode cancelar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Voce nao pode cancelar este pedido',
+    );
 
     if (order.delivery) {
       throw new BadRequestException(
@@ -1311,9 +1325,12 @@ export class OrdersService {
     vendorUserId: string,
   ): Promise<Order> {
     const order = await this.findById(orderId);
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao pode confirmar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Voce nao pode confirmar este pedido',
+    );
     this.recusarSeUsaCodigo(
       order,
       'Digite o código do entregador na coleta.',
@@ -2279,9 +2296,12 @@ export class OrdersService {
   async refundOrder(orderId: string, vendorUserId: string): Promise<Order> {
     const order = await this.findById(orderId);
 
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao pode estornar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.EARNINGS,
+      'Voce nao pode estornar este pedido',
+    );
 
     // BUGFIX: nao havia NENHUMA checagem de status. O vendedor conseguia estornar
     // um pedido que ja estava com o entregador (DELIVERING) ou ate ja concluido —
@@ -2569,7 +2589,7 @@ export class OrdersService {
 
     const order = await this.findById(item.order.id);
 
-    if (vendorUserId && order.store?.owner?.id !== vendorUserId) {
+    if (vendorUserId && !(await this.equipeService.podeGerenciar(vendorUserId, order.store?.id, ModuloDaLoja.ORDERS))) {
       throw new BadRequestException(
         'Você não tem permissão para ajustar itens deste pedido.',
       );

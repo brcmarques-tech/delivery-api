@@ -6,6 +6,8 @@ import { CreateServiceInput } from './dto/create-service.input';
 import { UpdateServiceInput } from './dto/update-service.input';
 import { Store } from '../stores/entities/store.entity';
 import { StoreType } from '../common/enums';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @Injectable()
 export class ServicesService {
@@ -14,6 +16,9 @@ export class ServicesService {
     private servicesRepository: Repository<Service>,
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
   ) {}
 
   private async validateStoreOwnership(storeId: string, ownerId: string): Promise<Store> {
@@ -22,9 +27,12 @@ export class ServicesService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
-    if (store.owner?.id !== ownerId) {
-      throw new BadRequestException('Voce nao tem permissao para gerenciar servicos desta loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      ownerId,
+      store.id,
+      ModuloDaLoja.PRODUCTS,
+      'Voce nao tem permissao para gerenciar servicos desta loja.',
+    );
     if (store.storeType !== StoreType.SERVICES) {
       throw new BadRequestException('Esta loja nao e do tipo SERVICES. Altere o tipo da loja primeiro.');
     }
@@ -55,9 +63,12 @@ export class ServicesService {
       relations: ['store', 'store.owner', 'category'],
     });
     if (!service) throw new NotFoundException('Servico nao encontrado');
-    if (service.store?.owner?.id !== owner.id) {
-      throw new BadRequestException('Voce nao tem permissao para editar este servico.');
-    }
+    await this.equipeService.exigirPermissao(
+      owner.id,
+      service.store?.id,
+      ModuloDaLoja.PRODUCTS,
+      'Voce nao tem permissao para editar este servico.',
+    );
 
     if (input.name !== undefined) service.name = input.name;
     if (input.description !== undefined) service.description = input.description;
@@ -80,9 +91,12 @@ export class ServicesService {
       relations: ['store', 'store.owner'],
     });
     if (!service) throw new NotFoundException('Servico nao encontrado');
-    if (service.store?.owner?.id !== owner.id) {
-      throw new BadRequestException('Voce nao tem permissao para excluir este servico.');
-    }
+    await this.equipeService.exigirPermissao(
+      owner.id,
+      service.store?.id,
+      ModuloDaLoja.PRODUCTS,
+      'Voce nao tem permissao para excluir este servico.',
+    );
 
     await this.servicesRepository.remove(service);
     return true;
@@ -97,9 +111,13 @@ export class ServicesService {
         where: { id: storeId },
         relations: ['owner'],
       });
-      if (!store || store.owner?.id !== ownerId) {
-        throw new BadRequestException('Voce nao e dono desta loja');
-      }
+      if (!store) throw new BadRequestException('Voce nao e dono desta loja');
+      await this.equipeService.exigirPermissao(
+        ownerId,
+        store.id,
+        ModuloDaLoja.PRODUCTS,
+        'Voce nao e dono desta loja',
+      );
     }
     const where: any = { store: { id: storeId } };
     if (!includeAll) {
