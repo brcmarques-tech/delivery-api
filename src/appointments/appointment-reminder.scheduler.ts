@@ -1,5 +1,8 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { AppointmentsService } from './appointments.service';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { comTravaDistribuida } from '../common/utils/trava-distribuida';
 
 @Injectable()
 export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestroy {
@@ -7,7 +10,10 @@ export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestr
   private intervalId: ReturnType<typeof setInterval>;
   private isRunning = false;
 
-  constructor(private appointmentsService: AppointmentsService) {}
+  constructor(
+    private appointmentsService: AppointmentsService,
+    @InjectDataSource() private dataSource: DataSource,
+  ) {}
 
   onModuleInit() {
     // Check every 5 minutes
@@ -24,9 +30,14 @@ export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestr
     if (this.isRunning) return;
     this.isRunning = true;
     try {
-      await this.sendReminders();
-      await this.expireUnpaid();
-      await this.retryLiquidacoes();
+      // KAN-254: com duas instancias, as duas mandam o MESMO lembrete para o
+      // mesmo cliente no mesmo minuto. A trava e do banco, entao vale para a
+      // frota inteira.
+      await comTravaDistribuida(this.dataSource, 'tick:lembretes-de-agendamento', async () => {
+        await this.sendReminders();
+        await this.expireUnpaid();
+        await this.retryLiquidacoes();
+      });
     } finally {
       this.isRunning = false;
     }

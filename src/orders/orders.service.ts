@@ -522,7 +522,7 @@ export class OrdersService {
             input.cardId,
             input.cardToken,
           );
-        savedOrder.mpPreferenceId = pagarmeOrderId;
+        savedOrder.pagarmeOrderId = pagarmeOrderId;
         if (chargeId) savedOrder.preAuthChargeId = chargeId;
 
         if (status === 'antifraud_review') {
@@ -593,7 +593,7 @@ export class OrdersService {
       const { checkoutUrl, preferenceId } =
         await this.paymentsService.createOrderCheckout(savedOrder, customer);
       savedOrder.checkoutUrl = checkoutUrl;
-      savedOrder.mpPreferenceId = preferenceId;
+      savedOrder.pagarmeOrderId = preferenceId;
       await this.ordersRepository.save(savedOrder);
     } else if (paymentMethod === 'PIX') {
       try {
@@ -602,7 +602,7 @@ export class OrdersService {
           customer,
         );
         savedOrder.checkoutUrl = result.checkoutUrl;
-        savedOrder.mpPreferenceId = result.preferenceId;
+        savedOrder.pagarmeOrderId = result.preferenceId;
         if (result.qrCode) savedOrder.pixQrCode = result.qrCode;
         if (result.qrCodeUrl) savedOrder.pixQrCodeBase64 = result.qrCodeUrl;
         // Split-on-charge (C1): a cobranca PIX carrega split (vendedor+plataforma).
@@ -1665,7 +1665,7 @@ export class OrdersService {
     // [REFUND_FAILED] FALSO que poluía a fila de reconciliação de dinheiro perdido.
     // Pagamento que entre depois do cancelamento é coberto por refundLatePayment.
     if (
-      order.mpPreferenceId &&
+      order.pagarmeOrderId &&
       order.status !== OrderStatus.AWAITING_PAYMENT &&
       (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD')
     ) {

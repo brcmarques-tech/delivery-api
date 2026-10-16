@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
+import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
 import { DeliveryConfirmationScheduler } from './delivery-confirmation.scheduler';
 import { OrdersService } from '../orders/orders.service';
 import { DeliveryCodesService } from '../orders/delivery-codes.service';
@@ -32,6 +32,23 @@ describe('DeliveryConfirmationScheduler', () => {
       providers: [
         DeliveryConfirmationScheduler,
         { provide: getRepositoryToken(Order), useValue: mockOrdersRepo },
+        // KAN-254: o tick roda dentro de uma trava distribuida (advisory lock
+        // do Postgres) para duas instancias da API nao repetirem a mesma
+        // rodada. Aqui a trava e um passa-livre: estes testes exercitam o que
+        // o tick FAZ, nao a concorrencia entre instancias — essa tem prova
+        // propria, contra o banco de verdade, em
+        // common/utils/trava-distribuida.spec.ts.
+        {
+          provide: getDataSourceToken(),
+          useValue: {
+            createQueryRunner: () => ({
+              connect: async () => undefined,
+              query: async (sql: string) =>
+                /pg_try_advisory_lock/.test(sql) ? [{ ok: true }] : [],
+              release: async () => undefined,
+            }),
+          },
+        },
         { provide: OrdersService, useValue: mockOrdersService },
         // O scheduler passou a liberar as entregas registradas SEM o código do
         // cliente cuja janela de contestação venceu.

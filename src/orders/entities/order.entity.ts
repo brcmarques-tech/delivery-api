@@ -57,10 +57,13 @@ export class Order {
   @Column({ nullable: true })
   checkoutUrl: string;
 
-  // TODO: Rename mpPreferenceId to pagarmeOrderId in a future migration (legacy MP naming)
+  // KAN-254: era `mpPreferenceId`. O nome mentia: guarda o id do pedido no
+  // Pagar.me (`or_...`), e "preference" e vocabulario do Mercado Pago, que
+  // nao e usado ha tempos. Renomeado na migration 1786800000000, enquanto
+  // ainda nao existe banco de producao para migrar.
   @Field({ nullable: true })
   @Column({ nullable: true })
-  mpPreferenceId: string;
+  pagarmeOrderId: string;
 
   @Field({ nullable: true })
   @Column({ nullable: true })

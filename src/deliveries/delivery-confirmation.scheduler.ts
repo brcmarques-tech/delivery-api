@@ -2,6 +2,9 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import { OrdersService } from '../orders/orders.service';
 import { DeliveryCodesService } from '../orders/delivery-codes.service';
 import { PaymentsService } from '../payments/payments.service';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { comTravaDistribuida } from '../common/utils/trava-distribuida';
 
 @Injectable()
 export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDestroy {
@@ -19,6 +22,7 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
     private ordersService: OrdersService,
     private deliveryCodesService: DeliveryCodesService,
     private paymentsService: PaymentsService,
+    @InjectDataSource() private dataSource: DataSource,
   ) {}
 
   onModuleInit() {
@@ -39,14 +43,21 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
     }
     this.isRunning = true;
     try {
-      await this.expireAwaitingPaymentOrders();
-      await this.expirePendingOrders();
-      await this.autoAdvanceVendorConfirmedPickup();
-      await this.autoConfirmExpiredDeliveries();
-      await this.alertNoDeliverer();
-      await this.liberarEntregasSemCodigoVencidas();
-      await this.retryFailedSettlements();
-      await this.drenarPassivos();
+      // KAN-254: a guarda `isRunning` protege contra a rodada anterior DESTE
+      // processo. Com duas instancias da API, as duas acordam no mesmo minuto
+      // e rodam a mesma rotina sobre as mesmas linhas — trabalho duplicado e,
+      // o que o cliente ve, notificacao duplicada. A trava e do banco (advisory
+      // lock), entao vale para a frota inteira. Quem nao pegar, pula o tick.
+      await comTravaDistribuida(this.dataSource, 'tick:confirmacao-de-entrega', async () => {
+        await this.expireAwaitingPaymentOrders();
+        await this.expirePendingOrders();
+        await this.autoAdvanceVendorConfirmedPickup();
+        await this.autoConfirmExpiredDeliveries();
+        await this.alertNoDeliverer();
+        await this.liberarEntregasSemCodigoVencidas();
+        await this.retryFailedSettlements();
+        await this.drenarPassivos();
+      });
     } finally {
       this.isRunning = false;
     }

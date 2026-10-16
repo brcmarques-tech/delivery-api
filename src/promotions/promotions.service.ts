@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit, Inject } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThanOrEqual, MoreThanOrEqual, LessThan, MoreThan } from 'typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { Repository, LessThanOrEqual, MoreThanOrEqual, LessThan, MoreThan, DataSource } from 'typeorm';
+import { comTravaDistribuida } from '../common/utils/trava-distribuida';
 import { PubSub } from 'graphql-subscriptions';
 import { Promotion } from './entities/promotion.entity';
 import { CreatePromotionInput } from './dto/create-promotion.input';
@@ -24,21 +25,27 @@ export class PromotionsService implements OnModuleInit {
     private platformConfigService: PlatformConfigService,
     private whatsAppService: WhatsAppService,
     @Inject(PUB_SUB) private pubSub: PubSub,
+    @InjectDataSource() private dataSource: DataSource,
   ) {}
 
   onModuleInit() {
     // KAN-253: as duas chamadas descartavam a Promise. Se algo escapar do
     // try/catch interno vira unhandled rejection — e a primeira roda no boot,
     // onde uma falha nao tratada e ainda mais sensivel.
+    // KAN-254: as duas rotinas mexem em PRECO DE VENDA (promotionalPrice) —
+    // duas instancias rodando juntas disputam as mesmas linhas de produto. A
+    // trava do banco deixa so uma passar por rodada (ver trava-distribuida).
+    //
+    // Elas tambem passaram a rodar em SEQUENCIA dentro da trava: sao
+    // complementares (uma limpa o que venceu, a outra aplica o que comecou) e
+    // disparadas em paralelo podiam se cruzar na mesma linha.
     const run = () => {
-      this.clearExpiredPromotions().catch((err) =>
-        this.logger.error('clearExpiredPromotions falhou:', err),
-      );
-      // Contraparte da limpeza: aplica o desconto das promocoes pagas cuja
-      // janela ja comecou (ate agora nada fazia isso — ver activateDuePromotions).
-      this.activateDuePromotions().catch((err) =>
-        this.logger.error('activateDuePromotions falhou:', err),
-      );
+      comTravaDistribuida(this.dataSource, 'tick:promocoes', async () => {
+        await this.clearExpiredPromotions();
+        // Contraparte da limpeza: aplica o desconto das promocoes pagas cuja
+        // janela ja comecou (ate agora nada fazia isso — ver activateDuePromotions).
+        await this.activateDuePromotions();
+      }).catch((err) => this.logger.error('tick de promocoes falhou:', err));
     };
     run();
     setInterval(run, 5 * 60 * 1000);

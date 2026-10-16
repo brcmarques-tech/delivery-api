@@ -468,7 +468,7 @@ describe('PaymentsService', () => {
         paymentMethod: 'PIX',
         isPickup: true,
         onlinePaidTotal: 60.0, // pagou 60, peso final derrubou o total para 55
-        mpPreferenceId: 'or_pix_123',
+        pagarmeOrderId: 'or_pix_123',
       });
 
       httpService.axiosRef.get.mockResolvedValue({
@@ -510,7 +510,7 @@ describe('PaymentsService', () => {
         paymentMethod: 'PIX',
         isPickup: true,
         onlinePaidTotal: 55.0, // igual ao total — nada a devolver
-        mpPreferenceId: 'or_pix_123',
+        pagarmeOrderId: 'or_pix_123',
       });
 
       httpService.axiosRef.post.mockResolvedValue({
@@ -530,7 +530,7 @@ describe('PaymentsService', () => {
         paymentMethod: 'PIX',
         isPickup: true,
         onlinePaidTotal: 60.0,
-        mpPreferenceId: 'or_pix_123',
+        pagarmeOrderId: 'or_pix_123',
       });
 
       httpService.axiosRef.get.mockResolvedValue({

@@ -1840,8 +1840,8 @@ export class PaymentsService implements OnModuleDestroy {
           let chargeId: string | null = null;
           if (order.preAuthChargeId) {
             chargeId = order.preAuthChargeId;
-          } else if (order.mpPreferenceId && !order.mpPreferenceId.startsWith('link-')) {
-            const pagarmeOrder = await this.pagarmeGet(`/orders/${order.mpPreferenceId}`);
+          } else if (order.pagarmeOrderId && !order.pagarmeOrderId.startsWith('link-')) {
+            const pagarmeOrder = await this.pagarmeGet(`/orders/${order.pagarmeOrderId}`);
             chargeId = pagarmeOrder.charges?.[0]?.id ?? null;
           }
           if (!chargeId) throw new Error('cobranca nao localizada no Pagar.me');
@@ -2933,9 +2933,9 @@ export class PaymentsService implements OnModuleDestroy {
         // se anulam entre si. ANTES ambos passavam por este ponto (read-check-save)
         // e cada um incrementava o cupom + disparava "Pagamento confirmado". O
         // UPDATE condicional garante que só UM webhook confirma; o outro retorna.
-        const newMpPref = (order.mpPreferenceId?.startsWith('link-') && pagarmeOrderId)
+        const novoPagarmeOrderId = (order.pagarmeOrderId?.startsWith('link-') && pagarmeOrderId)
           ? pagarmeOrderId
-          : order.mpPreferenceId;
+          : order.pagarmeOrderId;
         const paidClaim = await orderRepo.manager.query(
           // CRITICO: "updatedAt" = NOW() e OBRIGATORIO aqui. expirePendingOrders
           // usa updatedAt para medir ha quanto tempo o pedido esta PENDING sem a
@@ -2944,16 +2944,16 @@ export class PaymentsService implements OnModuleDestroy {
           // depois da criacao virava PENDING ja "vencido" e o scheduler expirava
           // + estornava um pedido recem-pago, dizendo que a loja nao respondeu.
           `UPDATE orders
-              SET status = 'PENDING', "couponCredited" = true, "mpPreferenceId" = $2,
+              SET status = 'PENDING', "couponCredited" = true, "pagarmeOrderId" = $2,
                   "updatedAt" = NOW()${setCaptured ? ', "capturedAt" = NOW()' : ''}
             WHERE id = $1 AND status IN ('AWAITING_PAYMENT','PAYMENT_REVIEW')
             RETURNING id`,
-          [order.id, newMpPref],
+          [order.id, novoPagarmeOrderId],
         );
         if (linhasAfetadas(paidClaim) === 0) return;
         order.status = OrderStatus.PENDING;
         order.couponCredited = true;
-        order.mpPreferenceId = newMpPref;
+        order.pagarmeOrderId = novoPagarmeOrderId;
         if (setCaptured) {
           order.capturedAt = new Date();
           this.logger.log(`Order.paid (antifraud reprocessed): marking capturedAt for order #${order.orderNumber} — charge was auto-captured by Pagar.me`);
@@ -3300,11 +3300,11 @@ export class PaymentsService implements OnModuleDestroy {
       relations: ['customer', 'store'],
     });
 
-    // Update mpPreferenceId with real Pagar.me order ID if still placeholder
-    if (order && order.mpPreferenceId?.startsWith('link-')) {
+    // Update pagarmeOrderId with real Pagar.me order ID if still placeholder
+    if (order && order.pagarmeOrderId?.startsWith('link-')) {
       const realOrderId = data.order?.id || data.id;
       if (realOrderId) {
-        order.mpPreferenceId = realOrderId;
+        order.pagarmeOrderId = realOrderId;
         await orderRepo.save(order);
       }
     }
@@ -3605,7 +3605,7 @@ export class PaymentsService implements OnModuleDestroy {
     });
 
     if (!order) throw new NotFoundException('Pedido não encontrado');
-    if (!order.mpPreferenceId && !order.preAuthChargeId) throw new BadRequestException('Este pedido não possui pagamento online para estornar');
+    if (!order.pagarmeOrderId && !order.preAuthChargeId) throw new BadRequestException('Este pedido não possui pagamento online para estornar');
 
     // Pedido terminal COM marcador de estorno falho e re-tentavel. Sem isso, um
     // estorno que caia por timeout/5xx deixava o pedido CANCELLED para sempre:
@@ -3693,9 +3693,9 @@ export class PaymentsService implements OnModuleDestroy {
       if (order.preAuthChargeId) {
         chargeId = order.preAuthChargeId;
       }
-      // 2. Try mpPreferenceId as Pagar.me order ID (PIX or payment link with real ID)
-      else if (order.mpPreferenceId && !order.mpPreferenceId.startsWith('link-')) {
-        const pagarmeOrder = await this.pagarmeGet(`/orders/${order.mpPreferenceId}`);
+      // 2. Try pagarmeOrderId as Pagar.me order ID (PIX or payment link with real ID)
+      else if (order.pagarmeOrderId && !order.pagarmeOrderId.startsWith('link-')) {
+        const pagarmeOrder = await this.pagarmeGet(`/orders/${order.pagarmeOrderId}`);
         const charge = pagarmeOrder.charges?.[0];
         if (!charge) throw new BadRequestException('Cobrança não encontrada no Pagar.me');
         chargeId = charge.id;
