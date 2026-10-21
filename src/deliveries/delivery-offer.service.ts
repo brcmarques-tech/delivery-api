@@ -26,6 +26,8 @@ const MAX_OFFER_DURATION_MS = 10 * 60_000; // 10 minutes total rotation
  */
 interface PendingOffer {
   orderId: string;
+  // Loja da corrida: o filtro deixa quem já está nela somar mais uma.
+  storeId: string;
   customerId: string;
   storeLat: number;
   storeLng: number;
@@ -60,7 +62,7 @@ export class DeliveryOfferService {
   private emitToAll: ((event: string, data: any) => void) | null = null;
   // Quem pode receber a vez (definido pelo DeliveriesService: sem corrida em
   // andamento e com conta de recebimento). Sem filtro, todo online pode.
-  private filtroDeCandidato: ((userId: string) => Promise<boolean>) | null = null;
+  private filtroDeCandidato: ((userId: string, storeId: string) => Promise<boolean>) | null = null;
 
   constructor(
     private trackerService: DelivererTrackerService,
@@ -78,7 +80,7 @@ export class DeliveryOfferService {
     this.emitToAll = emitToAll;
   }
 
-  definirFiltroDeCandidato(filtro: (userId: string) => Promise<boolean>) {
+  definirFiltroDeCandidato(filtro: (userId: string, storeId: string) => Promise<boolean>) {
     this.filtroDeCandidato = filtro;
   }
 
@@ -88,6 +90,7 @@ export class DeliveryOfferService {
    */
   startOffer(order: {
     id: string;
+    storeId: string;
     customerId: string;
     orderNumber: string;
     storeLat: number;
@@ -102,6 +105,7 @@ export class DeliveryOfferService {
 
     const offer: PendingOffer = {
       orderId: order.id,
+      storeId: order.storeId,
       customerId: order.customerId,
       storeLat: order.storeLat,
       storeLng: order.storeLng,
@@ -182,7 +186,7 @@ export class DeliveryOfferService {
     // não conseguia aceitar, e o pedido perdia 60s parado em cada volta.
     let deliverer: (typeof nearest)[number] | undefined;
     for (const candidato of nearest) {
-      const pode = this.filtroDeCandidato ? await this.filtroDeCandidato(candidato.userId) : true;
+      const pode = this.filtroDeCandidato ? await this.filtroDeCandidato(candidato.userId, offer.storeId) : true;
       if (offer.resolved) return; // aceita/cancelada enquanto esperava o banco
       if (pode) {
         deliverer = candidato;

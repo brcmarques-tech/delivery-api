@@ -7,6 +7,7 @@ import { AppUser } from '../users/entities/app-user.entity';
 import { OrdersService } from '../orders/orders.service';
 import { DeliveryCodesService } from '../orders/delivery-codes.service';
 import { DeliveryOfferService } from './delivery-offer.service';
+import { motivoParaNaoSomar, SQL_ENTREGAS_EM_ANDAMENTO } from './regras-de-acumulo';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -33,7 +34,7 @@ export class DeliveriesService implements OnModuleInit {
 
   onModuleInit() {
     this.ordersService.onOrderReady((order) => this.abrirOferta(order));
-    this.offerService.definirFiltroDeCandidato((userId) => this.podeReceberOferta(userId));
+    this.offerService.definirFiltroDeCandidato((userId, storeId) => this.podeReceberOferta(userId, storeId));
 
     // A cascata vive em memória: reiniciar a API apagava todas, e os pedidos
     // prontos ficavam sem ninguém ser chamado. Retoma as dos pedidos prontos
@@ -50,29 +51,25 @@ export class DeliveriesService implements OnModuleInit {
   }
 
   /**
-   * Quem pode receber a vez exclusiva: tem conta de recebimento e NÃO está com
-   * outra corrida em andamento (mesma regra do acceptDelivery). Sem isto o
-   * entregador ocupado recebia a vez, não conseguia aceitar, e o pedido ficava
-   * 60s parado em cada volta da cascata.
+   * Quem pode receber a vez exclusiva: tem conta de recebimento e pode SOMAR
+   * esta corrida às que já tem — mesma regra do acceptDelivery
+   * (regras-de-acumulo.ts). Quem já está na mesma loja, esperando coleta,
+   * recebe; quem está com corrida de outra loja ou já saiu, é pulado. Sem isto
+   * o entregador ocupado recebia a vez, não conseguia aceitar, e o pedido
+   * ficava 60s parado em cada volta da cascata.
    */
-  private async podeReceberOferta(userId: string): Promise<boolean> {
+  private async podeReceberOferta(userId: string, storeId: string): Promise<boolean> {
     // `paymentConnected` da entidade mora na coluna "mpConnected".
     const conta = await this.deliveriesRepository.manager.query(
       `SELECT "mpConnected" AS conectado FROM app_users WHERE id = $1`,
       [userId],
     );
     if (!conta?.[0]?.conectado) return false;
-    const ocupado = await this.deliveriesRepository.manager.query(
-      `SELECT 1
-         FROM deliveries d
-         JOIN orders o ON o.id = d."orderId"
-        WHERE d."delivererId" = $1
-          AND d."deliveredAt" IS NULL
-          AND o.status NOT IN ('COMPLETED','CANCELLED','REJECTED','EXPIRED','DISPUTED')
-        LIMIT 1`,
+    const emAndamento = await this.deliveriesRepository.manager.query(
+      SQL_ENTREGAS_EM_ANDAMENTO,
       [userId],
     );
-    return !(ocupado && ocupado.length > 0);
+    return motivoParaNaoSomar(emAndamento, storeId) === null;
   }
 
   /** Oferece a corrida aos entregadores (pedido pronto, ou de volta à fila). */
@@ -81,6 +78,7 @@ export class DeliveriesService implements OnModuleInit {
     if (!store) return;
     this.offerService.startOffer({
       id: order.id,
+      storeId: store.id,
       customerId: order.customer?.id || '',
       orderNumber: order.orderNumber,
       storeLat: Number(store.latitude),
@@ -109,33 +107,19 @@ export class DeliveriesService implements OnModuleInit {
     // feito nada errado e sem forma de destravar pelo app. (Confirmado em dados
     // reais: pedido COMPLETED com a entrega ainda sem deliveredAt.)
     //
-    // A regra continua a mesma — um entregador so leva uma entrega por vez. So
-    // deixamos de contar como "em andamento" a entrega cujo pedido ja acabou.
-    const activeDelivery = await this.deliveriesRepository.findOne({
-      where: {
-        deliverer: { id: deliverer.id },
-        deliveredAt: IsNull(),
-        order: {
-          status: Not(
-            In([
-              OrderStatus.COMPLETED,
-              OrderStatus.CANCELLED,
-              OrderStatus.REJECTED,
-              OrderStatus.EXPIRED,
-              OrderStatus.DISPUTED,
-            ]),
-          ),
-        },
-      },
-      relations: ['order'],
-    });
-    if (activeDelivery) {
-      throw new BadRequestException(
-        'Voce ja tem uma entrega em andamento. Finalize-a antes de aceitar outra.',
-      );
-    }
-
+    // Nao conta como "em andamento" a entrega cujo pedido ja acabou.
+    //
+    // A regra deixou de ser "uma entrega por vez": o entregador pode somar
+    // corridas da MESMA loja enquanto ainda nao saiu dela (ver
+    // regras-de-acumulo.ts). Corrida de outra loja, ou depois da coleta,
+    // continua bloqueada.
     const order = await this.ordersService.findById(orderId);
+    const emAndamento = await this.deliveriesRepository.manager.query(
+      SQL_ENTREGAS_EM_ANDAMENTO,
+      [deliverer.id],
+    );
+    const naoPode = motivoParaNaoSomar(emAndamento, order.store?.id);
+    if (naoPode) throw new BadRequestException(naoPode);
 
     // ALTO (auditoria 2026-08-23): AUTOENTREGA. Sem esta checagem, um cliente com
     // conta de entregador aceitava a PRÓPRIA entrega — passava a controlar as duas
@@ -175,7 +159,7 @@ export class DeliveriesService implements OnModuleInit {
     const result = await this.deliveriesRepository.manager.transaction(async (manager) => {
       // Lock the order row to prevent concurrent acceptance
       const lockedOrder = await manager.query(
-        `SELECT id, status FROM orders WHERE id = $1 FOR UPDATE`,
+        `SELECT id, status, "storeId" FROM orders WHERE id = $1 FOR UPDATE`,
         [orderId],
       );
 
@@ -194,21 +178,11 @@ export class DeliveriesService implements OnModuleInit {
       await manager.query(`SELECT id FROM app_users WHERE id = $1 FOR UPDATE`, [
         deliverer.id,
       ]);
-      const jaTem = await manager.query(
-        `SELECT d.id
-           FROM deliveries d
-           JOIN orders o ON o.id = d."orderId"
-          WHERE d."delivererId" = $1
-            AND d."deliveredAt" IS NULL
-            AND o.status NOT IN ('COMPLETED','CANCELLED','REJECTED','EXPIRED','DISPUTED')
-          LIMIT 1`,
-        [deliverer.id],
-      );
-      if (jaTem && jaTem.length > 0) {
-        throw new BadRequestException(
-          'Voce ja tem uma entrega em andamento. Finalize-a antes de aceitar outra.',
-        );
-      }
+      // Mesma regra de acumulo, revalidada sob o lock (duas corridas de lojas
+      // diferentes aceitas em paralelo passariam pela checagem de fora).
+      const jaTem = await manager.query(SQL_ENTREGAS_EM_ANDAMENTO, [deliverer.id]);
+      const naoPodeAqui = motivoParaNaoSomar(jaTem, lockedOrder[0].storeId);
+      if (naoPodeAqui) throw new BadRequestException(naoPodeAqui);
 
       // O pedido precisa estar READY para ser aceito para entrega. Sem isto, um
       // entregador podia aceitar pedido PENDING/CANCELLED/COMPLETED: travava o
@@ -420,6 +394,34 @@ export class DeliveriesService implements OnModuleInit {
     }
 
     return saved;
+  }
+
+  /**
+   * Com várias corridas da mesma loja, o app manda a posição de UMA entrega só
+   * (a primeira). Sem isto, os outros clientes viam o entregador parado no mapa.
+   * A posição é da pessoa, não do pedido: vale para todas as entregas em
+   * andamento dela. Devolve as outras, para o gateway avisar cada sala.
+   */
+  async propagarPosicao(
+    delivererId: string,
+    deliveryIdOrigem: string,
+    latitude: number,
+    longitude: number,
+  ): Promise<{ deliveryId: string; orderId: string }[]> {
+    const outras: { deliveryId: string; orderId: string }[] = await this.deliveriesRepository.manager.query(
+      `SELECT d.id AS "deliveryId", d."orderId" AS "orderId"
+         FROM deliveries d
+         JOIN orders o ON o.id = d."orderId"
+        WHERE d."delivererId" = $1
+          AND d.id <> $2
+          AND d."deliveredAt" IS NULL
+          AND o.status NOT IN ('COMPLETED','CANCELLED','REJECTED','EXPIRED','DISPUTED')`,
+      [delivererId, deliveryIdOrigem],
+    );
+    for (const o of outras) {
+      await this.updateLocation(o.deliveryId, latitude, longitude);
+    }
+    return outras;
   }
 
   // Entregador confirma que pegou o pedido

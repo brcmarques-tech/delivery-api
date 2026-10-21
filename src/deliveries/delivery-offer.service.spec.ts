@@ -31,7 +31,7 @@ describe('DeliveryOfferService — vez exclusiva', () => {
   }
 
   const pedido = {
-    id: 'pedido-1', customerId: 'cliente', orderNumber: 'ORD-1', storeLat: 0, storeLng: 0,
+    id: 'pedido-1', storeId: 'loja-1', customerId: 'cliente', orderNumber: 'ORD-1', storeLat: 0, storeLng: 0,
     storeAddress: 'Loja', deliveryAddress: 'Casa', deliveryFee: 5, itemCount: 1,
   };
 

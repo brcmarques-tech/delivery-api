@@ -191,6 +191,22 @@ export class DeliveriesGateway
       latitude: data.latitude,
       longitude: data.longitude,
     });
+
+    // Várias corridas da mesma loja: a mesma posição vale para todas, e cada
+    // cliente acompanha o entregador no SEU pedido.
+    const outras = await this.deliveriesService.propagarPosicao(
+      uid,
+      data.deliveryId,
+      data.latitude,
+      data.longitude,
+    );
+    for (const o of outras) {
+      this.server.to(`order:${o.orderId}`).emit('locationUpdate', {
+        deliveryId: o.deliveryId,
+        latitude: data.latitude,
+        longitude: data.longitude,
+      });
+    }
   }
 
   @SubscribeMessage('delivererOnline')
