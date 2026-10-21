@@ -32,20 +32,23 @@ export class DeliveriesService implements OnModuleInit {
   private readonly logger = new Logger(DeliveriesService.name);
 
   onModuleInit() {
-    this.ordersService.onOrderReady((order) => {
-      const store = order.store;
-      if (!store) return;
-      this.offerService.startOffer({
-        id: order.id,
-        customerId: order.customer?.id || '',
-        orderNumber: order.orderNumber,
-        storeLat: Number(store.latitude),
-        storeLng: Number(store.longitude),
-        storeAddress: `${store.street}, ${store.number} - ${store.neighborhood}`,
-        deliveryAddress: order.deliveryAddress,
-        deliveryFee: Number(order.deliveryFee),
-        itemCount: order.items?.length || 0,
-      });
+    this.ordersService.onOrderReady((order) => this.abrirOferta(order));
+  }
+
+  /** Oferece a corrida aos entregadores (pedido pronto, ou de volta à fila). */
+  private abrirOferta(order: any) {
+    const store = order.store;
+    if (!store) return;
+    this.offerService.startOffer({
+      id: order.id,
+      customerId: order.customer?.id || '',
+      orderNumber: order.orderNumber,
+      storeLat: Number(store.latitude),
+      storeLng: Number(store.longitude),
+      storeAddress: `${store.street}, ${store.number} - ${store.neighborhood}`,
+      deliveryAddress: order.deliveryAddress,
+      deliveryFee: Number(order.deliveryFee),
+      itemCount: order.items?.length || 0,
     });
   }
 
@@ -226,6 +229,88 @@ export class DeliveriesService implements OnModuleInit {
     // The order disappears from "Disponíveis" because it now has a delivery record
     this.notifyVendorDeliveryAccepted(order, deliverer);
     return saved;
+  }
+
+  // ─── Desistir da corrida ──────────────────────────────────────────────
+  //
+  // Antes não existia, nem para o entregador nem para o admin. Se a loja não
+  // entregava o pedido (fechou, sumiu, o produto acabou), o entregador ficava
+  // preso: a regra "uma entrega por vez" o impedia de pegar outra, e nada no
+  // sistema desfazia o aceite.
+  //
+  // Só antes da coleta (pedido READY). Depois dela a mercadoria está com o
+  // entregador, e devolver o pedido à fila deixaria a coisa física sem dono.
+  //
+  // O código do entregador é APAGADO: ele nasceu no aceite e quem desistiu o
+  // conhece. Se o próximo entregador herdasse o mesmo código, quem desistiu
+  // continuaria com uma prova válida para retirar o pedido. Limpo, o próximo
+  // aceite gera outro (gerarCodigoDoEntregador só gera quando está vazio).
+
+  async desistirDaEntrega(
+    orderId: string,
+    quem: { tipo: 'ENTREGADOR' | 'ADMIN'; id: string },
+    motivo?: string,
+  ): Promise<boolean> {
+    const motivoLimpo = (motivo || '').trim().slice(0, 200) || null;
+
+    await this.deliveriesRepository.manager.transaction(async (manager) => {
+      const pedido = await manager.query(
+        `SELECT id, status FROM orders WHERE id = $1 FOR UPDATE`,
+        [orderId],
+      );
+      if (!pedido?.length) throw new NotFoundException('Pedido não encontrado.');
+
+      const entrega = await manager.query(
+        `SELECT id, "delivererId" FROM deliveries WHERE "orderId" = $1`,
+        [orderId],
+      );
+      const linha = entrega?.[0];
+      if (!linha?.delivererId) {
+        throw new BadRequestException('Esta entrega não tem entregador.');
+      }
+      if (quem.tipo === 'ENTREGADOR' && linha.delivererId !== quem.id) {
+        throw new BadRequestException('Esta entrega não é sua.');
+      }
+      if (pedido[0].status !== OrderStatus.READY) {
+        throw new BadRequestException(
+          'A coleta já foi feita: não dá mais para desistir. Fale com o suporte.',
+        );
+      }
+
+      await manager.query(
+        `UPDATE deliveries SET "delivererId" = NULL, "updatedAt" = NOW() WHERE id = $1`,
+        [linha.id],
+      );
+      await manager.query(
+        `UPDATE orders
+            SET "codigoEntregador" = NULL,
+                "codigoVendedorUsadoEm" = NULL,
+                "codigoEntregadorUsadoEm" = NULL,
+                "updatedAt" = NOW()
+          WHERE id = $1`,
+        [orderId],
+      );
+      // Fica no histórico do pedido: quem largou, e por quê.
+      await manager.query(
+        `INSERT INTO order_status_logs ("orderId", "fromStatus", "toStatus", "changedBy", reason)
+         VALUES ($1, 'READY', 'READY', $2, $3)`,
+        [
+          orderId,
+          quem.id,
+          `${quem.tipo === 'ADMIN' ? 'Admin liberou a entrega' : 'Entregador desistiu'}${motivoLimpo ? `: ${motivoLimpo}` : ''}`,
+        ],
+      );
+    });
+
+    this.logger.log(
+      `[DESISTENCIA] pedido ${orderId} voltou para a fila (${quem.tipo} ${quem.id})`,
+    );
+
+    // De volta à fila: lojista vê no painel, entregadores recebem a oferta.
+    const order = await this.ordersService.findById(orderId);
+    this.pubSub.publish('orderUpdated', { orderUpdated: order });
+    this.abrirOferta(order);
+    return true;
   }
 
   // KAN: publica deliveryUpdated sempre com o delivery COMPLETO (order.customer,
