@@ -112,7 +112,9 @@ export class DeliveriesGateway
     // aparelho, continuava com o socket valido ate o JWT expirar (7 dias) —
     // seguia online, aparecia no getNearestDeliverers, recebia ofertas e podia
     // aceitar por `acceptOffer`, prendendo um pedido que o guard HTTP recusa.
-    this.appUsersService
+    //
+    // A promessa fica guardada: os handlers esperam por ela (ver autenticado).
+    (client.data as any).autenticacao = this.appUsersService
       .findById(payload?.sub)
       .then((user) => {
         const revogado =
@@ -128,6 +130,20 @@ export class DeliveriesGateway
       .catch(() => client.disconnect(true));
   }
 
+  /**
+   * Espera a validação da conexão terminar.
+   *
+   * Ela é assíncrona (consulta o banco), e o app manda 'delivererOnline' no
+   * MESMO instante do connect. Sem esperar, a mensagem às vezes chegava antes
+   * de `client.data.user` existir, voltava 'unauthorized' e era descartada em
+   * silêncio: o entregador ficava "Online" na tela, mas fora do tracker — não
+   * recebia corrida nenhuma e não era rastreado. Corrida de tempo: uns
+   * entregadores entravam, outros não.
+   */
+  private async autenticado(client: Socket): Promise<void> {
+    await ((client.data as any)?.autenticacao ?? Promise.resolve());
+  }
+
   handleDisconnect(client: Socket) {
     const userId = this.trackerService.removeBySocketId(client.id);
     if (userId) {
@@ -141,6 +157,7 @@ export class DeliveriesGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() data: string | { orderId: string },
   ) {
+    await this.autenticado(client);
     const uid = this.userIdOf(client);
     if (!uid) return;
     const orderId = typeof data === 'string' ? data : data.orderId;
@@ -157,6 +174,7 @@ export class DeliveriesGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { deliveryId: string; latitude: number; longitude: number },
   ) {
+    await this.autenticado(client);
     const uid = this.userIdOf(client);
     if (!uid) return;
     // So o entregador DAQUELA entrega pode mover o ponto dela.
@@ -180,6 +198,7 @@ export class DeliveriesGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { userId?: string; latitude: number; longitude: number },
   ) {
+    await this.autenticado(client);
     // Identidade da SESSAO — antes vinha do payload, permitindo se passar por
     // qualquer entregador e injetar GPS falso no tracker.
     const uid = this.userIdOf(client);
@@ -206,10 +225,11 @@ export class DeliveriesGateway
   }
 
   @SubscribeMessage('delivererLocationUpdate')
-  handleDelivererLocationUpdate(
+  async handleDelivererLocationUpdate(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { userId?: string; latitude: number; longitude: number },
   ) {
+    await this.autenticado(client);
     const uid = this.userIdOf(client);
     if (!uid) return;
     if (!this.isDeliverer(client)) return;
@@ -223,10 +243,11 @@ export class DeliveriesGateway
   }
 
   @SubscribeMessage('delivererOffline')
-  handleDelivererOffline(
+  async handleDelivererOffline(
     @ConnectedSocket() client: Socket,
     @MessageBody() _data: { userId?: string },
   ) {
+    await this.autenticado(client);
     // Identidade da sessao — antes dava para derrubar qualquer entregador.
     const uid = this.userIdOf(client);
     if (!uid) return { status: 'unauthorized' };
@@ -238,10 +259,11 @@ export class DeliveriesGateway
   }
 
   @SubscribeMessage('acceptOffer')
-  handleAcceptOffer(
+  async handleAcceptOffer(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { orderId: string; delivererId?: string },
   ) {
+    await this.autenticado(client);
     // Identidade da sessao — antes qualquer cliente aceitava a oferta em nome de
     // outro, encerrando a cascata (o pedido ficava sem entregador nenhum).
     const uid = this.userIdOf(client);
@@ -252,10 +274,11 @@ export class DeliveriesGateway
   }
 
   @SubscribeMessage('declineOffer')
-  handleDeclineOffer(
+  async handleDeclineOffer(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { orderId: string; delivererId?: string },
   ) {
+    await this.autenticado(client);
     const uid = this.userIdOf(client);
     if (!uid) return { status: 'unauthorized' };
     if (!this.isDeliverer(client)) return { status: 'forbidden' };

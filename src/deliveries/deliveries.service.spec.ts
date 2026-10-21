@@ -61,6 +61,9 @@ describe('DeliveriesService', () => {
     // KAN-254: `acceptDelivery` cancela a cascata de ofertas ao aceitar.
     // O metodo nao existia no mock e derrubava o teste.
     cancelOffer: jest.fn(),
+    // Vez exclusiva: nestes testes a corrida está aberta (fora da cascata).
+    reservadaParaOutro: jest.fn().mockReturnValue(false),
+    definirFiltroDeCandidato: jest.fn(),
   };
 
   const mockPubSub = {

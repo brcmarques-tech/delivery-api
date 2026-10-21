@@ -1,5 +1,5 @@
-import { Resolver, Query, Mutation, Args, Subscription, Int, ObjectType, Field, ID, Float, ResolveField, Parent } from '@nestjs/graphql';
-import { UseGuards, Inject, BadRequestException } from '@nestjs/common';
+import { Resolver, Query, Mutation, Args, Subscription, Int, ObjectType, Field, ID, Float, ResolveField, Parent, Context } from '@nestjs/graphql';
+import { UseGuards, Inject, BadRequestException, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
@@ -17,6 +17,7 @@ import { UserRole, OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { EquipeService } from '../team/equipe.service';
 import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
+import { DeliveryOfferService } from '../deliveries/delivery-offer.service';
 
 // KAN: escopo de ownership das subscriptions de pedido. O usuário autenticado do
 // WebSocket chega no `context.wsUser` (validado no onConnect do GraphQLModule).
@@ -159,7 +160,27 @@ export class OrdersResolver {
     // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
     // com o modulo", em vez de so "e o dono?".
     private equipeService: EquipeService,
+    // Vez exclusiva da cascata de ofertas (ver DeliveryOfferService).
+    @Inject(forwardRef(() => DeliveryOfferService))
+    private offerService: DeliveryOfferService,
   ) {}
+
+  /**
+   * Segundos que restam na vez exclusiva DESTE entregador para esta corrida.
+   * Nulo quando a corrida está aberta para todos (ou não é a vez dele). O app
+   * desenha a barra a partir daqui — o número vem pronto do servidor porque o
+   * relógio do celular pode estar errado.
+   *
+   * Lê o usuário pelo contexto e não pelo @CurrentUser: este campo pode ser
+   * pedido num contexto sem `req` (assinatura por WebSocket), e o decorator
+   * quebraria lá.
+   */
+  @ResolveField(() => Int, { nullable: true })
+  vezSegundosRestantes(@Parent() order: Order, @Context() ctx: any): number | null {
+    const userId: string | undefined = ctx?.req?.user?.id;
+    if (!userId) return null;
+    return this.offerService.estadoPara(order.id, userId).segundosRestantes;
+  }
 
   /**
    * O cliente chegou a ser cobrado? Decide o texto do cancelamento no app
@@ -261,8 +282,22 @@ export class OrdersResolver {
   @Query(() => [Order])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.DELIVERER)
-  availableDeliveries(): Promise<Order[]> {
-    return this.ordersService.findPendingForDelivery();
+  async availableDeliveries(@CurrentUser() user: AppUser): Promise<Order[]> {
+    // Vez exclusiva: corrida na cascata só aparece para quem está com a vez.
+    // Antes todo entregador via todas, e a vez do mais perto não valia nada.
+    const pedidos = await this.ordersService.findPendingForDelivery();
+    return pedidos.filter((p) => this.offerService.estadoPara(p.id, user.id).visivel);
+  }
+
+  /** O entregador passa a vez: a corrida vai na hora para o próximo. */
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  recusarOferta(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): boolean {
+    return this.offerService.declineOffer(orderId, user.id);
   }
 
   // KAN-292: paginado no servidor (status/busca/limit/offset). Antes retornava a

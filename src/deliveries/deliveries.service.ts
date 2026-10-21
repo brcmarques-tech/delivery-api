@@ -33,6 +33,46 @@ export class DeliveriesService implements OnModuleInit {
 
   onModuleInit() {
     this.ordersService.onOrderReady((order) => this.abrirOferta(order));
+    this.offerService.definirFiltroDeCandidato((userId) => this.podeReceberOferta(userId));
+
+    // A cascata vive em memória: reiniciar a API apagava todas, e os pedidos
+    // prontos ficavam sem ninguém ser chamado. Retoma as dos pedidos prontos
+    // sem entregador. (Fora do boot síncrono — o banco pode demorar.)
+    setTimeout(() => {
+      this.ordersService
+        .findPendingForDelivery()
+        .then((pedidos) => {
+          for (const pedido of pedidos) this.abrirOferta(pedido);
+          if (pedidos.length) this.logger.log(`[OFFER] ${pedidos.length} cascata(s) retomada(s) no boot`);
+        })
+        .catch((err) => this.logger.error(`[OFFER] falha ao retomar cascatas: ${err?.message}`));
+    }, 5_000);
+  }
+
+  /**
+   * Quem pode receber a vez exclusiva: tem conta de recebimento e NÃO está com
+   * outra corrida em andamento (mesma regra do acceptDelivery). Sem isto o
+   * entregador ocupado recebia a vez, não conseguia aceitar, e o pedido ficava
+   * 60s parado em cada volta da cascata.
+   */
+  private async podeReceberOferta(userId: string): Promise<boolean> {
+    // `paymentConnected` da entidade mora na coluna "mpConnected".
+    const conta = await this.deliveriesRepository.manager.query(
+      `SELECT "mpConnected" AS conectado FROM app_users WHERE id = $1`,
+      [userId],
+    );
+    if (!conta?.[0]?.conectado) return false;
+    const ocupado = await this.deliveriesRepository.manager.query(
+      `SELECT 1
+         FROM deliveries d
+         JOIN orders o ON o.id = d."orderId"
+        WHERE d."delivererId" = $1
+          AND d."deliveredAt" IS NULL
+          AND o.status NOT IN ('COMPLETED','CANCELLED','REJECTED','EXPIRED','DISPUTED')
+        LIMIT 1`,
+      [userId],
+    );
+    return !(ocupado && ocupado.length > 0);
   }
 
   /** Oferece a corrida aos entregadores (pedido pronto, ou de volta à fila). */
@@ -119,6 +159,15 @@ export class DeliveriesService implements OnModuleInit {
     }
     if (order.store?.hasOwnDelivery) {
       throw new BadRequestException('Esta loja faz as próprias entregas.');
+    }
+
+    // Vez exclusiva: enquanto a corrida está na cascata, só o entregador da
+    // vez aceita. Antes qualquer um que visse a corrida aceitava, e a vez do
+    // mais perto não valia nada.
+    if (this.offerService.reservadaParaOutro(orderId, deliverer.id)) {
+      throw new BadRequestException(
+        'Esta corrida está com outro entregador agora. Se ninguém aceitar, ela volta para você.',
+      );
     }
 
     // Atomic acceptance using DB transaction with row-level lock
