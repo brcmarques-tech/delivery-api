@@ -1,4 +1,4 @@
-import { Resolver, Query, Mutation, Args, Subscription, Int, ObjectType, Field, ID, Float } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, Subscription, Int, ObjectType, Field, ID, Float, ResolveField, Parent } from '@nestjs/graphql';
 import { UseGuards, Inject, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PubSub } from 'graphql-subscriptions';
@@ -160,6 +160,16 @@ export class OrdersResolver {
     // com o modulo", em vez de so "e o dono?".
     private equipeService: EquipeService,
   ) {}
+
+  /**
+   * O cliente chegou a ser cobrado? Decide o texto do cancelamento no app
+   * ("nenhuma cobrança foi feita" x "o estorno volta em..."). Ver
+   * OrdersService.cobrancaFeita.
+   */
+  @ResolveField(() => Boolean)
+  cobrancaFeita(@Parent() order: Order): Promise<boolean> {
+    return this.ordersService.cobrancaFeita(order);
+  }
 
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard)

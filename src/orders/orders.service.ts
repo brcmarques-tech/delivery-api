@@ -1531,6 +1531,34 @@ export class OrdersService {
     }
   }
 
+  // ─── Houve cobrança? ──────────────────────────────────────────────────
+
+  /**
+   * O cliente chegou a ser cobrado por este pedido?
+   *
+   * O app decidia o texto do cancelamento só pela FORMA de pagamento: um PIX
+   * que nunca foi pago, cancelado ainda em "aguardando pagamento", mostrava
+   * "o estorno será processado em até 7 dias úteis". Não há estorno nenhum —
+   * nada foi cobrado.
+   *
+   * Nenhuma coluna do pedido registra o pagamento do PIX (`capturedAt` é só do
+   * cartão). O que registra é o log de status: o pagamento confirmado é a saída
+   * de AWAITING_PAYMENT para qualquer status que não seja cancelar/expirar.
+   */
+  async cobrancaFeita(order: Order): Promise<boolean> {
+    if (order.paymentMethod === 'ON_DELIVERY') return false;
+    if (order.preAuthChargeId) return true;
+    const pagamentos = await this.orderStatusLogRepository
+      .createQueryBuilder('log')
+      .where('"log"."orderId" = :id', { id: order.id })
+      .andWhere('log.fromStatus = :de', { de: OrderStatus.AWAITING_PAYMENT })
+      .andWhere('log.toStatus NOT IN (:...fim)', {
+        fim: [OrderStatus.CANCELLED, OrderStatus.EXPIRED],
+      })
+      .getCount();
+    return pagamentos > 0;
+  }
+
   // ─── Cancelamento pelo cliente ────────────────────────────────────────
 
   async cancelByCustomer(orderId: string, customerId: string): Promise<Order> {
