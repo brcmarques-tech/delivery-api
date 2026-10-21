@@ -163,7 +163,9 @@ export class AddressesService {
     const parts = deliveryAddress.split(',').map((p) => p.trim());
     const address = this.addressesRepository.create({
       street: parts[0] || deliveryAddress,
-      number: parts[1] || 'S/N',
+      // Sem numero no texto digitado fica vazio. Era 'S/N' inventado: "Rua X 1500"
+      // (numero junto da rua, sem virgula) virava "Rua X 1500, S/N".
+      number: parts[1] || '',
       neighborhood: parts[2] || '',
       city: parts[3] || '',
       state: parts[4] || '',
