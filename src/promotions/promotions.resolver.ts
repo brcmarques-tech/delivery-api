@@ -1,5 +1,5 @@
 import { Resolver, Query, Mutation, Args, Float, Int, Subscription } from '@nestjs/graphql';
-import { UseGuards, Inject } from '@nestjs/common';
+import { UseGuards, Inject, BadRequestException } from '@nestjs/common';
 import { PubSub } from 'graphql-subscriptions';
 import { Promotion } from './entities/promotion.entity';
 import { PromotionsService } from './promotions.service';
@@ -42,9 +42,39 @@ export class PromotionsResolver {
           promotion.checkoutUrl = payment.checkoutUrl;
           await this.promotionsService.saveCheckoutUrl(promotion.id, payment.checkoutUrl);
         }
-      } catch {}
+      } catch {
+        // A promoção fica criada e "Aguardando pagamento"; o lojista gera o
+        // link de novo pelo botão "Pagar anúncio" (pagarAnuncioDaPromocao).
+      }
     }
 
+    return promotion;
+  }
+
+  /**
+   * Link para pagar o anúncio de uma promoção que ficou "Aguardando
+   * pagamento" — o lojista saiu do checkout, ou o link não foi gerado na
+   * criação. Antes não havia como pagar depois: a promoção ficava parada.
+   */
+  @Mutation(() => Promotion)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  async pagarAnuncioDaPromocao(
+    @Args('promotionId') promotionId: string,
+    @CurrentUser() user: VendorUser,
+  ): Promise<Promotion> {
+    const minhas = await this.promotionsService.findByOwner(user.id);
+    const promotion = minhas.find((p) => p.id === promotionId);
+    if (!promotion) throw new BadRequestException('Promoção não encontrada.');
+    if (promotion.isPaid) throw new BadRequestException('Este anúncio já está pago.');
+    if (new Date(promotion.endDate) < new Date()) {
+      throw new BadRequestException('O período desta promoção já terminou. Crie uma nova para anunciar.');
+    }
+    if (!promotion.checkoutUrl) {
+      const payment = await this.paymentsService.createPromotionCheckout(promotion, user);
+      promotion.checkoutUrl = payment.checkoutUrl;
+      await this.promotionsService.saveCheckoutUrl(promotion.id, payment.checkoutUrl);
+    }
     return promotion;
   }
 

@@ -156,6 +156,74 @@ export class PaymentsService implements OnModuleDestroy {
     this.pagarmeAuthHeader = 'Basic ' + Buffer.from(`${secretKey}:`).toString('base64');
   }
 
+  /**
+   * Link de pagamento (checkout hospedado do Pagar.me) — usado no anúncio de
+   * promoção, no cartão da loja online e no checkout de agendamento.
+   *
+   * Medido no sandbox em 23/10/2026, os três estavam quebrados do mesmo jeito:
+   *  - com chave de TESTE a API de links mora em `sdx-api.pagar.me`; em
+   *    `api.pagar.me` ela responde 401 de corpo vazio — que o código lia como
+   *    "bloqueio de IP" ([LINK_BLOQUEADO]) quando era só o endereço errado;
+   *  - o corpo era de outra versão: `accepted_payment_methods` vai DENTRO de
+   *    `payment_settings`, com `credit_card_settings`/`pix_settings`, e os
+   *    itens em `cart_settings`;
+   *  - o link NÃO repassa o nosso `metadata` ao pedido que ele gera: o webhook
+   *    chega só com `metadata.payment_link_id`. Por isso o id do link é
+   *    devolvido aqui e guardado, e o webhook resolve por ele
+   *    (resolverPagamentoPorLink).
+   */
+  private async criarLinkDePagamento(opts: {
+    nome: string;
+    totalCents: number;
+    pixExpiraEm: number;
+  }): Promise<{ id: string; url: string }> {
+    const secret = this.configService.get('PAGARME_SECRET_KEY') || '';
+    const base = secret.startsWith('sk_test') ? 'https://sdx-api.pagar.me/core/v5' : this.pagarmeBaseUrl;
+    const nome = opts.nome.substring(0, 256);
+    const body = {
+      is_building: false,
+      name: nome,
+      type: 'order',
+      payment_settings: {
+        accepted_payment_methods: ['credit_card', 'pix'],
+        credit_card_settings: {
+          operation_type: 'auth_and_capture',
+          installments: [{ number: 1, total: opts.totalCents }],
+        },
+        pix_settings: { expires_in: opts.pixExpiraEm },
+      },
+      cart_settings: { items: [{ amount: opts.totalCents, name: nome, default_quantity: 1 }] },
+    };
+    const response = await this.httpService.axiosRef.post(`${base}/paymentlinks`, body, {
+      headers: { Authorization: this.pagarmeAuthHeader, 'Content-Type': 'application/json' },
+    });
+    const { id, url } = response.data || {};
+    if (!id || !url) throw new Error('Pagar.me nao devolveu o link de pagamento');
+    return { id, url };
+  }
+
+  /**
+   * O pedido gerado por um link chega no webhook só com `payment_link_id` no
+   * metadata. Traduz para o metadata que o resto do handler entende, achando
+   * quem guardou aquele link: o pagamento da promoção (pagarmeOrderId = id do
+   * link), ou o pedido/agendamento (pagarmeOrderId = 'link-' + id do link).
+   */
+  private async resolverPagamentoPorLink(metadata: any): Promise<any> {
+    const linkId = metadata?.payment_link_id;
+    if (!linkId || metadata.type || metadata.order_id) return metadata;
+    const m = this.paymentsRepository.manager;
+    const pagamento = await this.paymentsRepository.findOne({ where: { pagarmeOrderId: linkId } });
+    if (pagamento?.type === 'PROMOTION' && (pagamento.metadata as any)?.promotionId) {
+      return { ...metadata, type: 'promotion', promotion_id: (pagamento.metadata as any).promotionId };
+    }
+    const [pedido] = await m.query(`SELECT id FROM orders WHERE "pagarmeOrderId" = $1 LIMIT 1`, [`link-${linkId}`]);
+    if (pedido) return { ...metadata, order_id: pedido.id };
+    const [agendamento] = await m.query(`SELECT id FROM appointments WHERE "pagarmeOrderId" = $1 LIMIT 1`, [`link-${linkId}`]);
+    if (agendamento) return { ...metadata, type: 'appointment', appointment_id: agendamento.id };
+    this.logger.warn(`[LINK_SEM_DONO] webhook de link ${linkId} sem pagamento/pedido/agendamento correspondente`);
+    return metadata;
+  }
+
   // L4: Properly clean up interval on module destroy
   onModuleDestroy() {
     if (this.webhookCleanupInterval) {
@@ -889,14 +957,16 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       // Create hosted checkout page directly via payment link (no separate order)
-      const checkoutUrl = await this.createPaymentLink(order, totalCents, []);
+      const link = await this.createPaymentLink(order, totalCents);
 
       this.logger.log(
-        `Pagar.me payment link created for ${order.orderNumber} | total: ${order.total}`,
+        `Pagar.me payment link created for ${order.orderNumber} | total: ${order.total} | link ${link.id}`,
       );
 
-      // Use a placeholder preferenceId since we no longer create a separate Pagar.me order
-      return { checkoutUrl, preferenceId: `link-${order.id}-${Date.now()}` };
+      // 'link-' + id do link: o prefixo marca o placeholder (trocado pelo id do
+      // pedido real quando o webhook chega) e o id é como o webhook acha o
+      // pedido — o link não repassa o nosso metadata.
+      return { checkoutUrl: link.url, preferenceId: `link-${link.id}` };
     } catch (err: any) {
       // createPaymentLink JA traduz o bloqueio de origem numa instrucao util
       // ("finalize com PIX"). Sem este repasse, este catch trocava aquela
@@ -1940,46 +2010,13 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Payment Link (hosted checkout) ────────────────────────────────────
 
-  private async createPaymentLink(order: Order, totalCents: number, splitRules: any[]): Promise<string> {
-    const body: any = {
-      name: `Pedido ${order.orderNumber}`,
-      type: 'order',
-      amount: totalCents,
-      accepted_payment_methods: ['credit_card', 'pix'],
-      payment_settings: {
-        credit_card: {
-          installments: [{ number: 1, total: totalCents }],
-          statement_descriptor: STATEMENT_DESCRIPTOR,
-        },
-        pix: {
-          expires_in: 1800,
-        },
-      },
-      items: [
-        {
-          description: `Pedido ${order.orderNumber}`.substring(0, 256),
-          quantity: 1,
-          amount: totalCents,
-        },
-      ],
-      ...(splitRules.length > 0 ? { split: splitRules } : {}),
-      metadata: {
-        order_id: order.id,
-        order_number: order.orderNumber,
-      },
-    };
-
+  private async createPaymentLink(order: Order, totalCents: number): Promise<{ id: string; url: string }> {
     try {
-      const result = await this.pagarmePost('/paymentlinks', body);
-      if (!result?.url && !result?.id) {
-        this.logger.error(
-          `[LINK_NAO_GERADO] pedido #${order.orderNumber} | resposta sem url e sem id`,
-        );
-        throw new BadRequestException(
-          'Nao foi possivel abrir a pagina de pagamento com cartao. Use PIX ou tente novamente.',
-        );
-      }
-      return result.url || `https://pagar.me/pay/${result.id}`;
+      return await this.criarLinkDePagamento({
+        nome: `Pedido ${order.orderNumber}`,
+        totalCents,
+        pixExpiraEm: 1800,
+      });
     } catch (err: any) {
       if (err instanceof HttpException) throw err;
 
@@ -2498,45 +2535,22 @@ export class PaymentsService implements OnModuleDestroy {
   async createPromotionCheckout(promotion: Promotion, user: VendorUser): Promise<Payment> {
     const totalCents = Math.round(Number(promotion.adCost) * 100);
 
-    const body: any = {
-      name: `Promoção: ${promotion.title}`,
-      type: 'order',
-      amount: totalCents,
-      accepted_payment_methods: ['credit_card', 'pix'],
-      payment_settings: {
-        credit_card: {
-          installments: [{ number: 1, total: totalCents }],
-          statement_descriptor: STATEMENT_DESCRIPTOR,
-        },
-        pix: {
-          expires_in: 86400,
-        },
-      },
-      items: [
-        {
-          description: `Promoção: ${promotion.title}`.substring(0, 256),
-          quantity: 1,
-          amount: totalCents,
-        },
-      ],
-      metadata: {
-        type: 'promotion',
-        promotion_id: promotion.id,
-        user_id: user.id,
-      },
-    };
-
     try {
-      const result = await this.pagarmePost('/paymentlinks', body);
-      const checkoutUrl = result.url || `https://pagar.me/pay/${result.id}`;
+      // O webhook chega só com o id do link: é por `pagarmeOrderId` (= id do
+      // link) que resolverPagamentoPorLink acha esta promoção.
+      const link = await this.criarLinkDePagamento({
+        nome: `Anúncio da promoção: ${promotion.title}`,
+        totalCents,
+        pixExpiraEm: 86400,
+      });
 
       const payment = this.paymentsRepository.create({
         type: 'PROMOTION',
         description: `Promoção: ${promotion.title}`,
         amount: Number(promotion.adCost),
         status: 'pending',
-        pagarmeOrderId: result.id,
-        checkoutUrl,
+        pagarmeOrderId: link.id,
+        checkoutUrl: link.url,
         metadata: { promotionId: promotion.id },
         vendorUser: user,
       });
@@ -2894,7 +2908,7 @@ export class PaymentsService implements OnModuleDestroy {
 
   private async handleOrderPaid(data: any): Promise<void> {
     const pagarmeOrderId = data.id;
-    const metadata = data.metadata || {};
+    const metadata = await this.resolverPagamentoPorLink(data.metadata || {});
     const code = data.code || '';
 
     // Check if it's a plan upgrade
@@ -2935,8 +2949,9 @@ export class PaymentsService implements OnModuleDestroy {
 
     // Check if it's a promotion
     if (metadata.type === 'promotion') {
+      // O pagamento guarda o id do LINK (pl_...); o webhook traz o do pedido.
       const payment = await this.paymentsRepository.findOne({
-        where: { pagarmeOrderId },
+        where: [{ pagarmeOrderId }, ...(metadata.payment_link_id ? [{ pagarmeOrderId: metadata.payment_link_id }] : [])],
       });
       if (payment) {
         payment.status = 'approved';
@@ -3354,6 +3369,19 @@ export class PaymentsService implements OnModuleDestroy {
   }
 
   private async handleChargePaid(data: any): Promise<void> {
+    // Pago por LINK de pagamento: o metadata só traz payment_link_id. Promoção e
+    // agendamento vão para o mesmo tratamento do order.paid; pedido ganha o
+    // order_id para seguir o caminho normal abaixo.
+    const metaDoLink = data.metadata || data.order?.metadata || {};
+    if (metaDoLink.payment_link_id) {
+      const resolvido = await this.resolverPagamentoPorLink(metaDoLink);
+      if (resolvido.type === 'promotion' || resolvido.type === 'appointment') {
+        await this.handleOrderPaid({ id: data.order?.id || data.id, code: data.order?.code, metadata: resolvido, charges: [data] });
+        return;
+      }
+      if (resolvido.order_id) data = { ...data, metadata: { ...metaDoLink, order_id: resolvido.order_id } };
+    }
+
     // Fallback: if order.paid webhook doesn't fire, charge.paid confirms the payment
     const orderId = this.extractOrderIdFromCharge(data);
 
@@ -4456,37 +4484,15 @@ export class PaymentsService implements OnModuleDestroy {
     const totalCents = Math.round(Number(appointment.price) * 100);
 
     try {
-      const body: any = {
-        name: `Agendamento ${appointment.appointmentNumber}`,
-        type: 'order',
-        amount: totalCents,
-        accepted_payment_methods: ['credit_card', 'pix'],
-        payment_settings: {
-          credit_card: {
-            installments: [{ number: 1, total: totalCents }],
-            statement_descriptor: STATEMENT_DESCRIPTOR,
-          },
-          pix: { expires_in: 1800 },
-        },
-        items: [
-          {
-            description: `Agendamento ${appointment.appointmentNumber}`.substring(0, 256),
-            quantity: 1,
-            amount: totalCents,
-          },
-        ],
-        metadata: {
-          type: 'appointment',
-          appointment_id: appointment.id,
-          appointment_number: appointment.appointmentNumber,
-        },
-      };
+      const link = await this.criarLinkDePagamento({
+        nome: `Agendamento ${appointment.appointmentNumber}`,
+        totalCents,
+        pixExpiraEm: 1800,
+      });
 
-      const result = await this.pagarmePost('/paymentlinks', body);
-      const checkoutUrl = result.url || `https://pagar.me/pay/${result.id}`;
-
-      this.logger.log(`Pagar.me payment link for appointment ${appointment.appointmentNumber} | total: ${appointment.price}`);
-      return { checkoutUrl, preferenceId: `link-${appointment.id}-${Date.now()}` };
+      this.logger.log(`Pagar.me payment link for appointment ${appointment.appointmentNumber} | total: ${appointment.price} | link ${link.id}`);
+      // 'link-' + id do link: é por ele que o webhook acha o agendamento.
+      return { checkoutUrl: link.url, preferenceId: `link-${link.id}` };
     } catch (err: any) {
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me appointment checkout failed: ${JSON.stringify(errorData || err.message)}`);
