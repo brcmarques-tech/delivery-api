@@ -324,6 +324,20 @@ export class StoresService implements OnApplicationBootstrap {
     );
   }
 
+  /**
+   * Frete grátis só existe com a frota PRÓPRIA da loja (decisão do Bruno,
+   * 23/10/2026). Com entregador do app o frete é o pagamento do entregador:
+   * zerado, a corrida saía para ele por R$ 0,00 e ninguém o pagava. O painel já
+   * escondia a opção nesse modo, mas o valor salvo antes de trocar de modo (ou
+   * por mutation direta) continuava valendo. Frete grátis com entregador do app
+   * fica para cupom, no futuro.
+   */
+  static freteGratisSoComFrotaPropria(store: Partial<Store>): void {
+    if (store.hasOwnDelivery) return;
+    store.freeDelivery = false;
+    store.freeDeliveryAbove = null as any;
+  }
+
   async create(input: CreateStoreInput, owner: VendorUser): Promise<Store> {
     const planConfig = await this.platformConfigService.getPlanConfig(
       owner.vendorPlan || 'FREE',
@@ -350,6 +364,7 @@ export class StoresService implements OnApplicationBootstrap {
     }
 
     const store = this.storesRepository.create({ ...input, owner });
+    StoresService.freteGratisSoComFrotaPropria(store);
     const saved = await this.storesRepository.save(store);
 
     // Gerar slug após salvar (precisamos do id para garantir unicidade)
@@ -746,6 +761,7 @@ export class StoresService implements OnApplicationBootstrap {
     Object.entries(updates).forEach(([key, value]) => {
       if (value !== undefined) (store as any)[key] = value;
     });
+    StoresService.freteGratisSoComFrotaPropria(store);
 
     // Se coordenadas foram enviadas manualmente (do mapa), usar essas
     // Senão, recalcular via geocoding se o endereço mudou

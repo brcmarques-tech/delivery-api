@@ -255,8 +255,10 @@ export class OrdersService {
     let deliveryFee = 0;
 
     if (!isPickup) {
-      const storeFreeDelivery = store.freeDelivery;
-      const freeAbove = store.freeDeliveryAbove
+      // Frete grátis só com frota própria: com entregador do app o frete é o
+      // pagamento dele (ver StoresService.freteGratisSoComFrotaPropria).
+      const storeFreeDelivery = store.hasOwnDelivery && store.freeDelivery;
+      const freeAbove = store.hasOwnDelivery && store.freeDeliveryAbove
         ? Number(store.freeDeliveryAbove)
         : null;
 
