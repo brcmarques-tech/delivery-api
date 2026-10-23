@@ -16,6 +16,35 @@ export function percentualEmCentavos(centavos: number, percentual: number): numb
   return Math.round(Number(((centavos * percentual) / 100).toFixed(6)));
 }
 
+/**
+ * Quem paga a taxa do meio de pagamento (MDR do cartão, tarifa do PIX) num
+ * split: a LOJA. Decisão do Bruno em 23/10/2026: "não tem que ter prejuízo para
+ * a plataforma nunca".
+ *
+ * Antes a regra da plataforma levava `charge_processing_fee` — ela pagava a
+ * taxa inteira do pedido com a fatia dela. Medido no sandbox: ~4,49% do total
+ * no cartão. Com comissão de 2% (PRO) ou 0% (PREMIUM) a plataforma recebia
+ * menos do que pagava de taxa e cada venda no cartão dava prejuízo (pedido de
+ * R$ 38,99 no PRO: recebeu R$ 0,87, pagou R$ 1,75).
+ *
+ * O entregador nunca paga taxa. Sem regra da loja (não deveria acontecer num
+ * pedido online), cai na plataforma, para o split não sair sem pagador — o
+ * gateway recusaria.
+ */
+export function taxaPorContaDaLoja(
+  regras: Array<{ recipient_id: string; options?: Record<string, any> }>,
+  recebedorDaLoja: string | null | undefined,
+  recebedorDaPlataforma: string | null | undefined,
+): void {
+  const pagador =
+    regras.find((r) => recebedorDaLoja && r.recipient_id === recebedorDaLoja) ??
+    regras.find((r) => recebedorDaPlataforma && r.recipient_id === recebedorDaPlataforma);
+  for (const r of regras) {
+    const ehPagador = r === pagador;
+    r.options = { ...(r.options || {}), charge_processing_fee: ehPagador, charge_remainder_fee: ehPagador };
+  }
+}
+
 /** Mesmo cálculo, de reais para reais. */
 export function percentualEmReais(reais: number, percentual: number): number {
   return percentualEmCentavos(Math.round(reais * 100), percentual) / 100;

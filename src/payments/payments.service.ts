@@ -28,7 +28,7 @@ import { linhasAfetadas } from '../common/utils/db-claim';
 // Perf/fuso: a data de antecipacao tem de ser decidida no fuso do NEGOCIO, nao
 // em UTC — ver dataDeAntecipacao.
 import { businessMinutes, businessToday } from '../common/utils/business-time';
-import { percentualEmCentavos } from '../common/dinheiro';
+import { percentualEmCentavos, taxaPorContaDaLoja } from '../common/dinheiro';
 
 // L5: Centralized descriptor constant
 const STATEMENT_DESCRIPTOR = 'BCMTECH';
@@ -1024,6 +1024,8 @@ export class PaymentsService implements OnModuleDestroy {
         };
       }
 
+      taxaPorContaDaLoja(splitRules, vendorRecipientId, platformRecipientId);
+
       const splitSum = splitRules.reduce((s, r) => s + r.amount, 0);
       if (splitSum !== totalCents) {
         this.logger.error(
@@ -1302,7 +1304,7 @@ export class PaymentsService implements OnModuleDestroy {
       // o MDR do proprio bolso em todo pedido desses.
       // Sem regra de valor zero (que o gateway costuma recusar): as opcoes de
       // taxa/responsabilidade passam para a regra do vendedor.
-      const principal = splitRules[0];
+      const principal = splitRules.find((r) => r.recipient_id === vendorRecipientId) ?? splitRules[0];
       principal.options = {
         ...(principal.options || {}),
         charge_processing_fee: true,
@@ -1310,6 +1312,8 @@ export class PaymentsService implements OnModuleDestroy {
         charge_remainder_fee: true,
       };
     }
+
+    taxaPorContaDaLoja(splitRules, vendorRecipientId, platformRecipientId);
 
     // Final validation
     const finalSum = splitRules.reduce((sum, r) => sum + r.amount, 0);
@@ -4776,6 +4780,8 @@ export class PaymentsService implements OnModuleDestroy {
             options: { charge_processing_fee: true, liable: true },
           });
         }
+
+        taxaPorContaDaLoja(splitRules, vendorRecipientId, platformRecipientId);
 
         const body: any = {
           amount: totalCents,

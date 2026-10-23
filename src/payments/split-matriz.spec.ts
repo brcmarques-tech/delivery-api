@@ -263,6 +263,11 @@ describe('MATRIZ DO SPLIT — vendedor, entregador e marketplace', () => {
     expect(soma).toBe(r.totalCents);
     expect(r.regras.every((x) => x.amount > 0)).toBe(true);
     expect(r.regras.filter((x) => x.options?.charge_processing_fee).length).toBe(1);
+    // Quem paga a taxa é a LOJA, nunca a plataforma nem o entregador — a
+    // plataforma não pode receber menos do que paga (decisão de 23/10/2026).
+    const pagador = r.regras.find((x) => x.options?.charge_processing_fee);
+    if (r.porRecebedor[RECEBEDOR_VENDEDOR]) expect(pagador.recipient_id).toBe(RECEBEDOR_VENDEDOR);
+    expect(pagador.recipient_id).not.toBe(RECEBEDOR_ENTREGADOR);
 
     const responsaveis = r.regras.filter((x) => x.options?.liable).map((x) => x.recipient_id);
     expect(responsaveis.length).toBeGreaterThan(0);

@@ -302,9 +302,10 @@ describe('PaymentsService', () => {
       expect(platform.amount).toBe(750);
       // Soma tem que fechar com o total (o gateway rejeita se nao fechar).
       expect(split.reduce((s: number, r: any) => s + r.amount, 0)).toBe(5500);
-      // A plataforma paga a taxa da adquirente — isso nao mudou.
-      expect(platform.options.charge_processing_fee).toBe(true);
-      expect(vendor.options.charge_processing_fee).toBe(false);
+      // A taxa do meio de pagamento sai da parte da LOJA (decisão de
+      // 23/10/2026): a plataforma nunca pode receber menos do que paga.
+      expect(platform.options.charge_processing_fee).toBe(false);
+      expect(vendor.options.charge_processing_fee).toBe(true);
       // RESPONSABILIDADE POR CHARGEBACK: os dois respondem pela propria fatia
       // desde 16/10/2026 (KAN-303). Antes `vendor.liable` era false, e isso
       // significava que num chargeback a plataforma era debitada no valor
