@@ -1996,6 +1996,26 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Plan Upgrade ──────────────────────────────────────────────────────
 
+  /** Endereço de cobrança do lojista: o da loja dele (a mais antiga). */
+  private async enderecoDeCobrancaDoVendedor(
+    vendorId: string,
+  ): Promise<{ line_1: string; zip_code: string; city: string; state: string; country: string } | null> {
+    const [loja] = await this.paymentsRepository.manager.query(
+      `SELECT street, number, neighborhood, city, state, "zipCode"
+         FROM stores WHERE "ownerId" = $1 ORDER BY "createdAt" ASC LIMIT 1`,
+      [vendorId],
+    );
+    const cep = String(loja?.zipCode || '').replace(/\D/g, '');
+    if (!loja || cep.length !== 8 || !loja.city) return null;
+    return {
+      line_1: [loja.number || 'S/N', loja.street, loja.neighborhood].filter(Boolean).join(', ').substring(0, 256),
+      zip_code: cep,
+      city: loja.city,
+      state: /^[A-Za-z]{2}$/.test(loja.state || '') ? loja.state.toUpperCase() : 'RS',
+      country: 'BR',
+    };
+  }
+
   async createPlanUpgrade(user: VendorUser, plan: VendorPlan, billingPeriod: string = 'monthly', cardToken?: string, paymentMethod: string = 'credit_card'): Promise<Payment> {
     // M5: Use dynamic config from platformConfigService instead of hardcoded PLAN_CONFIGS
     const planConfig = await this.platformConfigService.getPlanConfig(plan);
@@ -2195,6 +2215,11 @@ export class PaymentsService implements OnModuleDestroy {
     if (paymentMethod === 'credit_card') {
       subscriptionBody.card_token = cardToken;
       subscriptionBody.installments = installmentsCount;
+      // Sem endereço de cobrança a assinatura nasce, mas a 1ª cobrança falha com
+      // `validation_error | billing | "value" is required` (sandbox, 23/10/2026)
+      // — o lojista via "Confirmando seu pagamento..." e o plano nunca ativava.
+      const cobranca = await this.enderecoDeCobrancaDoVendedor(user.id);
+      if (cobranca) subscriptionBody.card = { billing_address: cobranca };
     }
 
     // Apply badge discount as flat discount on the subscription.
