@@ -1219,7 +1219,12 @@ export class PaymentsService implements OnModuleDestroy {
           .getRepository(Order)
           .update(order.id, {
             notes: `${order.notes || ''}\n[DELIVERER_UNPAID] R$ ${(delivererAmount / 100).toFixed(2)} nao repassados ao entregador (sem recipient).`.trim(),
-          })
+            // Vira saldo do entregador no repasse semanal de quarta — antes
+            // ficava só a nota, e o valor não aparecia em lugar nenhum.
+            ...(delivererAmount > 0 && !(order as any).delivererPayableCents
+              ? { delivererPayableCents: delivererAmount }
+              : {}),
+          } as any)
           .catch((err: any) =>
             this.logger.error(`Falha ao marcar DELIVERER_UNPAID: ${err?.message}`),
           );

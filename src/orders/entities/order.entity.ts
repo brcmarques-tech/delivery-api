@@ -230,6 +230,10 @@ export class Order {
   @Column({ type: 'timestamp', nullable: true })
   delivererPayablePaidAt: Date;
 
+  /** Pagamento semanal (repasses_entregador) em que este frete foi pago. */
+  @Column({ type: 'uuid', nullable: true })
+  delivererPayoutId: string | null;
+
   // Repasse de LOJISTA retido na plataforma.
   //
   // Nasceu do bloqueio de origem do Pagar.me (allowlist de IP, KAN-299): quando
