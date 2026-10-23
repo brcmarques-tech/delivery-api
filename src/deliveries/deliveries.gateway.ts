@@ -125,7 +125,12 @@ export class DeliveriesGateway
           client.disconnect(true);
           return;
         }
-        (client.data as any).user = payload;
+        // O papel vem do BANCO, nao do JWT. O JWT guarda o papel da hora do
+        // login: o entregador recem-aprovado seguia com 'CUSTOMER' no token, o
+        // app mostrava "Online" (o HTTP ja le o papel do banco) e o socket o
+        // tratava como cliente — fora do tracker, sem receber corrida nenhuma
+        // ate sair e entrar de novo.
+        (client.data as any).user = { ...payload, role: user.role };
       })
       .catch(() => client.disconnect(true));
   }

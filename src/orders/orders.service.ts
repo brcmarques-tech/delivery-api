@@ -398,6 +398,14 @@ export class OrdersService {
 
     const needsPayment = paymentMethod !== 'ON_DELIVERY';
 
+    // Dinheiro só chega aqui com retirada ou frota própria (o guard acima
+    // recusa dinheiro com entregador do app) — e nesses casos a plataforma NÃO
+    // cobra comissão (ver completeOrderWithPayment). Antes o pedido gravava a
+    // comissão do plano assim mesmo: o financeiro a somava como receita que
+    // nunca entra e punha o total do pedido em "a receber" da loja, como se a
+    // plataforma devesse a ela um dinheiro que a loja já recebeu na mão.
+    const semComissao = !needsPayment;
+
     if (needsPayment && !customer.cpf) {
       throw new BadRequestException(
         'CPF obrigatorio para pagamento online. Atualize seu perfil.',
@@ -415,8 +423,8 @@ export class OrdersService {
           subtotal,
           deliveryFee,
           total,
-          commissionPercent,
-          commissionAmount,
+          commissionPercent: semComissao ? 0 : commissionPercent,
+          commissionAmount: semComissao ? 0 : commissionAmount,
           isPickup,
           deliveryAddress: isPickup
             ? `${store.street}, ${store.number} - ${store.neighborhood}, ${store.city}`

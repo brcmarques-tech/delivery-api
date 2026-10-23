@@ -281,7 +281,8 @@ export class DeliveryOfferService {
    *  - Corrida fora da cascata (aberta: cascata terminou, ou nunca começou):
    *    visível para todos, sem tempo.
    *  - Na cascata e é a vez dele: visível, com os segundos que restam.
-   *  - Na cascata e é a vez de outro (ou entre uma vez e outra): invisível.
+   *  - Na cascata e é a vez de outro: invisível.
+   *  - Na cascata, na pausa entre uma volta e outra: aberta para todos.
    *
    * Os segundos vão prontos do servidor, e não um horário: o relógio do
    * celular pode estar errado (o deste PC nasce +3h a cada boot).
@@ -289,6 +290,12 @@ export class DeliveryOfferService {
   estadoPara(orderId: string, delivererId: string): { visivel: boolean; segundosRestantes: number | null } {
     const offer = this.pendingOffers.get(orderId);
     if (!offer || offer.resolved) return { visivel: true, segundosRestantes: null };
+    // Pausa entre voltas (todos já tiveram a vez e a cascata espera 30s para
+    // recomeçar, só para não repetir push/WhatsApp): aberta para quem pegar.
+    // Antes ficava invisível e recusada para TODOS — com um entregador só
+    // online, eram 30s mortos a cada volta em que ele via o card e levava "está
+    // com outro entregador" ao tocar em Aceitar.
+    if (!offer.currentDelivererId) return { visivel: true, segundosRestantes: null };
     if (offer.currentDelivererId === delivererId && offer.vezExpiraEm) {
       return {
         visivel: true,

@@ -18,6 +18,7 @@ import { PUB_SUB } from '../pubsub/pubsub.module';
 import { EquipeService } from '../team/equipe.service';
 import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 import { DeliveryOfferService } from '../deliveries/delivery-offer.service';
+import { PlatformConfigService } from '../config/platform-config.service';
 
 // KAN: escopo de ownership das subscriptions de pedido. O usuário autenticado do
 // WebSocket chega no `context.wsUser` (validado no onConnect do GraphQLModule).
@@ -163,7 +164,22 @@ export class OrdersResolver {
     // Vez exclusiva da cascata de ofertas (ver DeliveryOfferService).
     @Inject(forwardRef(() => DeliveryOfferService))
     private offerService: DeliveryOfferService,
+    private platformConfigService: PlatformConfigService,
   ) {}
+
+  /**
+   * Quanto o entregador do app recebe por esta corrida: o frete menos a
+   * comissão de entrega da plataforma — a mesma conta do settlePayment. O app
+   * mostrava o frete BRUTO como "Taxa de entrega" (R$ 0,98 na tela, R$ 0,88 no
+   * bolso). Null quando não há entregador do app (retirada ou frota própria).
+   */
+  @ResolveField(() => Float, { nullable: true })
+  async ganhoDoEntregador(@Parent() order: Order): Promise<number | null> {
+    if (order.isPickup || order.store?.hasOwnDelivery) return null;
+    const freteCents = Math.round((Number(order.deliveryFee) || 0) * 100);
+    const pct = await this.platformConfigService.getDeliveryCommissionPercent();
+    return (freteCents - Math.round(freteCents * (pct / 100))) / 100;
+  }
 
   /**
    * Segundos que restam na vez exclusiva DESTE entregador para esta corrida.

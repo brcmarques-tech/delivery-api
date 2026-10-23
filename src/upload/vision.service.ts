@@ -123,8 +123,13 @@ export class VisionService {
       this.logger.log(`Rosto validado com confianca: ${(confidence * 100).toFixed(1)}%`);
       return { valid: true, message: 'Rosto detectado com sucesso' };
     } catch (error) {
+      // Falha do PROVEDOR (fora do ar, cota, faturamento desligado), nao da
+      // foto. Recusar aqui travava todo cadastro de entregador enquanto o
+      // Google estivesse indisponivel — achado em 22/10/2026 com o projeto sem
+      // faturamento. Mesmo destino de quando nao ha credencial: revisao manual
+      // (o superadmin ja aprova olhando as fotos).
       this.logger.error('Erro na validacao facial', error);
-      return { valid: false, message: 'Erro na validacao facial. Tente novamente.' };
+      return this.unavailable();
     }
   }
 
@@ -177,7 +182,7 @@ export class VisionService {
       return { valid: true, message: 'Documento reconhecido com sucesso' };
     } catch (error) {
       this.logger.error('Erro na validacao do documento', error);
-      return { valid: false, message: 'Erro na validacao do documento. Tente novamente.' };
+      return this.unavailable(); // idem validateFacePhoto
     }
   }
 }

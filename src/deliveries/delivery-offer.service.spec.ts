@@ -96,6 +96,17 @@ describe('DeliveryOfferService — vez exclusiva', () => {
     expect(service.estadoPara('pedido-1', 'medio').visivel).toBe(true);
   });
 
+  it('na pausa entre voltas a corrida fica aberta (não some de todo mundo)', async () => {
+    // Só "perto" pode pegar: depois da vez dele a cascata entra na pausa de 30s.
+    const { service } = montar(async (id) => id === 'perto');
+    service.startOffer(pedido);
+    await andar();
+    jest.advanceTimersByTime(60_000);
+    await andar();
+    expect(service.estadoPara('pedido-1', 'perto')).toEqual({ visivel: true, segundosRestantes: null });
+    expect(service.reservadaParaOutro('pedido-1', 'perto')).toBe(false);
+  });
+
   it('depois dos 10 minutos a corrida abre para todos', async () => {
     const { service } = montar();
     service.startOffer(pedido);

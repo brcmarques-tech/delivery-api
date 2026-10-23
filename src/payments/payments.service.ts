@@ -311,6 +311,12 @@ export class PaymentsService implements OnModuleDestroy {
     const estornou =
       statusTransacao === 'refunded' ||
       statusTransacao === 'partial_refunded' ||
+      // Estorno de PIX é ASSINCRONO: o DELETE volta "pending_refund" (aceito,
+      // em processamento) e a cobrança vira canceled segundos depois, com o
+      // charge.refunded no webhook. Medido no sandbox em 22/10/2026: tratado
+      // como recusa, o cancelamento gravava REFUND_FAILED ("pedido SEM
+      // estorno") num pedido que o Pagar.me estornou inteiro.
+      statusTransacao === 'pending_refund' ||
       // Se o provedor nao trouxer last_transaction, o status da cobranca ainda
       // resolve o caso total. Nao vale para parcial: ali a cobranca segue "paid".
       (!statusTransacao && (statusCobranca === 'canceled' || statusCobranca === 'refunded'));
@@ -1596,6 +1602,23 @@ export class PaymentsService implements OnModuleDestroy {
   // Settle payment after delivery is confirmed.
   // Credit card: capture with split rules (Pagar.me distributes automatically).
   // PIX: manual transfers (balance is instant).
+  /**
+   * Status do repasse na linha da ENTREGA, que o superadmin exibe. Nascia
+   * pending_capture/pending_confirmation no aceite e ninguem o atualizava:
+   * pedido liquidado e pago no Pagar.me aparecia "pendente" para sempre.
+   * Falhar aqui nao desfaz o repasse — so loga.
+   */
+  private async marcarRepasseDaEntrega(
+    orderId: string,
+    campos: { payoutStatus?: string; vendorPayoutStatus?: string },
+  ): Promise<void> {
+    const sets = Object.keys(campos).map((c, i) => `"${c}" = $${i + 2}`);
+    if (sets.length === 0) return;
+    await this.paymentsRepository.manager
+      .query(`UPDATE deliveries SET ${sets.join(', ')} WHERE "orderId" = $1`, [orderId, ...Object.values(campos)])
+      .catch((err: any) => this.logger.error(`Falha ao marcar repasse da entrega ${orderId}: ${err?.message}`));
+  }
+
   async settlePayment(order: Order): Promise<void> {
     // C2: Atomic idempotency guard — prevents double settlement
     // ALTO (auditoria 2026-08-23): o claim só olhava `isSettled`. Um settlement em
@@ -1625,6 +1648,12 @@ export class PaymentsService implements OnModuleDestroy {
         // Marca explicitamente que ESTE pedido foi liquidado via split na captura
         // — e o unico caso em que o estorno no Pagar.me desfaz os repasses sozinho.
         await orderRepo.update(order.id, { capturedAt: new Date(), settledViaSplit: true } as any);
+        // O split da captura ja pagou a loja e, se ele tinha recebedor, o
+        // entregador (sem recebedor vira DELIVERER_UNPAID e segue pendente).
+        await this.marcarRepasseDaEntrega(order.id, {
+          vendorPayoutStatus: 'completed',
+          ...((order as any).delivery?.deliverer?.pagarmeRecipientId ? { payoutStatus: 'completed' } : {}),
+        });
         const totalCents = Math.round(Number(order.total) * 100);
         this.logger.log(`Settlement for order #${order.orderNumber} | capture-with-split | total: ${totalCents} cents`);
       } catch (err: any) {
@@ -1695,6 +1724,7 @@ export class PaymentsService implements OnModuleDestroy {
             }, `settle-${order.id}-deliverer`);
             this.logger.log(`Transfer to deliverer for order #${order.orderNumber} | amount: ${delivererAmount} cents | transfer: ${result.id}`);
             await orderRepo.update(order.id, { delivererSettledAt: new Date() } as any);
+            await this.marcarRepasseDaEntrega(order.id, { payoutStatus: 'completed' });
             order.delivererSettledAt = new Date();
           } catch (err: any) {
             const errorDetail = JSON.stringify(err.response?.data || err.message);
@@ -1738,6 +1768,7 @@ export class PaymentsService implements OnModuleDestroy {
     if (pixSettledViaSplit) {
       // Vendedor ja recebeu via split na cobranca PIX — nada a repassar.
       this.logger.log(`Vendor already settled via PIX split-on-charge for order #${order.orderNumber}`);
+      await this.marcarRepasseDaEntrega(order.id, { vendorPayoutStatus: 'completed' });
     } else if (vendorRecipientId && !order.vendorSettledAt) {
       const platformDeliveryFee = (!store?.hasOwnDelivery && !order.isPickup) ? deliveryFeeCents : 0;
       const vendorAmount = totalCents - commissionCents - platformDeliveryFee;
@@ -1755,6 +1786,7 @@ export class PaymentsService implements OnModuleDestroy {
           }, `settle-${order.id}-vendor`);
           this.logger.log(`Transfer to vendor for order #${order.orderNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
           await orderRepo.update(order.id, { vendorSettledAt: new Date() } as any);
+          await this.marcarRepasseDaEntrega(order.id, { vendorPayoutStatus: 'completed' });
           order.vendorSettledAt = new Date();
         } catch (err: any) {
           const errorDetail = JSON.stringify(err.response?.data || err.message);
