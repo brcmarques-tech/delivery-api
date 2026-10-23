@@ -25,6 +25,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { EquipeService } from '../team/equipe.service';
 import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
+import { percentualEmReais } from '../common/dinheiro';
 
 const RELATIONS = ['customer', 'store', 'store.owner', 'service', 'service.category'];
 
@@ -211,7 +212,7 @@ export class AppointmentsService {
       // com `||`, o 0 (falsy) virava 5, cobrando 5% de comissão de quem tem 0%
       // contratado. Só usa o default 5 quando o valor é realmente ausente.
       const commissionPercent = planConfig?.commissionPercent ?? 5;
-      commissionAmount = Math.round(Number(service.price) * commissionPercent) / 100;
+      commissionAmount = percentualEmReais(Number(service.price), commissionPercent);
     }
 
     // Transaction to prevent race condition

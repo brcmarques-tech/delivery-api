@@ -12,6 +12,7 @@ import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { percentualEmCentavos } from '../common/dinheiro';
 
 @Injectable()
 export class DeliveriesService implements OnModuleInit {
@@ -526,7 +527,7 @@ export class DeliveriesService implements OnModuleInit {
           await this.platformConfigService.getDeliveryCommissionPercent();
         const brutoCents = Math.round(deliveryFee * 100);
         const liquidoCents =
-          brutoCents - Math.round((brutoCents * comissaoPct) / 100);
+          brutoCents - percentualEmCentavos(brutoCents, comissaoPct);
         delivery.payoutAmount = liquidoCents / 100;
         delivery.payoutStatus = 'pending_confirmation';
       }

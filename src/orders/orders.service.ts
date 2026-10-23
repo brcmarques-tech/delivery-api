@@ -34,6 +34,7 @@ import { DistanciaService } from '../common/geo/distancia.service';
 import { FidelidadeService } from '../loyalty/fidelidade.service';
 import { EquipeService } from '../team/equipe.service';
 import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
+import { percentualEmReais } from '../common/dinheiro';
 
 type OnOrderReadyCallback = (order: Order) => void;
 
@@ -327,8 +328,7 @@ export class OrdersService {
     }
 
     const commissionAmount =
-      Math.round((((subtotal - discount) * commissionPercent) / 100) * 100) /
-      100;
+      percentualEmReais(subtotal - discount, commissionPercent);
 
     let paymentMethod = (input.paymentMethod || 'ON_DELIVERY').toUpperCase();
 
@@ -2717,9 +2717,7 @@ export class OrdersService {
 
     updatedOrder.total = novoTotal;
     updatedOrder.commissionAmount =
-      Math.round(
-        ((baseComissionavel * Number(updatedOrder.commissionPercent)) / 100) * 100,
-      ) / 100;
+      percentualEmReais(baseComissionavel, Number(updatedOrder.commissionPercent));
     const saved = await this.ordersRepository.save(updatedOrder);
 
     const fullUpdated = await this.findById(saved.id);

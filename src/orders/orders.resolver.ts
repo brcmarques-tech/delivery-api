@@ -19,6 +19,7 @@ import { EquipeService } from '../team/equipe.service';
 import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 import { DeliveryOfferService } from '../deliveries/delivery-offer.service';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { percentualEmCentavos } from '../common/dinheiro';
 
 // KAN: escopo de ownership das subscriptions de pedido. O usuário autenticado do
 // WebSocket chega no `context.wsUser` (validado no onConnect do GraphQLModule).
@@ -178,7 +179,7 @@ export class OrdersResolver {
     if (order.isPickup || order.store?.hasOwnDelivery) return null;
     const freteCents = Math.round((Number(order.deliveryFee) || 0) * 100);
     const pct = await this.platformConfigService.getDeliveryCommissionPercent();
-    return (freteCents - Math.round(freteCents * (pct / 100))) / 100;
+    return (freteCents - percentualEmCentavos(freteCents, pct)) / 100;
   }
 
   /**

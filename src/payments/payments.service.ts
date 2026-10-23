@@ -28,6 +28,7 @@ import { linhasAfetadas } from '../common/utils/db-claim';
 // Perf/fuso: a data de antecipacao tem de ser decidida no fuso do NEGOCIO, nao
 // em UTC — ver dataDeAntecipacao.
 import { businessMinutes, businessToday } from '../common/utils/business-time';
+import { percentualEmCentavos } from '../common/dinheiro';
 
 // L5: Centralized descriptor constant
 const STATEMENT_DESCRIPTOR = 'BCMTECH';
@@ -1187,7 +1188,7 @@ export class PaymentsService implements OnModuleDestroy {
     if (hasExternalDelivery) {
       const delivery = (order as any).delivery;
       const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
-      const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+      const deliveryCommissionCents = percentualEmCentavos(deliveryFeeCents, deliveryCommissionPercent);
       const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
 
       vendorAmount = totalCents - commissionCents - deliveryFeeCents;
@@ -1527,7 +1528,7 @@ export class PaymentsService implements OnModuleDestroy {
       const delivery = (order as any).delivery;
       const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
       if (delivererRecipientId) {
-        const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+        const deliveryCommissionCents = percentualEmCentavos(deliveryFeeCents, deliveryCommissionPercent);
         const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
         if (delivererAmount > 0) {
           try {
@@ -1692,7 +1693,7 @@ export class PaymentsService implements OnModuleDestroy {
     if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0 && !order.delivererSettledAt) {
       const delivery = (order as any).delivery;
       const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
-      const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+      const deliveryCommissionCents = percentualEmCentavos(deliveryFeeCents, deliveryCommissionPercent);
       const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
 
       if (pixSettledViaSplit) {
@@ -1922,7 +1923,7 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     const deliveryCommissionCents = (!store?.hasOwnDelivery && !order.isPickup)
-      ? Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100))
+      ? percentualEmCentavos(deliveryFeeCents, deliveryCommissionPercent)
       : 0;
     const platformKeeps = commissionCents + deliveryCommissionCents;
     this.logger.log(`Settlement for order #${order.orderNumber} | platform keeps: ${platformKeeps} cents`);

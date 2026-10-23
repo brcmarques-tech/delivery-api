@@ -16,6 +16,7 @@ import { PlatformConfigService } from '../config/platform-config.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { percentualEmCentavos, percentualEmReais } from '../common/dinheiro';
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -173,7 +174,7 @@ describe('MATRIZ DO SPLIT — vendedor, entregador e marketplace', () => {
     const subtotal = unitario * qtd;
     const desconto = c.desconto ?? 0;
     const frete = c.frete ?? 0;
-    const comissao = Math.round(((subtotal - desconto) * c.comissaoPercent) / 100 * 100) / 100;
+    const comissao = percentualEmReais(subtotal - desconto, c.comissaoPercent);
     const total = subtotal - desconto + frete;
 
     const order: any = {
@@ -632,6 +633,80 @@ describe('MATRIZ DO SPLIT — vendedor, entregador e marketplace', () => {
       [1234.56, 78.9],
     ])('preço %s com frete %s fecha a soma', async (preco, frete) => {
       conferirInvariantes(await splitDoCartao({ nome: 'v', precoUnitario: preco, frete, comissaoPercent: 5 }));
+    });
+  });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // VARREDURA — todas as combinações, valor exato de cada recebedor.
+  //
+  // Os blocos acima descrevem situações; este cruza tudo com tudo (meio de
+  // pagamento × modo de entrega × plano × preço × quantidade × cupom × frete)
+  // e confere, além das invariantes, o VALOR de cada um pela regra escrita no
+  // topo deste arquivo. Os preços incluem os de meio centavo de comissão
+  // (2,90 / 20,10 / 37,90), onde a conta em float errava.
+  // ════════════════════════════════════════════════════════════════════════
+  describe('varredura de combinações', () => {
+    const precos = [0.5, 2.9, 7.25, 20.1, 37.9, 99.99, 250];
+    const quantidades = [1, 3];
+    const fretes = [0.98, 1.09, 7.77];
+    const planos = [5, 2, 0];
+    const cupons = [0, 1.5];
+    const modos = [
+      { nome: 'entregador do app', entregaPropria: false, retirada: false },
+      { nome: 'frota própria', entregaPropria: true, retirada: false },
+      { nome: 'retirada', entregaPropria: false, retirada: true },
+    ];
+
+    const casos: Array<[string, Cenario]> = [];
+    for (const preco of precos)
+      for (const quantidade of quantidades)
+        for (const pct of planos)
+          for (const desconto of cupons)
+            for (const modo of modos)
+              for (const frete of modo.retirada ? [0] : fretes) {
+                if (desconto >= preco * quantidade) continue;
+                casos.push([
+                  `${modo.nome} | ${quantidade}x R$${preco} | ${pct}% | cupom ${desconto} | frete ${frete}`,
+                  { nome: 'v', precoUnitario: preco, quantidade, frete, desconto, comissaoPercent: pct, entregaPropria: modo.entregaPropria, retirada: modo.retirada },
+                ]);
+              }
+
+    function esperado(c: Cenario) {
+      const { order, centavos } = montar(c);
+      const comissao = Math.round(order.commissionAmount * 100);
+      const frete = Math.round(order.deliveryFee * 100);
+      const externa = !c.entregaPropria && !c.retirada && frete > 0;
+      const vendedor = externa ? centavos - comissao - frete : centavos - comissao;
+      const entregador = externa ? frete - percentualEmCentavos(frete, COMISSAO_DE_ENTREGA) : 0;
+      return { vendedor, entregador };
+    }
+
+    it(`${casos.length} combinações no PIX: soma, regras e valor de cada um`, async () => {
+      for (const [nome, c] of casos) {
+        const r = await splitDoPix(c);
+        const e = esperado(c);
+        try {
+          conferirInvariantes(r);
+          expect(r.porRecebedor[RECEBEDOR_VENDEDOR]).toBe(e.vendedor);
+          expect(r.porRecebedor[RECEBEDOR_ENTREGADOR]).toBeUndefined();
+        } catch (err: any) {
+          throw new Error(`PIX ${nome}: ${err.message}`);
+        }
+      }
+    });
+
+    it(`${casos.length} combinações no CARTÃO: soma, regras e valor de cada um`, async () => {
+      for (const [nome, c] of casos) {
+        const r = await splitDoCartao(c);
+        const e = esperado(c);
+        try {
+          conferirInvariantes(r);
+          expect(r.porRecebedor[RECEBEDOR_VENDEDOR]).toBe(e.vendedor);
+          expect(r.porRecebedor[RECEBEDOR_ENTREGADOR] ?? 0).toBe(e.entregador);
+        } catch (err: any) {
+          throw new Error(`CARTÃO ${nome}: ${err.message}`);
+        }
+      }
     });
   });
 });

@@ -12,6 +12,7 @@ import { PlatformConfigService } from '../config/platform-config.service';
 import { FidelidadeService } from '../loyalty/fidelidade.service';
 import { EquipeService } from '../team/equipe.service';
 import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
+import { percentualEmReais } from '../common/dinheiro';
 
 @Injectable()
 export class CouponsService {
@@ -279,7 +280,7 @@ export class CouponsService {
 
     let discount: number;
     if (coupon.discountType === 'PERCENT') {
-      discount = Math.round((subtotal * Number(coupon.discountValue)) / 100 * 100) / 100;
+      discount = percentualEmReais(subtotal, Number(coupon.discountValue));
       if (coupon.maxDiscount && discount > Number(coupon.maxDiscount)) {
         discount = Number(coupon.maxDiscount);
       }
