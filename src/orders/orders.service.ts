@@ -13,7 +13,7 @@ import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { OrderStatusLog } from './entities/order-status-log.entity';
 import { Delivery } from '../deliveries/entities/delivery.entity';
-import { CreateOrderInput, OrderItemInput } from './dto/create-order.input';
+import { CreateOrderInput } from './dto/create-order.input';
 import { AppUser } from '../users/entities/app-user.entity';
 import { ProductsService } from '../products/products.service';
 import { StoresService } from '../stores/stores.service';
@@ -28,6 +28,13 @@ import { MailService } from '../mail/mail.service';
 import { OrderStatus } from '../common/enums';
 import { businessClock } from '../common/utils/business-time';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { linhasAfetadas } from '../common/utils/db-claim';
+import { DeliveryCodesService } from './delivery-codes.service';
+import { DistanciaService } from '../common/geo/distancia.service';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
+import { percentualEmReais } from '../common/dinheiro';
 
 type OnOrderReadyCallback = (order: Order) => void;
 
@@ -98,6 +105,11 @@ export class OrdersService {
     private verificationService: VerificationService,
     private whatsAppService: WhatsAppService,
     private mailService: MailService,
+    private distanciaService: DistanciaService,
+    private fidelidadeService: FidelidadeService,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -151,8 +163,19 @@ export class OrdersService {
     let subtotal = 0;
     const items: OrderItem[] = [];
 
+    // Perf (KAN-254): era um SELECT por item (com join de store e category) e
+    // depois a verificacao de idade repetia a rodada inteira — 2N queries para
+    // ler N produtos, no caminho mais quente de escrita. Agora uma query so, e a
+    // verificacao de idade reusa estes mesmos objetos.
+    const produtosPorId = await this.productsService.findManyByIds(
+      input.items.map((i) => i.productId),
+    );
+
     for (const itemInput of input.items) {
-      const product = await this.productsService.findById(itemInput.productId);
+      const product = produtosPorId.get(itemInput.productId);
+      // Mesma excecao e no MESMO ponto do laco em que o findById a lancava, para
+      // o "primeiro problema do carrinho vence" continuar valendo igual.
+      if (!product) throw new NotFoundException('Produto nao encontrado');
       // C3: o produto TEM que ser da loja do pedido e estar disponível. Antes o
       // pedido aceitava produto de outra loja (preço/comissão calculados contra a
       // loja errada, corrompendo settlement) ou produto oculto/inativo.
@@ -207,9 +230,7 @@ export class OrdersService {
     }
 
     // Verificação de idade: se algum produto pertence a categoria +18, exigir confirmação
-    const hasAgeRestrictedItem = await this.hasAgeRestrictedProducts(
-      input.items,
-    );
+    const hasAgeRestrictedItem = this.hasAgeRestrictedProducts(produtosPorId);
     if (hasAgeRestrictedItem && !input.ageVerified) {
       throw new BadRequestException(
         'Este pedido contem produtos com restricao de idade. Confirme que voce tem 18 anos ou mais.',
@@ -235,8 +256,10 @@ export class OrdersService {
     let deliveryFee = 0;
 
     if (!isPickup) {
-      const storeFreeDelivery = store.freeDelivery;
-      const freeAbove = store.freeDeliveryAbove
+      // Frete grátis só com frota própria: com entregador do app o frete é o
+      // pagamento dele (ver StoresService.freteGratisSoComFrotaPropria).
+      const storeFreeDelivery = store.hasOwnDelivery && store.freeDelivery;
+      const freeAbove = store.hasOwnDelivery && store.freeDeliveryAbove
         ? Number(store.freeDeliveryAbove)
         : null;
 
@@ -247,21 +270,19 @@ export class OrdersService {
           await this.platformConfigService.getDeliveryPricePerKm();
         const basePrice =
           await this.platformConfigService.getDeliveryBasePrice();
-        const R = 6371;
-        const dLat =
-          ((input.deliveryLatitude - Number(store.latitude)) * Math.PI) / 180;
-        const dLng =
-          ((input.deliveryLongitude - Number(store.longitude)) * Math.PI) / 180;
-        const a =
-          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos((Number(store.latitude) * Math.PI) / 180) *
-            Math.cos((input.deliveryLatitude * Math.PI) / 180) *
-            Math.sin(dLng / 2) *
-            Math.sin(dLng / 2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        const distanceKm = R * c;
+        // KAN-29: distancia de ROTA (OpenRouteService), com a linha reta como
+        // plano B — o entregador nao voa. A conta mora no DistanciaService
+        // para ser a MESMA que o app mostrou em calculateDeliveryFee; antes a
+        // haversine estava copiada nos dois lugares, e duas copias de uma
+        // conta de dinheiro divergem na primeira vez que alguem mexe numa.
+        const distancia = await this.distanciaService.entre(
+          Number(store.latitude),
+          Number(store.longitude),
+          input.deliveryLatitude,
+          input.deliveryLongitude,
+        );
         deliveryFee =
-          Math.round((basePrice + distanceKm * pricePerKm) * 100) / 100;
+          Math.round((basePrice + distancia.km * pricePerKm) * 100) / 100;
       } else {
         // C2: pedido de entrega SEM coordenadas (ex.: o checkout do storefront
         // não envia lat/long) não conseguia calcular a distância e caía em frete
@@ -307,8 +328,7 @@ export class OrdersService {
     }
 
     const commissionAmount =
-      Math.round((((subtotal - discount) * commissionPercent) / 100) * 100) /
-      100;
+      percentualEmReais(subtotal - discount, commissionPercent);
 
     let paymentMethod = (input.paymentMethod || 'ON_DELIVERY').toUpperCase();
 
@@ -331,6 +351,47 @@ export class OrdersService {
       );
     }
 
+    // ─── Entrega por entregador do app exige CARTÃO ──────────────────────
+    //
+    // Isto é um GUARDA-TRILHO, não uma regra de produto permanente. O motivo é
+    // concreto e está medido:
+    //
+    //   - No CARTÃO a pré-autorização é capturada COM SPLIT no momento da
+    //     liberação (os 3 códigos). O entregador entra nessa divisão e recebe
+    //     automaticamente, e o dinheiro fica de fato retido até a entrega.
+    //   - No PIX o split é definido na CRIAÇÃO da cobrança, quando ainda não
+    //     existe entregador (ele só é ofertado no READY). Resultado: o frete
+    //     fica retido na plataforma e o repasse ao entregador é MANUAL, e o
+    //     vendedor já é creditado no pagamento — ou seja, nem repasse
+    //     automático, nem custódia real.
+    //
+    // E não há terceira via dentro do provedor: não existe transferência da
+    // plataforma para um recebedor (POST /recipients/{id}/transfers é SAQUE do
+    // saldo do próprio recebedor para a conta bancária dele), e o split é
+    // imutável depois do pagamento. Ver KAN-300.
+    //
+    // Então, enquanto o pagamento ao entregador fora do Pagar.me não existir,
+    // deixar PIX + entrega por app aberto significa lançar prometendo um
+    // repasse automático que não acontece.
+    //
+    // O padrão é LIGADO de propósito: o estado seguro tem de ser o que vale sem
+    // ninguém lembrar de configurar nada. Desligar é decisão explícita
+    // (APP_DELIVERY_REQUIRES_CARD=false), e o ambiente local a desliga no
+    // docker-compose para os testes poderem exercitar o fluxo com PIX.
+    const exigeCartaoNaEntrega =
+      (process.env.APP_DELIVERY_REQUIRES_CARD ?? 'true') !== 'false';
+    const entregaPorEntregadorDoApp = !isPickup && !store.hasOwnDelivery;
+    if (
+      exigeCartaoNaEntrega &&
+      entregaPorEntregadorDoApp &&
+      paymentMethod !== 'CREDIT_CARD'
+    ) {
+      throw new BadRequestException(
+        'Para entrega por entregador, o pagamento precisa ser no cartão. ' +
+          'Para pagar com PIX, escolha retirada no local.',
+      );
+    }
+
     if (paymentMethod === 'ON_DELIVERY' && !isPickup && !store.hasOwnDelivery) {
       throw new BadRequestException(
         'Pagamento na entrega nao disponivel para esta loja. Use PIX ou cartao.',
@@ -338,6 +399,14 @@ export class OrdersService {
     }
 
     const needsPayment = paymentMethod !== 'ON_DELIVERY';
+
+    // Dinheiro só chega aqui com retirada ou frota própria (o guard acima
+    // recusa dinheiro com entregador do app) — e nesses casos a plataforma NÃO
+    // cobra comissão (ver completeOrderWithPayment). Antes o pedido gravava a
+    // comissão do plano assim mesmo: o financeiro a somava como receita que
+    // nunca entra e punha o total do pedido em "a receber" da loja, como se a
+    // plataforma devesse a ela um dinheiro que a loja já recebeu na mão.
+    const semComissao = !needsPayment;
 
     if (needsPayment && !customer.cpf) {
       throw new BadRequestException(
@@ -356,8 +425,8 @@ export class OrdersService {
           subtotal,
           deliveryFee,
           total,
-          commissionPercent,
-          commissionAmount,
+          commissionPercent: semComissao ? 0 : commissionPercent,
+          commissionAmount: semComissao ? 0 : commissionAmount,
           isPickup,
           deliveryAddress: isPickup
             ? `${store.street}, ${store.number} - ${store.neighborhood}, ${store.city}`
@@ -379,6 +448,15 @@ export class OrdersService {
           // true havendo cupom. O decremento no cancelamento/expiracao se apoia
           // nela para devolver o uso.
           couponCredited: !!couponEntity,
+          // Garantia de entrega por códigos: o do LOJISTA e o do CLIENTE nascem
+          // com o pedido; o do ENTREGADOR só existe quando alguém aceita a
+          // corrida. Só pedido com entrega por entregador do app recebe — e é a
+          // presença desses campos que chaveia entre o fluxo de códigos e o de
+          // botões, então pedido em andamento no deploy não quebra.
+          ...(DeliveryCodesService.codigosDeNovoPedido({
+            isPickup,
+            lojaTemFrotaPropria: !!store.hasOwnDelivery,
+          }) || {}),
           status: needsPayment
             ? OrderStatus.AWAITING_PAYMENT
             : OrderStatus.PENDING,
@@ -404,7 +482,7 @@ export class OrdersService {
               RETURNING stock`,
             [item.quantity, item.product.id],
           );
-          if (!result || result.length === 0) {
+          if (linhasAfetadas(result) === 0) {
             throw new BadRequestException(
               `Estoque insuficiente para "${item.product.name}". Tente novamente.`,
             );
@@ -461,7 +539,7 @@ export class OrdersService {
             input.cardId,
             input.cardToken,
           );
-        savedOrder.mpPreferenceId = pagarmeOrderId;
+        savedOrder.pagarmeOrderId = pagarmeOrderId;
         if (chargeId) savedOrder.preAuthChargeId = chargeId;
 
         if (status === 'antifraud_review') {
@@ -504,6 +582,22 @@ export class OrdersService {
             );
           }
         }
+        // MÉDIO (auditoria 2026-08-23): devolver TAMBÉM o uso do cupom reservado na
+        // criação (incrementUsage). Antes, uma falha de pré-autorização (cartão
+        // recusado) consumia 1 uso do cupom PARA SEMPRE — N tentativas com cartão
+        // inválido "esgotavam" um cupom (maxUses) sem nenhuma venda.
+        if (couponEntity?.id) {
+          await this.couponsService
+            .decrementUsage(couponEntity.id)
+            .catch((e: any) =>
+              console.error(
+                `Failed to return coupon on pre-auth failure for order ${savedOrder.id}: ${e?.message}`,
+              ),
+            );
+          await this.ordersRepository
+            .update(savedOrder.id, { couponCredited: false })
+            .catch(() => {});
+        }
         throw new BadRequestException(
           err?.message ||
             'Falha na pré-autorização do cartão. Verifique os dados e tente novamente.',
@@ -516,7 +610,7 @@ export class OrdersService {
       const { checkoutUrl, preferenceId } =
         await this.paymentsService.createOrderCheckout(savedOrder, customer);
       savedOrder.checkoutUrl = checkoutUrl;
-      savedOrder.mpPreferenceId = preferenceId;
+      savedOrder.pagarmeOrderId = preferenceId;
       await this.ordersRepository.save(savedOrder);
     } else if (paymentMethod === 'PIX') {
       try {
@@ -525,9 +619,13 @@ export class OrdersService {
           customer,
         );
         savedOrder.checkoutUrl = result.checkoutUrl;
-        savedOrder.mpPreferenceId = result.preferenceId;
+        savedOrder.pagarmeOrderId = result.preferenceId;
         if (result.qrCode) savedOrder.pixQrCode = result.qrCode;
         if (result.qrCodeUrl) savedOrder.pixQrCodeBase64 = result.qrCodeUrl;
+        // Split-on-charge (C1): a cobranca PIX carrega split (vendedor+plataforma).
+        // Marca o pedido para que o settle NAO tente o /transfers quebrado e para
+        // que o estorno saiba que o split se reverte sozinho no /refund.
+        if (result.settledViaSplit) savedOrder.settledViaSplit = true;
         await this.ordersRepository.save(savedOrder);
       } catch (err: any) {
         console.error('PIX checkout generation failed:', err?.message || err);
@@ -799,6 +897,11 @@ export class OrdersService {
       // aparecer na lista de entregas disponíveis (senão um entregador aceita
       // e ganha um payout de taxa que nunca foi cobrada do cliente).
       .andWhere('order.isPickup = false')
+      // CRITICO (auditoria 2026-08-23): loja com frota própria (hasOwnDelivery)
+      // não deve aparecer para entregadores do app. O settlePayment pula a
+      // transferência ao entregador nesse caso (a taxa fica com o vendedor), então
+      // um entregador que aceitasse trabalharia DE GRAÇA. Mesmo motivo do pickup.
+      .andWhere('(store.hasOwnDelivery = false OR store.hasOwnDelivery IS NULL)')
       .orderBy('order.createdAt', 'ASC')
       .getMany();
     return orders;
@@ -984,7 +1087,7 @@ export class OrdersService {
       `UPDATE orders SET "customerConfirmedAt" = NOW() WHERE id = $1 AND "customerConfirmedAt" IS NULL RETURNING id`,
       [order.id],
     );
-    if (!claim || claim.length === 0) {
+    if (linhasAfetadas(claim) === 0) {
       throw new BadRequestException('Recebimento ja confirmado');
     }
     order.customerConfirmedAt = new Date();
@@ -993,9 +1096,15 @@ export class OrdersService {
 
   /**
    * Grava a confirmacao de recebimento de forma atomica e diz se ESTE chamador
-   * foi quem a gravou. Usado pelos caminhos automaticos (proximidade por GPS e
-   * expiracao dos 10 min), que precisam persistir a coluna — `customerConfirmedAt`
-   * e a prova de recebimento que autoriza o repasse no modelo de custodia.
+   * foi quem a gravou. `customerConfirmedAt` e a prova de recebimento que
+   * autoriza o repasse no modelo de custodia, entao todo caminho que finaliza
+   * um pedido precisa persisti-la — o `completeOrderWithPayment` grava apenas
+   * status e `completedAt`.
+   *
+   * Hoje quem chama e o registro do CODIGO DO CLIENTE (o cliente informar o
+   * codigo e a confirmacao dele) e a expiracao dos 10 min para pedidos sem
+   * codigo. A automacao por proximidade de GPS, que tambem chamava, foi
+   * removida: a prova era falsificavel.
    */
   async claimCustomerConfirmation(orderId: string): Promise<boolean> {
     const claim = await this.ordersRepository.manager.query(
@@ -1003,7 +1112,7 @@ export class OrdersService {
         WHERE id = $1 AND "customerConfirmedAt" IS NULL RETURNING id`,
       [orderId],
     );
-    return !!claim && claim.length > 0;
+    return linhasAfetadas(claim) > 0;
   }
 
   // ─── Cliente nega recebimento → DISPUTED ─────────────────────────────
@@ -1063,9 +1172,12 @@ export class OrdersService {
     vendorUserId: string,
   ): Promise<Order> {
     const order = await this.findById(orderId);
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao tem permissao para este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Voce nao tem permissao para este pedido',
+    );
     if (order.status !== OrderStatus.DISPUTED) {
       throw new BadRequestException('Este pedido nao esta em disputa');
     }
@@ -1111,9 +1223,12 @@ export class OrdersService {
     reason: string,
   ): Promise<Order> {
     const order = await this.findById(orderId);
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao pode rejeitar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Voce nao pode rejeitar este pedido',
+    );
     if (order.status !== OrderStatus.PENDING) {
       throw new BadRequestException('So pode rejeitar pedidos pendentes');
     }
@@ -1142,9 +1257,12 @@ export class OrdersService {
     reason: string,
   ): Promise<Order> {
     const order = await this.findById(orderId);
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao pode cancelar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Voce nao pode cancelar este pedido',
+    );
 
     if (order.delivery) {
       throw new BadRequestException(
@@ -1217,9 +1335,16 @@ export class OrdersService {
     vendorUserId: string,
   ): Promise<Order> {
     const order = await this.findById(orderId);
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao pode confirmar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Voce nao pode confirmar este pedido',
+    );
+    this.recusarSeUsaCodigo(
+      order,
+      'Digite o código do entregador na coleta.',
+    );
 
     // Vendor can confirm when: READY, PICKED_UP, or DELIVERING
     const allowed = [
@@ -1268,6 +1393,71 @@ export class OrdersService {
     }
 
     return updated;
+  }
+
+  /**
+   * Coleta confirmada pelo PAR DE CÓDIGOS da loja (ver DeliveryCodesService).
+   *
+   * Substitui, de uma vez, o `confirmPickup` do entregador e o
+   * `vendorConfirmPickup` do lojista — porque a troca mútua de códigos prova as
+   * duas pontas: o entregador digitou o código da loja (esteve lá) e o lojista
+   * digitou o código do entregador (entregou à pessoa certa).
+   *
+   * Não reaproveito aqueles dois métodos porque a checagem de posse deles é
+   * amarrada a QUEM está chamando, e aqui a prova é justamente cruzada: quem
+   * registra é sempre a outra parte. Já o `confirmDelivery` É reaproveitado no
+   * código do cliente, porque lá quem registra é o próprio entregador.
+   *
+   * Vai direto a DELIVERING (transição já permitida a partir de READY), em vez
+   * de passar por PICKED_UP e VENDOR_CONFIRMED_PICKUP: aqueles dois estados
+   * existem para representar "só uma das pontas confirmou", e com o par de
+   * códigos esse meio-caminho não existe.
+   */
+
+  /**
+   * Pedido que usa confirmação por CÓDIGO não aceita os botões antigos.
+   *
+   * Isto não é rigor por rigor: ter dois caminhos capazes de liberar o mesmo
+   * dinheiro é ter duas fontes de verdade, e a mais fraca vence — bastaria o
+   * app chamar o botão para contornar a prova de presença que o código existe
+   * para dar. Então, havendo código, o botão fecha.
+   *
+   * A checagem é pela PRESENÇA do código, não por flag global: pedido criado
+   * antes da migration (ou de retirada, ou de loja com frota própria) não tem
+   * código e segue no fluxo antigo sem nenhum ajuste.
+   */
+  private recusarSeUsaCodigo(order: Order, acao: string): void {
+    if (!order.codigoVendedor) return;
+    throw new BadRequestException(
+      `Este pedido usa confirmação por código. ${acao}`,
+    );
+  }
+
+  async marcarColetaPorCodigo(orderId: string): Promise<Order> {
+    const order = await this.findById(orderId);
+
+    if (!order.delivery?.deliverer) {
+      // Mesma regra do vendorConfirmPickup: confirmar coleta é confirmar a
+      // entrega do pedido A UM ENTREGADOR. Sem entregador atribuído o pedido
+      // sairia de READY sem ninguém designado e travaria (deixa de aparecer em
+      // findPendingForDelivery e só sai de DELIVERING com uma entrega).
+      throw new BadRequestException(
+        'Nenhum entregador aceitou este pedido ainda.',
+      );
+    }
+
+    const agora = new Date();
+    await this.ordersRepository.update(orderId, {
+      vendorConfirmedPickupAt: agora,
+    } as any);
+    await this.deliveriesRepository.update(order.delivery.id, {
+      pickedUpAt: agora,
+    } as any);
+
+    if (order.status === OrderStatus.DELIVERING) {
+      return this.findById(orderId);
+    }
+    return this.updateStatus(orderId, OrderStatus.DELIVERING);
   }
 
   // ─── Superadmin resolve disputa ───────────────────────────────────────
@@ -1351,6 +1541,34 @@ export class OrdersService {
     }
   }
 
+  // ─── Houve cobrança? ──────────────────────────────────────────────────
+
+  /**
+   * O cliente chegou a ser cobrado por este pedido?
+   *
+   * O app decidia o texto do cancelamento só pela FORMA de pagamento: um PIX
+   * que nunca foi pago, cancelado ainda em "aguardando pagamento", mostrava
+   * "o estorno será processado em até 7 dias úteis". Não há estorno nenhum —
+   * nada foi cobrado.
+   *
+   * Nenhuma coluna do pedido registra o pagamento do PIX (`capturedAt` é só do
+   * cartão). O que registra é o log de status: o pagamento confirmado é a saída
+   * de AWAITING_PAYMENT para qualquer status que não seja cancelar/expirar.
+   */
+  async cobrancaFeita(order: Order): Promise<boolean> {
+    if (order.paymentMethod === 'ON_DELIVERY') return false;
+    if (order.preAuthChargeId) return true;
+    const pagamentos = await this.orderStatusLogRepository
+      .createQueryBuilder('log')
+      .where('"log"."orderId" = :id', { id: order.id })
+      .andWhere('log.fromStatus = :de', { de: OrderStatus.AWAITING_PAYMENT })
+      .andWhere('log.toStatus NOT IN (:...fim)', {
+        fim: [OrderStatus.CANCELLED, OrderStatus.EXPIRED],
+      })
+      .getCount();
+    return pagamentos > 0;
+  }
+
   // ─── Cancelamento pelo cliente ────────────────────────────────────────
 
   async cancelByCustomer(orderId: string, customerId: string): Promise<Order> {
@@ -1420,6 +1638,28 @@ export class OrdersService {
    * este método quando GANHOU o claim da transição.
    */
   private async restoreStockAndCoupon(order: Order): Promise<void> {
+    // ALTO (auditoria 2026-08-23): claim atômico anti-restauração-dupla. O claim
+    // anti-estorno-duplo protege só o ESTORNO; a restauração era chamada por quem
+    // lê o status já terminal do banco, então dois cancelamentos concorrentes
+    // (cliente + expirePendingOrders) restauravam estoque+cupom os DOIS -> estoque
+    // fantasma (oversell) e cupom decrementado 2x. Só o primeiro a fincar
+    // stockRestoredAt segue.
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "stockRestoredAt" = NOW()
+         WHERE id = $1 AND "stockRestoredAt" IS NULL RETURNING id`,
+      [order.id],
+    );
+    if (linhasAfetadas(claim) === 0) {
+      console.log(`Stock/coupon restore skipped for order ${order.id} — already restored`);
+      return;
+    }
+    // CRÍTICO: refletir o claim na entidade EM MEMÓRIA. `updateStatus` chama este
+    // método e logo depois faz `ordersRepository.save(order)` — e esse `order` foi
+    // carregado ANTES do claim, com `stockRestoredAt` nulo. O save da entidade
+    // inteira regravava NULL por cima da marca recém-fincada, apagando a trava: na
+    // prática a proteção anti-restauração-dupla NUNCA persistia neste caminho, que
+    // é o de todo cancelamento sem pagamento online.
+    order.stockRestoredAt = new Date();
     for (const item of order.items || []) {
       if (item.product) {
         await this.productsService.restoreStock(item.product.id, item.quantity);
@@ -1453,6 +1693,19 @@ export class OrdersService {
         await this.paymentsService.cancelPreAuth(order);
       } catch (err: any) {
         console.error('Cancel pre-auth failed:', err?.message);
+        // BAIXO (auditoria 2026-08-23): antes a falha era só console.error e o
+        // limite do cliente ficava preso até a pré-auth caducar (dias), invisível.
+        // Marcador consultável para reconciliação: SELECT ... WHERE notes LIKE
+        // '%[PREAUTH_CANCEL_FAILED%'.
+        await this.ordersRepository.manager
+          .query(
+            `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`,
+            [
+              order.id,
+              `\n[PREAUTH_CANCEL_FAILED ${new Date().toISOString()}] ${err?.message || 'unknown'} — pré-auth pode seguir presa até caducar.`,
+            ],
+          )
+          .catch(() => {});
       }
       return false; // nao houve claim de status: o chamador segue pelo updateStatus
     }
@@ -1462,9 +1715,15 @@ export class OrdersService {
       return this.estornarEDecidir(order, statusFinal, 'Refund captured charge');
     }
 
-    // PIX ou Checkout já pago (sem pré-auth): estorno
+    // PIX ou Checkout já pago (sem pré-auth): estorno.
+    // BAIXO (auditoria 2026-08-23): só estornar se o pedido REALMENTE foi pago.
+    // Um PIX/checkout ainda em AWAITING_PAYMENT (QR gerado mas não pago) não tem o
+    // que estornar — o refundOrder encontra a charge `pending`, lança, e gravava um
+    // [REFUND_FAILED] FALSO que poluía a fila de reconciliação de dinheiro perdido.
+    // Pagamento que entre depois do cancelamento é coberto por refundLatePayment.
     if (
-      order.mpPreferenceId &&
+      order.pagarmeOrderId &&
+      order.status !== OrderStatus.AWAITING_PAYMENT &&
       (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD')
     ) {
       return this.estornarEDecidir(order, statusFinal, 'Refund on cancel');
@@ -1620,6 +1879,34 @@ export class OrdersService {
         tenMinAgo,
       })
       .andWhere('order.customerConfirmedAt IS NULL')
+      // Pedido com código fica FORA do auto-confirm. Era este caminho que
+      // liberava repasse por decurso de prazo, sem nenhuma ação do cliente — e
+      // a automação por GPS, que fazia o mesmo, foi encontrada explorável com
+      // ponto forjado. A substituição é intencional: sem o código do cliente, a
+      // liberação passa pelo registro de "entrega sem código", que abre janela
+      // de contestação em vez de pagar no escuro.
+      //
+      // ATENÇÃO À FORMA DESTE andWhere. Era `order."codigoVendedor" IS NULL`,
+      // com a coluna entre aspas e o alias cru — e isso DERRUBAVA a query
+      // inteira: `order` é palavra reservada em SQL, então o Postgres respondia
+      // `syntax error at or near "order"` (42601). Os outros andWhere deste
+      // builder funcionam porque usam caminho de PROPRIEDADE (`order.status`),
+      // que o TypeORM traduz e aspeia; aqui eu misturei SQL cru com o alias e
+      // ele passou o texto adiante como estava.
+      //
+      // O preço disso não foi deixar pedido com código entrar no auto-confirm —
+      // foi o auto-confirm PARAR DE EXISTIR. A query lançava em toda rodada de
+      // 60s, o catch do scheduler engolia, e nenhum pedido era mais
+      // auto-confirmado. Nos pedidos SEM código (retirada, pagamento na
+      // entrega, loja com frota própria) este job é o que paga vendedor e
+      // entregador quando o cliente nunca aperta "confirmar recebimento": esse
+      // dinheiro ficou parado.
+      //
+      // Entrou com a própria feature de códigos (1e73fab) e passou por
+      // typecheck, 95 testes e três E2E — nada disso olha o log de uma rodada
+      // de scheduler. Por isso a auditoria passou a incluir
+      // `scripts/provas/audita-log-de-runtime.mjs`.
+      .andWhere('order.codigoVendedor IS NULL')
       .getMany();
 
     for (const order of expiredOrders) {
@@ -1639,7 +1926,7 @@ export class OrdersService {
              RETURNING id`,
           [order.id, OrderStatus.DELIVERER_CONFIRMED_DELIVERY],
         );
-        if (!claim || claim.length === 0) continue; // cliente agiu antes: nao mexe
+        if (linhasAfetadas(claim) === 0) continue; // cliente agiu antes: nao mexe
         const fresh = await this.findById(order.id);
         await this.completeOrderWithPayment(fresh);
       } catch (err) {
@@ -1655,13 +1942,29 @@ export class OrdersService {
     // entregue no balcao. Mesma janela de 10 min e mesmo claim atomico do bloco
     // acima; o cliente segue sendo avisado no momento da entrega e mantem a
     // janela de disputa de 48h.
+    // Janela da auto-confirmação de RETIRADA / FROTA PRÓPRIA.
+    //
+    // Diferença importante para o caso de entrega pelo app: lá quem confirma a
+    // entrega é um TERCEIRO (o entregador), aqui é o PRÓPRIO LOJISTA que marca
+    // DELIVERED — e, passada a janela, ele é pago sem nenhuma ação do cliente.
+    // É auto-atestação. Manter os mesmos 10 min do outro fluxo é uma escolha de
+    // negócio, não uma consequência técnica, então fica configurável: subir
+    // `PICKUP_AUTOCONFIRM_MINUTES` dá mais tempo ao cliente para contestar antes
+    // de o dinheiro sair. O padrão preserva o comportamento atual de propósito —
+    // mudá-lo em silêncio alteraria quando o lojista recebe.
+    const minutosRetirada = Math.max(
+      1,
+      Number(process.env.PICKUP_AUTOCONFIRM_MINUTES) || 10,
+    );
+    const janelaRetirada = new Date(Date.now() - minutosRetirada * 60 * 1000);
+
     const pendentesRetirada = await this.ordersRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoinAndSelect('order.customer', 'customer')
       .where('order.status = :status', { status: OrderStatus.DELIVERED })
-      .andWhere('order.updatedAt <= :tenMinAgo', { tenMinAgo })
+      .andWhere('order.updatedAt <= :janelaRetirada', { janelaRetirada })
       .andWhere('order.customerConfirmedAt IS NULL')
       .getMany();
 
@@ -1673,7 +1976,7 @@ export class OrdersService {
              RETURNING id`,
           [order.id, OrderStatus.DELIVERED],
         );
-        if (!claim || claim.length === 0) continue;
+        if (linhasAfetadas(claim) === 0) continue;
         const fresh = await this.findById(order.id);
         await this.completeOrderWithPayment(fresh);
       } catch (err) {
@@ -1779,6 +2082,101 @@ export class OrdersService {
     }
   }
 
+
+  /**
+   * Pedidos com repasse de entregador RETIDO na plataforma e ainda não pago.
+   *
+   * Existe por causa do split-on-charge do PIX: o entregador não entra na
+   * divisão da cobrança (só é conhecido no READY), então o frete dele fica com a
+   * plataforma e o repasse é manual. Sem esta consulta o passivo só existia como
+   * texto solto em `notes` — ninguém conseguia somar nem saber a quem pagar.
+   */
+  async delivererPayables(apenasAbertos = true): Promise<Order[]> {
+    const qb = this.ordersRepository
+      .createQueryBuilder('pedido')
+      .leftJoinAndSelect('pedido.delivery', 'delivery')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .leftJoinAndSelect('pedido.store', 'store')
+      // Alias 'pedido' e nao 'order': ORDER e palavra reservada no Postgres e o
+      // SQL gerado quebrava com "syntax error at or near order".
+      .where('pedido.delivererPayableCents IS NOT NULL')
+      .andWhere('pedido.delivererPayableCents > 0');
+    if (apenasAbertos) {
+      qb.andWhere('pedido.delivererPayablePaidAt IS NULL');
+    }
+    return qb
+      .orderBy('pedido.completedAt', 'ASC')
+      .addOrderBy('pedido.id', 'ASC')
+      .take(500)
+      .getMany();
+  }
+
+  /** Dá baixa no repasse manual. Idempotente: só marca quem ainda está aberto. */
+  async markDelivererPayablePaid(orderId: string): Promise<Order> {
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "delivererPayablePaidAt" = NOW()
+         WHERE id = $1
+           AND "delivererPayableCents" IS NOT NULL
+           AND "delivererPayablePaidAt" IS NULL
+         RETURNING id`,
+      [orderId],
+    );
+    if (linhasAfetadas(claim) === 0) {
+      throw new BadRequestException(
+        'Este repasse não está em aberto (já foi baixado ou não existe).',
+      );
+    }
+    return this.findById(orderId);
+  }
+
+  /**
+   * Pedidos com repasse de LOJISTA retido na plataforma e ainda não pago.
+   *
+   * Irmã da `delivererPayables`, com uma origem diferente: aqui o repasse FOI
+   * tentado e o provedor recusou por bloqueio de origem (allowlist de IP,
+   * KAN-299). O dinheiro está com a plataforma e é devido à loja.
+   *
+   * Por isso estes pedidos seguem com `vendorSettledAt` nulo: o lojista não
+   * recebeu, e marcar como liquidado esconderia a dívida.
+   */
+  async vendorPayables(apenasAbertos = true): Promise<Order[]> {
+    const qb = this.ordersRepository
+      .createQueryBuilder('pedido')
+      .leftJoinAndSelect('pedido.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      // Alias 'pedido' e nao 'order': ORDER e palavra reservada no Postgres.
+      // Esta armadilha ja estava documentada aqui e eu cai nela assim mesmo,
+      // em autoConfirmExpiredDeliveries — ver o comentario de la.
+      .where('pedido.vendorPayableCents IS NOT NULL')
+      .andWhere('pedido.vendorPayableCents > 0');
+    if (apenasAbertos) {
+      qb.andWhere('pedido.vendorPayablePaidAt IS NULL');
+    }
+    return qb
+      .orderBy('pedido.completedAt', 'ASC')
+      .addOrderBy('pedido.id', 'ASC')
+      .take(500)
+      .getMany();
+  }
+
+  /** Dá baixa no repasse do lojista. Idempotente, como a do entregador. */
+  async markVendorPayablePaid(orderId: string): Promise<Order> {
+    const claim = await this.ordersRepository.manager.query(
+      `UPDATE orders SET "vendorPayablePaidAt" = NOW()
+         WHERE id = $1
+           AND "vendorPayableCents" IS NOT NULL
+           AND "vendorPayablePaidAt" IS NULL
+         RETURNING id`,
+      [orderId],
+    );
+    if (linhasAfetadas(claim) === 0) {
+      throw new BadRequestException(
+        'Este repasse não está em aberto (já foi baixado ou não existe).',
+      );
+    }
+    return this.findById(orderId);
+  }
+
   async retryFailedSettlements(): Promise<number> {
     const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const pending = await this.ordersRepository.find({
@@ -1803,8 +2201,40 @@ export class OrdersService {
     return settled;
   }
 
-  // L9: TODO — ON_DELIVERY orders have no payment guarantee; platform commission is not collected.
-  // Consider implementing a post-delivery invoice/billing system for ON_DELIVERY commission collection.
+  /**
+   * ─── COMISSÃO: QUANDO A PLATAFORMA COBRA ─────────────────────────────────
+   *
+   * Decisão do Bruno em 16/10/2026, substituindo o TODO que vivia aqui
+   * ("ON_DELIVERY orders have no payment guarantee; platform commission is not
+   * collected. Consider implementing a post-delivery invoice/billing system"):
+   *
+   *   A plataforma cobra comissão quando ENTRA no serviço — com entregador do
+   *   app, ou com meio de pagamento da plataforma. Fora disso, não cobra.
+   *
+   * Então o pedido de RETIRADA ou de loja com FROTA PRÓPRIA pago em DINHEIRO
+   * não gera comissão, e isso deixa de ser lacuna: é o desenho. A plataforma
+   * não entrou com pagamento nem com entrega, e o dinheiro nunca passou por
+   * ela — não há o que dividir nem o que faturar depois.
+   *
+   * Por isso NÃO existe aqui cobrança posterior, boleto de comissão ou
+   * conciliação de dinheiro: não é uma peça faltando, é uma peça que não
+   * deveria existir. Quem for implementar faturamento de comissão em dinheiro
+   * está mudando a regra de negócio, não fechando um buraco.
+   *
+   * As combinações possíveis, e o que a plataforma leva em cada uma:
+   *
+   *   PIX ou cartão, qualquer entrega ....... comissão (meio de pagamento é dela)
+   *   dinheiro + entregador do app .......... comissão (a entrega é dela)
+   *                                           — hoje nem é aceito: entrega por
+   *                                             app exige cartão, porque o
+   *                                             entregador precisa de garantia
+   *                                             de recebimento
+   *   dinheiro + retirada ................... nada, por decisão
+   *   dinheiro + frota própria da loja ...... nada, por decisão
+   *
+   * O guard que recusa dinheiro com entrega por app está em `createOrder`, e a
+   * flag `APP_DELIVERY_REQUIRES_CARD` controla o estado dele (padrão: ligado).
+   */
   async completeOrderWithPayment(order: Order): Promise<Order> {
     // Idempotency guard: skip if already completed (race between geolocation + scheduler)
     if (order.status === OrderStatus.COMPLETED) {
@@ -1834,7 +2264,7 @@ export class OrdersService {
         OrderStatus.DELIVERED,
       ],
     );
-    if (!result || result.length === 0) {
+    if (linhasAfetadas(result) === 0) {
       // Ja finalizado por outra chamada, ou saiu do estado que permite finalizar
       // (disputa/cancelamento) — devolve o estado real sem tocar em nada.
       return this.findById(order.id);
@@ -1877,6 +2307,11 @@ export class OrdersService {
         .catch(() => {});
     }
 
+    // KAN-12: marco de fidelidade. Depois das notificacoes de propósito — o
+    // premio e bonus, e nada aqui pode atrasar ou atrapalhar a conclusao de um
+    // pedido ja pago e entregue. O service nunca lanca.
+    this.fidelidadeService.avaliarAposConclusao(updated).catch(() => {});
+
     // Notify vendor (completeOrderWithPayment bypasses updateStatus, so replicate vendor notification)
     if (updated.store?.owner?.id) {
       this.notificationsService
@@ -1899,9 +2334,12 @@ export class OrdersService {
   async refundOrder(orderId: string, vendorUserId: string): Promise<Order> {
     const order = await this.findById(orderId);
 
-    if (order.store?.owner?.id !== vendorUserId) {
-      throw new BadRequestException('Voce nao pode estornar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorUserId,
+      order.store?.id,
+      ModuloDaLoja.EARNINGS,
+      'Voce nao pode estornar este pedido',
+    );
 
     // BUGFIX: nao havia NENHUMA checagem de status. O vendedor conseguia estornar
     // um pedido que ja estava com o entregador (DELIVERING) ou ate ja concluido —
@@ -2003,7 +2441,7 @@ export class OrdersService {
       `UPDATE orders SET status = $2 WHERE id = $1 AND status = $3 RETURNING id`,
       [id, status, claimFrom],
     );
-    if (!transitionClaim || transitionClaim.length === 0) {
+    if (linhasAfetadas(transitionClaim) === 0) {
       throw new BadRequestException(
         `Nao pode mudar de ${claimFrom} para ${status}`,
       );
@@ -2037,31 +2475,15 @@ export class OrdersService {
       status === OrderStatus.REJECTED ||
       status === OrderStatus.EXPIRED
     ) {
-      for (const item of order.items) {
-        if (item.product) {
-          await this.productsService.restoreStock(
-            item.product.id,
-            item.quantity,
-          );
-        }
-      }
-      // H2: Decrement coupon usage when order is cancelled/rejected/expired
-      // KAN-234: so decrementa se o uso foi REALMENTE contabilizado para este
-      // pedido. Antes decrementava sempre que houvesse cupom — entao cancelar
-      // um pedido de pagamento online que nunca foi pago (e portanto nunca
-      // incrementou) liberava um uso extra do cupom, furando o limite. A flag
-      // e zerada em seguida para o decremento ser idempotente.
-      if (order.coupon?.id && order.couponCredited) {
-        try {
-          await this.couponsService.decrementUsage(order.coupon.id);
-          await this.ordersRepository.update(order.id, { couponCredited: false });
-        } catch (err: any) {
-          console.error(
-            `Failed to decrement coupon usage for order ${order.id}:`,
-            err?.message,
-          );
-        }
-      }
+      // Era um laço de restauração INLINE, que não passava pelo claim de
+      // `stockRestoredAt` — o que deixava o buraco que o claim foi criado para
+      // fechar. O claim protegia só quem chega por `restoreStockAndCoupon` (o
+      // caminho do estorno); este aqui, que é o usado em todo cancelamento SEM
+      // pagamento online, devolvia estoque sem marcar nada. Dois cancelamentos
+      // concorrentes (cliente pelo app + `expirePendingOrders` varrendo o mesmo
+      // pedido) ainda restauravam os dois: um por cada caminho. Agora os dois
+      // disputam o mesmo claim.
+      await this.restoreStockAndCoupon(order);
     }
 
     // Timestamps dos novos status
@@ -2181,7 +2603,10 @@ export class OrdersService {
     if (
       status === OrderStatus.READY &&
       this.onOrderReadyCallback &&
-      !order.isPickup
+      !order.isPickup &&
+      // CRITICO (auditoria 2026-08-23): loja com frota própria não deve disparar
+      // a cascata de ofertas — o entregador do app não é remunerado nesses pedidos.
+      !full.store?.hasOwnDelivery
     ) {
       this.onOrderReadyCallback(full);
     }
@@ -2202,7 +2627,7 @@ export class OrdersService {
 
     const order = await this.findById(item.order.id);
 
-    if (vendorUserId && order.store?.owner?.id !== vendorUserId) {
+    if (vendorUserId && !(await this.equipeService.podeGerenciar(vendorUserId, order.store?.id, ModuloDaLoja.ORDERS))) {
       throw new BadRequestException(
         'Você não tem permissão para ajustar itens deste pedido.',
       );
@@ -2292,9 +2717,7 @@ export class OrdersService {
 
     updatedOrder.total = novoTotal;
     updatedOrder.commissionAmount =
-      Math.round(
-        ((baseComissionavel * Number(updatedOrder.commissionPercent)) / 100) * 100,
-      ) / 100;
+      percentualEmReais(baseComissionavel, Number(updatedOrder.commissionPercent));
     const saved = await this.ordersRepository.save(updatedOrder);
 
     const fullUpdated = await this.findById(saved.id);
@@ -2302,12 +2725,17 @@ export class OrdersService {
     return saved;
   }
 
-  private async hasAgeRestrictedProducts(
-    items: OrderItemInput[],
-  ): Promise<boolean> {
-    for (const item of items) {
-      const product = await this.productsService.findById(item.productId);
-      if (product.category?.requiresAgeVerification) return true;
+  /**
+   * Perf (KAN-254): este metodo recarregava do banco, um por um, os MESMOS
+   * produtos que `createOrder` acabara de carregar — e com o mesmo join de
+   * category que a resposta ja trazia. Agora recebe os objetos ja em maos e nao
+   * toca no banco. Deixou de ser async porque nao ha mais I/O aqui.
+   */
+  private hasAgeRestrictedProducts(
+    produtosPorId: Map<string, { category?: { requiresAgeVerification?: boolean } | null }>,
+  ): boolean {
+    for (const produto of produtosPorId.values()) {
+      if (produto.category?.requiresAgeVerification) return true;
     }
     return false;
   }

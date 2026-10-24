@@ -39,15 +39,21 @@ export class AuthService {
     return randomBytes(32).toString('hex');
   }
 
-  private async signWithSession(userId: string, role: string, userType: 'app' | 'vendor'): Promise<string> {
+  private async signWithSession(
+    userId: string,
+    role: string,
+    userType: 'app' | 'vendor',
+    marcarPresenca = true,
+  ): Promise<string> {
     const sessionToken = this.generateSessionToken();
     // KAN-280: sessionActive marca PRESENCA. O sessionToken rotaciona e nunca
     // volta a null (e o que invalida JWTs), entao ele sozinho nao diz se ha
     // sessao — logout e reset poem sessionActive=false; so o login poe true.
+    const sessionActive = marcarPresenca;
     if (userType === 'vendor') {
-      await this.vendorUserRepo.update(userId, { sessionToken, sessionActive: true });
+      await this.vendorUserRepo.update(userId, { sessionToken, sessionActive });
     } else {
-      await this.appUserRepo.update(userId, { sessionToken, sessionActive: true });
+      await this.appUserRepo.update(userId, { sessionToken, sessionActive });
     }
     return this.jwtService.sign({ sub: userId, role, userType, sessionToken });
   }
@@ -94,12 +100,12 @@ export class AuthService {
    * quebra o registro de quem ja esta em produção.
    */
   async registerApp(input: RegisterAppInput): Promise<AppAuthResponse> {
-    const phoneVerified = this.otpService.consumePhoneVerification(input.phone);
+    const phoneVerified = await this.otpService.consumePhoneVerification(input.phone);
     // KAN-280: quando o WhatsApp esta fora, o OTP cai para o e-mail e verifica o
     // E-MAIL (nunca o telefone — ver otp.service). Entao a prova de contato pode
     // vir do telefone OU do proprio e-mail do cadastro.
     const emailVerified = input.email
-      ? this.otpService.consumeEmailVerification(input.email)
+      ? await this.otpService.consumeEmailVerification(input.email)
       : false;
 
     if (process.env.REQUIRE_OTP_ON_REGISTER === 'true' && !phoneVerified && !emailVerified) {
@@ -111,6 +117,9 @@ export class AuthService {
     const user = await this.appUsersService.create(input, phoneVerified);
     if (emailVerified) {
       await this.markEmailVerified(user.id, 'app');
+      // O objeto em memoria e de antes do UPDATE: sem isto o cadastro devolvia
+      // emailVerified=false e o app pedia para verificar o e-mail recem-verificado.
+      user.emailVerified = true;
     }
     const accessToken = await this.signWithSession(user.id, user.role, 'app');
     return { accessToken, user };
@@ -152,11 +161,11 @@ export class AuthService {
 
   /** KAN-231: mesmo tratamento do registerApp (ver comentario acima). */
   async registerVendor(input: RegisterVendorInput): Promise<VendorAuthResponse> {
-    const phoneVerified = this.otpService.consumePhoneVerification(input.phone);
+    const phoneVerified = await this.otpService.consumePhoneVerification(input.phone);
     // KAN-280: fallback de OTP verifica o e-mail quando o WhatsApp falha (ver
     // registerApp e otp.service). Prova de contato vem do telefone OU do e-mail.
     const emailVerified = input.email
-      ? this.otpService.consumeEmailVerification(input.email)
+      ? await this.otpService.consumeEmailVerification(input.email)
       : false;
 
     if (process.env.REQUIRE_OTP_ON_REGISTER === 'true' && !phoneVerified && !emailVerified) {
@@ -168,8 +177,13 @@ export class AuthService {
     const user = await this.vendorUsersService.create(input, phoneVerified);
     if (emailVerified) {
       await this.markEmailVerified(user.id, 'vendor');
+      user.emailVerified = true; // idem registerApp
     }
-    const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
+    // Cadastro de vendedor fica aguardando aprovacao e o painel descarta este
+    // token (mostra "Cadastro enviado"). Marcar presenca aqui fazia o PRIMEIRO
+    // login, depois de aprovado, responder ACTIVE_SESSION — "conta conectada em
+    // outro dispositivo" para quem nunca entrou em lugar nenhum.
+    const accessToken = await this.signWithSession(user.id, user.role, 'vendor', user.role === 'VENDOR');
     return { accessToken, user };
   }
 
@@ -332,7 +346,8 @@ export class AuthService {
     user.emailVerified = !!email_verified;
     user.password = '';
     await this.vendorUserRepo.save(user);
-    const accessToken = await this.signWithSession(user.id, user.role, 'vendor');
+    // Idem registerVendor: aguardando aprovacao, o painel descarta o token.
+    const accessToken = await this.signWithSession(user.id, user.role, 'vendor', user.role === 'VENDOR');
     return { accessToken, user };
   }
 

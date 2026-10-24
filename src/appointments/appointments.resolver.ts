@@ -9,6 +9,7 @@ import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Permission } from '../auth/decorators/permission.decorator';
 import { UserRole } from '../common/enums/user-role.enum';
 
 @Resolver(() => Appointment)
@@ -62,6 +63,37 @@ export class AppointmentsResolver {
     @CurrentUser() user: any,
   ): Promise<Appointment[]> {
     return this.appointmentsService.storeAppointments(storeId, user.id, date, status);
+  }
+
+  /**
+   * Agendamentos com repasse de PRESTADOR retido na plataforma.
+   *
+   * Irmã de `vendorPayables` e `delivererPayables`, em orders. Mesma origem: a
+   * transferência foi tentada e o provedor recusou por bloqueio de origem
+   * (allowlist de IP, KAN-299).
+   *
+   * `@Permission('finance')` como a de lojista: é dívida com quem prestou o
+   * serviço, e quem concilia isso não é necessariamente quem concilia entrega.
+   */
+  @Query(() => [Appointment])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('finance')
+  appointmentVendorPayables(
+    @Args('apenasAbertos', { nullable: true, defaultValue: true })
+    apenasAbertos: boolean,
+  ): Promise<Appointment[]> {
+    return this.appointmentsService.vendorPayables(apenasAbertos);
+  }
+
+  @Mutation(() => Appointment)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('finance')
+  markAppointmentVendorPayablePaid(
+    @Args('appointmentId') appointmentId: string,
+  ): Promise<Appointment> {
+    return this.appointmentsService.markVendorPayablePaid(appointmentId);
   }
 
   // ─── Customer Mutations ─────────────────────────────────

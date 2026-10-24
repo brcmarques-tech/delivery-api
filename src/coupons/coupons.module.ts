@@ -5,9 +5,11 @@ import { Store } from '../stores/entities/store.entity';
 import { CouponsService } from './coupons.service';
 import { CouponsResolver } from './coupons.resolver';
 import { PlatformConfigModule } from '../config/platform-config.module';
+import { FidelidadeModule } from '../loyalty/fidelidade.module';
 
 @Module({
   imports: [
+    FidelidadeModule,
     TypeOrmModule.forFeature([Coupon, Store]),
     PlatformConfigModule,
   ],

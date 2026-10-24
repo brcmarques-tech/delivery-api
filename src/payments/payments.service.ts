@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, HttpException, Inject, forwardRef, Logger, OnModuleDestroy } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -24,6 +24,11 @@ import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
 import { PubSub } from 'graphql-subscriptions';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { linhasAfetadas } from '../common/utils/db-claim';
+// Perf/fuso: a data de antecipacao tem de ser decidida no fuso do NEGOCIO, nao
+// em UTC — ver dataDeAntecipacao.
+import { businessMinutes, businessToday } from '../common/utils/business-time';
+import { percentualEmCentavos, taxaPorContaDaLoja } from '../common/dinheiro';
 
 // L5: Centralized descriptor constant
 const STATEMENT_DESCRIPTOR = 'BCMTECH';
@@ -48,36 +53,78 @@ export class PaymentsService implements OnModuleDestroy {
   }
 
   // M7: Build billing address — Pagar.me V5 requires separate fields (street, number, neighborhood)
-  private buildBillingAddress(order: Order, store: Store): { street: string; number: string; neighborhood: string; zip_code: string; city: string; state: string; country: string } {
-    // Parse delivery address if available (format: "Rua X, 123 - Bairro, Cidade")
+  /**
+   * Endereço de cobrança no formato que o Pagar.me v5 realmente aceita.
+   *
+   * ANTES devolvia `street` / `number` / `neighborhood`. Esses campos NÃO
+   * existem no address da v5 — ela espera `line_1` (número, rua, bairro),
+   * `line_2` (complemento), `zip_code`, `city`, `state` e `country`. O gateway
+   * descartava os três em silêncio e o antifraude recebia um endereço com
+   * apenas CEP, cidade e estado: score pior e mais recusa legítima, sem
+   * nenhum erro visível de nosso lado.
+   *
+   * `state` é normalizado para a sigla de 2 letras e `country` para ISO de 2 —
+   * a v5 rejeita valores maiores.
+   */
+  private buildBillingAddress(
+    order: Order,
+    store: Store,
+  ): { line_1: string; line_2?: string; zip_code: string; city: string; state: string; country: string } {
     const addr = order.deliveryAddress;
-    // Try to extract zip from customer data if available
-    const customerZip = (order as any).customer?.zipCode?.replace(/\D/g, '')
-      || (order as any).deliveryZipCode?.replace(/\D/g, '');
+    const customerZip =
+      (order as any).customer?.zipCode?.replace(/\D/g, '') ||
+      (order as any).deliveryZipCode?.replace(/\D/g, '');
+
+    const siglaEstado = (uf?: string): string => {
+      const limpo = (uf || '').trim();
+      if (/^[A-Za-z]{2}$/.test(limpo)) return limpo.toUpperCase();
+      const porExtenso: Record<string, string> = {
+        acre: 'AC', alagoas: 'AL', amapa: 'AP', amazonas: 'AM', bahia: 'BA',
+        ceara: 'CE', 'distrito federal': 'DF', 'espirito santo': 'ES',
+        goias: 'GO', maranhao: 'MA', 'mato grosso': 'MT',
+        'mato grosso do sul': 'MS', 'minas gerais': 'MG', para: 'PA',
+        paraiba: 'PB', parana: 'PR', pernambuco: 'PE', piaui: 'PI',
+        'rio de janeiro': 'RJ', 'rio grande do norte': 'RN',
+        'rio grande do sul': 'RS', rondonia: 'RO', roraima: 'RR',
+        'santa catarina': 'SC', 'sao paulo': 'SP', sergipe: 'SE',
+        tocantins: 'TO',
+      };
+      const chave = limpo
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '');
+      return porExtenso[chave] || 'RS';
+    };
+
+    // line_1 no formato recomendado pela v5: "numero, rua, bairro"
+    const montarLinha1 = (num: string, rua: string, bairro: string) =>
+      [num, rua, bairro].filter(Boolean).join(', ').substring(0, 256);
+
     if (addr) {
-      const parts = addr.split(',').map(p => p.trim());
+      const parts = addr.split(',').map((p) => p.trim());
       const street = parts[0] || 'Rua Nao Informada';
-      const numberAndNeighborhood = parts[1]?.split('-').map(p => p.trim()) || [];
+      const numberAndNeighborhood = parts[1]?.split('-').map((p) => p.trim()) || [];
       const num = numberAndNeighborhood[0] || 'SN';
       const neighborhood = numberAndNeighborhood[1] || parts[2] || 'Centro';
       return {
-        street,
-        number: num,
-        neighborhood,
+        line_1: montarLinha1(num, street, neighborhood),
         zip_code: customerZip || store?.zipCode?.replace(/\D/g, '') || '00000000',
         city: parts[parts.length - 1] || store?.city || 'Nao Informada',
-        state: store?.state || 'RS',
+        state: siglaEstado(store?.state),
         country: 'BR',
       };
     }
-    // Fallback to store address if no delivery address (e.g. pickup)
+
+    // Fallback para o endereço da loja (ex.: retirada no local)
     return {
-      street: store?.street || 'Rua Nao Informada',
-      number: store?.number || 'SN',
-      neighborhood: store?.neighborhood || 'Centro',
+      line_1: montarLinha1(
+        store?.number || 'SN',
+        store?.street || 'Rua Nao Informada',
+        store?.neighborhood || 'Centro',
+      ),
       zip_code: store?.zipCode?.replace(/\D/g, '') || '00000000',
       city: store?.city || 'Nao Informada',
-      state: store?.state || 'RS',
+      state: siglaEstado(store?.state),
       country: 'BR',
     };
   }
@@ -107,6 +154,74 @@ export class PaymentsService implements OnModuleDestroy {
   ) {
     const secretKey = this.configService.get('PAGARME_SECRET_KEY') || '';
     this.pagarmeAuthHeader = 'Basic ' + Buffer.from(`${secretKey}:`).toString('base64');
+  }
+
+  /**
+   * Link de pagamento (checkout hospedado do Pagar.me) — usado no anúncio de
+   * promoção, no cartão da loja online e no checkout de agendamento.
+   *
+   * Medido no sandbox em 23/10/2026, os três estavam quebrados do mesmo jeito:
+   *  - com chave de TESTE a API de links mora em `sdx-api.pagar.me`; em
+   *    `api.pagar.me` ela responde 401 de corpo vazio — que o código lia como
+   *    "bloqueio de IP" ([LINK_BLOQUEADO]) quando era só o endereço errado;
+   *  - o corpo era de outra versão: `accepted_payment_methods` vai DENTRO de
+   *    `payment_settings`, com `credit_card_settings`/`pix_settings`, e os
+   *    itens em `cart_settings`;
+   *  - o link NÃO repassa o nosso `metadata` ao pedido que ele gera: o webhook
+   *    chega só com `metadata.payment_link_id`. Por isso o id do link é
+   *    devolvido aqui e guardado, e o webhook resolve por ele
+   *    (resolverPagamentoPorLink).
+   */
+  private async criarLinkDePagamento(opts: {
+    nome: string;
+    totalCents: number;
+    pixExpiraEm: number;
+  }): Promise<{ id: string; url: string }> {
+    const secret = this.configService.get('PAGARME_SECRET_KEY') || '';
+    const base = secret.startsWith('sk_test') ? 'https://sdx-api.pagar.me/core/v5' : this.pagarmeBaseUrl;
+    const nome = opts.nome.substring(0, 256);
+    const body = {
+      is_building: false,
+      name: nome,
+      type: 'order',
+      payment_settings: {
+        accepted_payment_methods: ['credit_card', 'pix'],
+        credit_card_settings: {
+          operation_type: 'auth_and_capture',
+          installments: [{ number: 1, total: opts.totalCents }],
+        },
+        pix_settings: { expires_in: opts.pixExpiraEm },
+      },
+      cart_settings: { items: [{ amount: opts.totalCents, name: nome, default_quantity: 1 }] },
+    };
+    const response = await this.httpService.axiosRef.post(`${base}/paymentlinks`, body, {
+      headers: { Authorization: this.pagarmeAuthHeader, 'Content-Type': 'application/json' },
+    });
+    const { id, url } = response.data || {};
+    if (!id || !url) throw new Error('Pagar.me nao devolveu o link de pagamento');
+    return { id, url };
+  }
+
+  /**
+   * O pedido gerado por um link chega no webhook só com `payment_link_id` no
+   * metadata. Traduz para o metadata que o resto do handler entende, achando
+   * quem guardou aquele link: o pagamento da promoção (pagarmeOrderId = id do
+   * link), ou o pedido/agendamento (pagarmeOrderId = 'link-' + id do link).
+   */
+  private async resolverPagamentoPorLink(metadata: any): Promise<any> {
+    const linkId = metadata?.payment_link_id;
+    if (!linkId || metadata.type || metadata.order_id) return metadata;
+    const m = this.paymentsRepository.manager;
+    const pagamento = await this.paymentsRepository.findOne({ where: { pagarmeOrderId: linkId } });
+    if (pagamento?.type === 'PROMOTION' && (pagamento.metadata as any)?.promotionId) {
+      return { ...metadata, type: 'promotion', promotion_id: (pagamento.metadata as any).promotionId };
+    }
+    const [pedido] = await m.query(`SELECT id FROM orders WHERE "pagarmeOrderId" = $1 LIMIT 1`, [`link-${linkId}`]);
+    if (pedido) return { ...metadata, order_id: pedido.id };
+    const [agendamento] = await m.query(`SELECT id FROM appointments WHERE "pagarmeOrderId" = $1 LIMIT 1`, [`link-${linkId}`]);
+    if (agendamento) return { ...metadata, type: 'appointment', appointment_id: agendamento.id };
+    this.logger.warn(`[LINK_SEM_DONO] webhook de link ${linkId} sem pagamento/pedido/agendamento correspondente`);
+    return metadata;
   }
 
   // L4: Properly clean up interval on module destroy
@@ -175,17 +290,134 @@ export class PaymentsService implements OnModuleDestroy {
     return response.data;
   }
 
-  private async pagarmeDelete<T = any>(path: string): Promise<T> {
+  private async pagarmeDelete<T = any>(
+    path: string,
+    body?: any,
+    idempotencyKey?: string,
+  ): Promise<T> {
+    const headers: Record<string, string> = {
+      'Authorization': this.pagarmeAuthHeader,
+      'Content-Type': 'application/json',
+    };
+    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
     const response = await this.httpService.axiosRef.delete(
       `${this.pagarmeBaseUrl}${path}`,
-      {
-        headers: {
-          'Authorization': this.pagarmeAuthHeader,
-          'Content-Type': 'application/json',
-        },
-      },
+      // O DELETE de cobranca aceita corpo — e e por ele que se pede estorno
+      // PARCIAL (`{ amount }`). No axios, corpo de DELETE vai em `data`.
+      { headers, ...(body !== undefined ? { data: body } : {}) },
     );
     return response.data;
+  }
+
+  /**
+   * Estorna uma cobranca. Sem `amountCents` estorna o TOTAL; com, estorna so
+   * aquele valor (estorno parcial).
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * DOIS BUGS GRAVES CONSERTADOS AQUI (provados no sandbox em 15/10/2026)
+   * ──────────────────────────────────────────────────────────────────────────
+   *
+   * 1) A ROTA DE ESTORNO NAO EXISTE. O codigo chamava
+   *    `POST /charges/{id}/refund` em QUATRO lugares. Essa rota e da v4. Provado
+   *    com uma cobranca REAL e PAGA criada no sandbox:
+   *
+   *      POST /charges/ch_jdJ0VOSyVSaZzpwx/refund   -> 404 com CORPO VAZIO
+   *      POST /charges/ch_.../capture (controle)    -> 404 "Charge not found."
+   *
+   *    O `/capture` casa a rota e so depois nao acha a cobranca; o `/refund`
+   *    nao casa rota nenhuma. Tambem testei `/refunds` e `/cancel`: nao existem.
+   *    A forma na v5 e `DELETE /charges/{id}`.
+   *
+   *    Consequencia: TODO estorno de cobranca capturada falhava — cancelamento
+   *    de pedido pago, reembolso de pagamento tardio, devolucao de agendamento e
+   *    a sobra do ajuste de peso. O dinheiro ficava na plataforma.
+   *
+   * 2) HTTP 200 NAO SIGNIFICA QUE ESTORNOU. Esta e a parte que mais importa:
+   *    o `DELETE` responde 200 mesmo quando o estorno FALHA, e o resultado real
+   *    esta em `last_transaction.status`. Medido:
+   *
+   *      DELETE logo depois da captura -> 200, charge=paid,
+   *        last_transaction.status=failed,
+   *        erro "action_forbidden | Valor invalido para estorno."
+   *      DELETE ~10s depois           -> 200, charge=canceled,
+   *        last_transaction.status=refunded, "Transacao aprovada com sucesso"
+   *      DELETE { amount: 100 } de 300 -> 200, charge SEGUE paid (correto: so
+   *        parte voltou), last_transaction.status=partial_refunded
+   *
+   *    A recusa aconteceu logo depois da captura e deixou de acontecer segundos
+   *    adiante, mas NAO e um atraso fixo: numa execucao posterior do mesmo
+   *    experimento o estorno imediato passou de primeira. Ou seja, e
+   *    INTERMITENTE — que e o pior caso, porque nao da para contornar com uma
+   *    espera e nao aparece em teste feito uma vez.
+   *
+   *    Seja qual for a causa (liquidacao do adquirente, concorrencia interna), a
+   *    licao e a mesma e nao depende de descobri-la: o 200 nao prova nada, e a
+   *    decisao tem de sair de `last_transaction.status`. Quem confiasse no
+   *    status HTTP registraria "estornado" sem ter estornado — as vezes.
+   *
+   *    Lancar nesse caso e de proposito: os chamadores ja sabem reabrir o
+   *    settlement e re-tentar (ver `settlementErrors` / `retryFailedSettlements`),
+   *    e a janela fecha sozinha em segundos. Re-tentar e seguro justamente porque
+   *    so chegamos aqui quando o provedor AFIRMOU que falhou.
+   */
+  private async estornarCobranca(
+    chargeId: string,
+    opts?: { amountCents?: number; idempotencyKey?: string },
+  ): Promise<void> {
+    const parcial = opts?.amountCents !== undefined && opts.amountCents !== null;
+    // Total: sem corpo (forma validada no sandbox). Parcial: `{ amount }`.
+    const corpo = parcial ? { amount: opts!.amountCents } : undefined;
+
+    const resultado: any = await this.pagarmeDelete(
+      `/charges/${chargeId}`,
+      corpo,
+      opts?.idempotencyKey,
+    );
+
+    const statusTransacao = String(resultado?.last_transaction?.status || '').toLowerCase();
+    const statusCobranca = String(resultado?.status || '').toLowerCase();
+
+    const estornou =
+      statusTransacao === 'refunded' ||
+      statusTransacao === 'partial_refunded' ||
+      // Estorno de PIX é ASSINCRONO: o DELETE volta "pending_refund" (aceito,
+      // em processamento) e a cobrança vira canceled segundos depois, com o
+      // charge.refunded no webhook. Medido no sandbox em 22/10/2026: tratado
+      // como recusa, o cancelamento gravava REFUND_FAILED ("pedido SEM
+      // estorno") num pedido que o Pagar.me estornou inteiro.
+      statusTransacao === 'pending_refund' ||
+      // Se o provedor nao trouxer last_transaction, o status da cobranca ainda
+      // resolve o caso total. Nao vale para parcial: ali a cobranca segue "paid".
+      (!statusTransacao && (statusCobranca === 'canceled' || statusCobranca === 'refunded'));
+
+    // VOID DE PRE-AUTORIZACAO passa por aqui e passa limpo — medido no sandbox
+    // em 15/10/2026 (scripts/provas/experimento-void-preauth.mjs):
+    //
+    //   DELETE numa pre-auth nao capturada -> HTTP 200
+    //     charge.status            = "canceled"
+    //     last_transaction.status  = "refunded"
+    //
+    // Ou seja: o provedor usa a palavra "refunded" mesmo quando nao houve
+    // captura e nada de dinheiro se moveu. Eu esperava outra palavra (algo como
+    // "voided") e teria escrito uma excecao desnecessaria no helper por causa
+    // disso. As duas condicoes acima aceitam o void, entao os dois pontos que
+    // anulam pre-auth podem usar este helper sem adaptacao.
+    //
+    // A outra metade da medicao: anular DUAS vezes, capturar uma cobranca ja
+    // anulada e recapturar uma ja capturada respondem HTTP 412 — erro de
+    // verdade, que o axios transforma em excecao. Isso delimita o problema do
+    // 200-mascarando-falha: ele e do ESTORNO DE COBRANCA PAGA, nao de toda
+    // operacao de cobranca.
+
+    if (estornou) return;
+
+    const motivo =
+      resultado?.last_transaction?.gateway_response?.errors?.[0]?.message ||
+      resultado?.last_transaction?.acquirer_message ||
+      `last_transaction.status="${statusTransacao || 'ausente'}" charge.status="${statusCobranca}"`;
+    throw new Error(
+      `estorno recusado pelo provedor (${parcial ? `parcial ${opts!.amountCents}` : 'total'}): ${motivo}`,
+    );
   }
 
   // ─── Pagar.me error translation ──────────────────────────────────────
@@ -725,15 +957,22 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       // Create hosted checkout page directly via payment link (no separate order)
-      const checkoutUrl = await this.createPaymentLink(order, totalCents, []);
+      const link = await this.createPaymentLink(order, totalCents);
 
       this.logger.log(
-        `Pagar.me payment link created for ${order.orderNumber} | total: ${order.total}`,
+        `Pagar.me payment link created for ${order.orderNumber} | total: ${order.total} | link ${link.id}`,
       );
 
-      // Use a placeholder preferenceId since we no longer create a separate Pagar.me order
-      return { checkoutUrl, preferenceId: `link-${order.id}-${Date.now()}` };
+      // 'link-' + id do link: o prefixo marca o placeholder (trocado pelo id do
+      // pedido real quando o webhook chega) e o id é como o webhook acha o
+      // pedido — o link não repassa o nosso metadata.
+      return { checkoutUrl: link.url, preferenceId: `link-${link.id}` };
     } catch (err: any) {
+      // createPaymentLink JA traduz o bloqueio de origem numa instrucao util
+      // ("finalize com PIX"). Sem este repasse, este catch trocava aquela
+      // mensagem por "Erro ao criar pagamento no Pagar.me" e o cliente ficava
+      // sem saber o que fazer — era a mensagem que chegava na tela do site.
+      if (err instanceof HttpException) throw err;
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me checkout failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(
@@ -742,9 +981,55 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
+  // ─── HTTP 200 NAO SIGNIFICA COBRANCA CRIADA ────────────────────────────
+  //
+  // O Pagar.me responde 200 ao POST /orders e devolve a cobranca FALHADA
+  // dentro do corpo — o mesmo engano do /refund (ver estornarCobranca).
+  // Medido no sandbox: split apontando para recebedor inexistente devolve
+  //   200 { charges:[{ status:'failed', last_transaction:{ status:'failed',
+  //         gateway_response:{ code:'404',
+  //         errors:[{ message:'Recipient not found' }] } } }] }
+  // e NENHUM qr_code.
+  //
+  // O que acontecia sem esta guarda: o metodo logava sucesso e devolvia qrCode
+  // vazio. O pedido era salvo em AWAITING_PAYMENT, o cliente via "pedido
+  // criado" numa tela sem QR e sem copia-e-cola, e o pedido morria 30 min
+  // depois no expirador — sem aviso para o cliente, sem erro no log e sem nada
+  // para o lojista cobrar. Falhar aqui devolve o erro a quem chamou, que recusa
+  // a operacao e deixa o cliente escolher outro meio de pagamento na hora.
+  //
+  // Vale para TODO PIX da casa (pedido, agendamento e plano do lojista): o
+  // gateway e o mesmo e o engano e o mesmo.
+  private extrairPixDaResposta(
+    result: any,
+    rotulo: string,
+  ): { qrCode: string; qrCodeUrl: string } {
+    const charge = result?.charges?.[0];
+    const tx = charge?.last_transaction;
+    const qrCode = tx?.qr_code || '';
+    const qrCodeUrl = tx?.qr_code_url || '';
+    const status = String(charge?.status || tx?.status || '');
+
+    if (/failed|canceled|not_authorized/i.test(status) || !qrCode) {
+      const motivo =
+        tx?.gateway_response?.errors?.[0]?.message ||
+        tx?.acquirer_message ||
+        status ||
+        'resposta sem qr_code';
+      this.logger.error(
+        `[PIX_NAO_GERADO] ${rotulo} | pagarme_order: ${result?.id} | ` +
+          `cobranca: ${status || 'ausente'} | motivo: ${motivo}`,
+      );
+      throw new BadRequestException(
+        'Nao foi possivel gerar a cobranca PIX agora. Tente novamente ou use outro metodo de pagamento.',
+      );
+    }
+    return { qrCode, qrCodeUrl };
+  }
+
   // ─── Order PIX ─────────────────────────────────────────────────────────
 
-  async createOrderPix(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string }> {
+  async createOrderPix(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string; settledViaSplit?: boolean }> {
     const store = order.store;
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
@@ -752,9 +1037,82 @@ export class PaymentsService implements OnModuleDestroy {
     this.logger.log(`PIX split check: vendorRecipientId=${vendorRecipientId || 'NULL'} platformRecipientId=${platformRecipientId || 'NULL'} storeOwner=${store?.owner?.email || 'NULL'}`);
 
     const totalCents = Math.round(Number(order.total) * 100);
+    const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
+    const deliveryFeeCents = Math.round((Number(order.deliveryFee) || 0) * 100);
+    const hasExternalDelivery = !store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0;
 
-    // No split at payment time — all money goes to platform.
-    // Transfers to vendor/deliverer happen after delivery is confirmed.
+    // Split-on-charge (auditoria C1): o repasse antigo via /transfers no settle
+    // NUNCA funcionou — na v5 /transfers SACA do saldo do proprio recebedor (que
+    // e zero), nao distribui da plataforma pra ele. A distribuicao correta e via
+    // SPLIT na cobranca. No PIX o pagamento e imediato, entao o split e definido
+    // aqui e o Pagar.me credita o vendedor no saldo dele no momento do pagamento
+    // (nunca passa pela conta da plataforma). A protecao "estorno garantido": um
+    // /refund da cobranca reverte o split (debita o saldo do vendedor).
+    //
+    // O ENTREGADOR NAO entra neste split: ele so e conhecido no READY (aceite da
+    // corrida), depois do pagamento. A taxa de entrega fica com a plataforma e o
+    // repasse ao entregador e feito off-platform (marcado [DELIVERER_PAYABLE] no
+    // settle). A parte do VENDEDOR e identica ao fluxo de cartao:
+    //   entrega externa: total - comissao - frete
+    //   retirada/entrega propria: total - comissao (vendedor fica com o frete)
+    const splitRules: any[] = [];
+    if (vendorRecipientId && platformRecipientId) {
+      let vendorAmount = hasExternalDelivery
+        ? totalCents - commissionCents - deliveryFeeCents
+        : totalCents - commissionCents;
+      if (vendorAmount < 0) vendorAmount = 0;
+
+      if (vendorAmount > 0) {
+        splitRules.push({
+          amount: vendorAmount,
+          recipient_id: vendorRecipientId,
+          type: 'flat',
+          // `liable: true` NO VENDEDOR — ver RESPONSABILIDADE POR CHARGEBACK,
+          // no cabeçalho de `captureWithSplit`. A regra é a mesma nos dois
+          // meios de pagamento, de propósito.
+          options: { charge_processing_fee: false, liable: true, charge_remainder_fee: false },
+        });
+      }
+
+      const platformAmount = totalCents - splitRules.reduce((s, r) => s + r.amount, 0);
+      if (platformAmount > 0) {
+        splitRules.push({
+          amount: platformAmount,
+          recipient_id: platformRecipientId,
+          type: 'flat',
+          options: { charge_processing_fee: true, liable: true, charge_remainder_fee: true },
+        });
+      } else if (splitRules.length > 0) {
+        // Comissao 0% (PREMIUM/ENTERPRISE) em retirada/entrega propria: vendedor
+        // fica com 100% e a plataforma com 0. Sem regra de valor zero (o gateway
+        // recusa) — a taxa/responsabilidade passam pra regra do vendedor.
+        splitRules[0].options = {
+          ...splitRules[0].options,
+          charge_processing_fee: true,
+          liable: true,
+          charge_remainder_fee: true,
+        };
+      }
+
+      taxaPorContaDaLoja(splitRules, vendorRecipientId, platformRecipientId);
+
+      const splitSum = splitRules.reduce((s, r) => s + r.amount, 0);
+      if (splitSum !== totalCents) {
+        this.logger.error(
+          `PIX split sum mismatch for order #${order.orderNumber}: sum=${splitSum}, total=${totalCents} — caindo no fallback sem split`,
+        );
+        splitRules.length = 0; // fallback seguro: cobra sem split (nao bloqueia a venda)
+      }
+    }
+
+    const splitApplied = splitRules.length > 0;
+    if (!splitApplied) {
+      this.logger.error(
+        `[PIX_NO_SPLIT] Pedido #${order.orderNumber}: cobranca PIX SEM split ` +
+          `(vendorRecipient=${vendorRecipientId || 'NULL'} platformRecipient=${platformRecipientId || 'NULL'}). ` +
+          `Dinheiro fica 100% na plataforma; repasse ao vendedor precisa ser manual.`,
+      );
+    }
 
     const phone = this.formatPhoneForPagarme(customer.phone);
 
@@ -788,6 +1146,7 @@ export class PaymentsService implements OnModuleDestroy {
               { name: 'Pedido', value: order.orderNumber },
             ],
           },
+          ...(splitApplied ? { split: splitRules } : {}),
         },
       ],
       metadata: {
@@ -800,14 +1159,15 @@ export class PaymentsService implements OnModuleDestroy {
     try {
       const result = await this.pagarmePost('/orders', orderBody);
 
-      // Extract PIX data from charge
-      const charge = result.charges?.[0];
-      const lastTransaction = charge?.last_transaction;
-      const qrCode = lastTransaction?.qr_code || '';
-      const qrCodeUrl = lastTransaction?.qr_code_url || '';
+      // Extract PIX data from charge — e falha alto se a cobranca falhou
+      // (ver extrairPixDaResposta).
+      const { qrCode, qrCodeUrl } = this.extrairPixDaResposta(
+        result,
+        `pedido #${order.orderNumber}`,
+      );
 
       this.logger.log(
-        `Pagar.me PIX order created for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id}`,
+        `Pagar.me PIX order created for ${order.orderNumber} | total: ${order.total} | pagarme_order: ${result.id} | split: ${splitApplied ? splitRules.map((r) => `${r.recipient_id}:${r.amount}`).join(',') : 'NONE'}`,
       );
 
       return {
@@ -815,8 +1175,14 @@ export class PaymentsService implements OnModuleDestroy {
         preferenceId: result.id,
         qrCode,
         qrCodeUrl,
+        settledViaSplit: splitApplied,
       };
     } catch (err: any) {
+      // A guarda do [PIX_NAO_GERADO] acima lanca BadRequestException de dentro
+      // deste try. Sem este repasse, o catch a reembrulhava na mensagem
+      // generica do gateway e a razao real (e a instrucao de usar outro meio
+      // de pagamento) se perdia no caminho ate o cliente.
+      if (err instanceof HttpException) throw err;
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me PIX order failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(
@@ -875,18 +1241,29 @@ export class PaymentsService implements OnModuleDestroy {
 
     const splitRules: any[] = [];
     let vendorAmount: number;
-    let platformAmount: number;
+    // KAN-254 (codigo morto no caminho do dinheiro): `platformAmount` era
+    // atribuido em CINCO pontos antes do calculo do residuo — comissao +
+    // comissao de entrega, mais a parte do entregador sem recipient, mais a
+    // comissao no caminho de retirada, mais o clamp do vendedor negativo, mais
+    // o else do vendedor zerado — e TODOS eram mortos: o residuo sobrescrevia a
+    // variavel sem condicao nenhuma, e o primeiro LEITOR vem depois dele.
+    //
+    // Isso e pior do que redundancia: eram cinco formulas aparentes para a
+    // fatia da plataforma, nenhuma em uso. Quem fosse corrigir a comissao
+    // editaria uma delas e nada mudaria — num arquivo que divide dinheiro de
+    // verdade. A regra real e uma so e esta logo depois do bloco: a plataforma
+    // leva O QUE SOBRA (e por isso absorve MDR, arredondamento e a
+    // responsabilidade do split). Agora ela existe em um unico lugar.
 
     const hasExternalDelivery = !store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0;
 
     if (hasExternalDelivery) {
       const delivery = (order as any).delivery;
       const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
-      const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+      const deliveryCommissionCents = percentualEmCentavos(deliveryFeeCents, deliveryCommissionPercent);
       const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
 
       vendorAmount = totalCents - commissionCents - deliveryFeeCents;
-      platformAmount = commissionCents + deliveryCommissionCents;
 
       if (delivererRecipientId && delivererAmount > 0) {
         splitRules.push({
@@ -896,14 +1273,16 @@ export class PaymentsService implements OnModuleDestroy {
           options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
         });
       } else {
-        // No deliverer recipient — platform absorbs deliverer share.
+        // Sem recipient do entregador a parte dele fica com a plataforma —
+        // automaticamente, porque a plataforma leva o residuo (nao ha soma a
+        // fazer aqui; a linha que somava era morta, ver KAN-254 acima).
+        //
         // Isto acontecia em SILENCIO: sem log, sem marca no pedido, sem
         // pendencia registrada, e a captura saia como sucesso. O entregador
         // perdia 100% do ganho de uma entrega ja feita e ninguem — nem ele nem a
         // plataforma — tinha como descobrir depois, porque o split ja foi
         // executado e nao ha retroativo. Marcamos o pedido para que a divida
         // fique rastreavel e possa ser paga manualmente.
-        platformAmount += delivererAmount;
         this.logger.error(
           `[DELIVERER_UNPAID] Pedido #${order.orderNumber}: entregador sem recipient no Pagar.me. ` +
             `R$ ${(delivererAmount / 100).toFixed(2)} ficaram com a plataforma e precisam de repasse manual.`,
@@ -912,37 +1291,71 @@ export class PaymentsService implements OnModuleDestroy {
           .getRepository(Order)
           .update(order.id, {
             notes: `${order.notes || ''}\n[DELIVERER_UNPAID] R$ ${(delivererAmount / 100).toFixed(2)} nao repassados ao entregador (sem recipient).`.trim(),
-          })
+            // Vira saldo do entregador no repasse semanal de quarta — antes
+            // ficava só a nota, e o valor não aparecia em lugar nenhum.
+            ...(delivererAmount > 0 && !(order as any).delivererPayableCents
+              ? { delivererPayableCents: delivererAmount }
+              : {}),
+          } as any)
           .catch((err: any) =>
             this.logger.error(`Falha ao marcar DELIVERER_UNPAID: ${err?.message}`),
           );
       }
     } else {
       // Pickup or own delivery — vendor gets total minus commission
+      // (a plataforma fica com a comissao por consequencia do residuo)
       vendorAmount = totalCents - commissionCents;
-      platformAmount = commissionCents;
     }
 
-    // Cap vendor at 0 minimum
-    if (vendorAmount < 0) {
-      platformAmount += vendorAmount;
-      vendorAmount = 0;
-    }
+    // Cap vendor at 0 minimum. O que o vendedor nao leva volta para o residuo
+    // da plataforma sozinho — nao ha nada a somar aqui.
+    if (vendorAmount < 0) vendorAmount = 0;
 
     if (vendorAmount > 0) {
       splitRules.push({
         amount: vendorAmount,
         recipient_id: vendorRecipientId,
         type: 'flat',
-        options: { charge_processing_fee: false, liable: false, charge_remainder_fee: false },
+        // ─── RESPONSABILIDADE POR CHARGEBACK (16/10/2026, KAN-303) ─────────
+        //
+        // `liable: true` no VENDEDOR. Antes só a plataforma era responsável, e
+        // isso significa o que parece: num chargeback, o Pagar.me debitava da
+        // plataforma o valor INTEIRO da transação — inclusive a mercadoria que
+        // o vendedor já tinha recebido e já tinha entregue.
+        //
+        // Isso não tinha conserto por código: recuperar repasse já feito é
+        // impossível na v5 (não existe empurrão de um recebedor para outro —
+        // provado em scripts/provas/sonda-repasse.mjs). A plataforma absorvia e
+        // pronto.
+        //
+        // O `liable` é o único lugar onde essa conta se decide, e ele se decide
+        // ANTES, na montagem do split. Testado contra o sandbox: o provedor
+        // aceita vários responsáveis, e aceita a plataforma não ser um deles.
+        //
+        // O desenho escolhido:
+        //
+        //   VENDEDOR    liable — é dele a mercadoria, e é dele a prova de que
+        //               entregou (código do cliente, GPS, horário). Quem tem a
+        //               evidência é quem pode contestar.
+        //   PLATAFORMA  liable pela PRÓPRIA fatia, abaixo. Se a venda é
+        //               revertida, é justo perder a comissão que não ganhou.
+        //   ENTREGADOR  NÃO liable, e isto é deliberado. Ele fez a corrida; o
+        //               chargeback é entre cliente e loja. Um entregador que
+        //               ganha R$ 9 num frete não pode ser debitado em R$ 110
+        //               por uma disputa que não tem como contestar — isso
+        //               destruiria a retenção de entregador no primeiro caso.
+        //
+        // O que muda na prática: a plataforma passa a perder, no pior caso, a
+        // comissão daquele pedido, em vez do valor cheio.
+        options: { charge_processing_fee: false, liable: true, charge_remainder_fee: false },
       });
-    } else {
-      platformAmount = totalCents - splitRules.reduce((sum, r) => sum + r.amount, 0);
     }
 
-    // Platform gets remainder (absorbs MDR, rounding, and liability)
-    const splitSum = splitRules.reduce((sum, r) => sum + r.amount, 0);
-    platformAmount = totalCents - splitSum;
+    // A UNICA definicao da fatia da plataforma: o que sobra depois das regras do
+    // entregador e do vendedor. Absorve MDR, arredondamento e responsabilidade,
+    // e e isso que garante a invariante validada mais abaixo (soma == total).
+    const platformAmount =
+      totalCents - splitRules.reduce((sum, r) => sum + r.amount, 0);
 
     if (platformAmount > 0) {
       splitRules.push({
@@ -961,7 +1374,7 @@ export class PaymentsService implements OnModuleDestroy {
       // o MDR do proprio bolso em todo pedido desses.
       // Sem regra de valor zero (que o gateway costuma recusar): as opcoes de
       // taxa/responsabilidade passam para a regra do vendedor.
-      const principal = splitRules[0];
+      const principal = splitRules.find((r) => r.recipient_id === vendorRecipientId) ?? splitRules[0];
       principal.options = {
         ...(principal.options || {}),
         charge_processing_fee: true,
@@ -969,6 +1382,8 @@ export class PaymentsService implements OnModuleDestroy {
         charge_remainder_fee: true,
       };
     }
+
+    taxaPorContaDaLoja(splitRules, vendorRecipientId, platformRecipientId);
 
     // Final validation
     const finalSum = splitRules.reduce((sum, r) => sum + r.amount, 0);
@@ -1000,11 +1415,35 @@ export class PaymentsService implements OnModuleDestroy {
     if (!order.preAuthChargeId) return;
 
     try {
-      await this.pagarmeDelete(`/charges/${order.preAuthChargeId}`);
+      // Era `pagarmeDelete` cru, com o resultado descartado. O provedor
+      // responde 200 nesta rota mesmo quando recusa a operacao, e o preco de
+      // nao olhar recai no CLIENTE: o pedido vira cancelado e o limite do
+      // cartao dele segue preso ate a pre-auth caducar, o que leva dias. E ele
+      // nao tem a quem recorrer, porque para a plataforma deu tudo certo.
+      await this.estornarCobranca(order.preAuthChargeId);
       this.logger.log(`Pre-auth cancelled for order #${order.orderNumber} | charge: ${order.preAuthChargeId}`);
     } catch (err: any) {
-      // Se falhar, pode já ter expirado ou sido cancelada
-      this.logger.warn(`Pre-auth cancel failed (may already be expired): ${err.response?.data?.message || err.message}`);
+      // Aqui chegam DUAS coisas diferentes, e tratar as duas como aviso foi o
+      // que escondeu o problema:
+      //
+      //  - HTTP 412 do provedor: a cobranca ja estava anulada, capturada ou
+      //    caducada. E benigno e idempotente — segue sendo warn.
+      //  - excecao do `estornarCobranca`: veio 200 mas a anulacao FOI RECUSADA.
+      //    Isso e dinheiro preso no cartao do cliente e precisa aparecer no
+      //    monitoramento, nao se esconder entre avisos de rotina.
+      //
+      // Os dois continuam sem interromper o cancelamento do pedido: o pedido
+      // cancelou de fato, e nao ter conseguido liberar a pre-auth nao e motivo
+      // para desfazer isso. A diferenca e so o quanto o erro grita.
+      const recusaDoProvedor = String(err?.message || '').startsWith('estorno recusado');
+      if (recusaDoProvedor) {
+        this.logger.error(
+          `[PREAUTH_NAO_LIBERADA] pedido #${order.orderNumber} | charge ${order.preAuthChargeId} ` +
+            `| o limite do cliente pode seguir preso: ${err.message}`,
+        );
+      } else {
+        this.logger.warn(`Pre-auth cancel failed (may already be expired): ${err.response?.data?.message || err.message}`);
+      }
     }
   }
 
@@ -1013,6 +1452,47 @@ export class PaymentsService implements OnModuleDestroy {
   /**
    * @param motivo distingue ESTORNO de CHARGEBACK — a diferenca decide se as
    * transferencias precisam ser revertidas na mao. Ver o bloco do split abaixo.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * ATENCAO: A REVERSAO POR TRANSFERENCIA NAO PODE FUNCIONAR. NAO E BUG DE
+   * CODIGO — E LIMITE DO PROVEDOR.
+   * ──────────────────────────────────────────────────────────────────────────
+   *
+   * O codigo abaixo tenta puxar dinheiro de volta do vendedor e do entregador
+   * com `POST /transfers { recipient_id: plataforma, source_recipient_id: <quem
+   * recebeu> }`. Duas coisas impedem isso, as duas medidas contra o sandbox em
+   * 15/10/2026:
+   *
+   *  1. A rota coletiva `POST /transfers` responde 401 "IP de origem nao
+   *     autorizado" — esta atras da allowlist de IP do Pagar.me.
+   *  2. Mais grave: NAO EXISTE transferencia de um recebedor para outro, nem da
+   *     plataforma para um recebedor. O que existe e
+   *     `POST /recipients/{id}/transfers { amount }`, e ela e um SAQUE: tira do
+   *     saldo DAQUELE recebedor e manda para a conta bancaria DELE. Provado pelo
+   *     registro que ela cria:
+   *
+   *       { "id": "with_8KeGrY5S1ZuyqanL",   <- prefixo "with" = withdraw
+   *         "status": "failed",
+   *         "bank_account": { "holder_name": "<titular do recebedor>", ... } }
+   *       e a mensagem de erro: "The withdraw could not be created."
+   *
+   *     Ou seja, `source_recipient_id` nao e campo de nada na v5.
+   *
+   * CONSEQUENCIA DE NEGOCIO, que precisa de decisao e nao de codigo: num modelo
+   * de split, o dinheiro vai direto do adquirente para o vendedor e para o
+   * entregador. Quando vem um CHARGEBACK depois disso, a plataforma devolve ao
+   * cliente e NAO tem como recuperar o que ja saiu. A mitigacao tem de ser de
+   * outra natureza — contestar o chargeback, reter uma reserva por recebedor,
+   * descontar de repasses futuros do mesmo vendedor, ou cobrir o prejuizo.
+   *
+   * O ESTORNO comum (nao chargeback) e diferente e esta OK: estornar a cobranca
+   * reverte o split junto, porque o adquirente desfaz a divisao original — e por
+   * isso o metodo tem o parametro `motivo` e sai cedo no caso de refund com
+   * split.
+   *
+   * Deixei o codigo no lugar de proposito: ele registra `[REVERSAL_ERRORS]` e
+   * restaura as marcas de liquidacao, que e o rastro de que ha dinheiro a
+   * recuperar. Remover isso apagaria a unica evidencia do prejuizo.
    */
   async reverseSettlementTransfers(
     order: Order,
@@ -1050,7 +1530,7 @@ export class PaymentsService implements OnModuleDestroy {
         RETURNING id, "isSettled" AS estava_liquidado`,
       [order.id],
     );
-    if (!reverseClaim || reverseClaim.length === 0) {
+    if (linhasAfetadas(reverseClaim) === 0) {
       this.logger.log(
         `Settlement reversal already performed for order #${order.orderNumber} — skipping`,
       );
@@ -1089,10 +1569,13 @@ export class PaymentsService implements OnModuleDestroy {
     // caminho que o PIX ja usava.
     if (
       motivo === 'refund' &&
-      order.paymentMethod === 'CREDIT_CARD' &&
-      order.settledViaSplit
+      order.settledViaSplit &&
+      (order.paymentMethod === 'CREDIT_CARD' || order.paymentMethod === 'PIX')
     ) {
-      this.logger.log(`Order #${order.orderNumber} settled via capture-with-split — refund will reverse splits automatically`);
+      // Cartao (capture-with-split) e PIX (split-on-charge): o /refund da cobranca
+      // desfaz o split no proprio Pagar.me (debita o saldo do vendedor). Nao ha
+      // transferencia manual a reverter. Este e o "estorno garantido".
+      this.logger.log(`Order #${order.orderNumber} settled via split — refund will reverse splits automatically`);
       return;
     }
     if (
@@ -1124,7 +1607,7 @@ export class PaymentsService implements OnModuleDestroy {
       const delivery = (order as any).delivery;
       const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
       if (delivererRecipientId) {
-        const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
+        const deliveryCommissionCents = percentualEmCentavos(deliveryFeeCents, deliveryCommissionPercent);
         const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
         if (delivererAmount > 0) {
           try {
@@ -1173,24 +1656,67 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     if (reversalErrors.length > 0) {
+      // O claim no topo já zerou isSettled/vendorSettledAt/delivererSettledAt
+      // (necessário para a idempotência). Se a reversão FALHOU, isso apagava a
+      // única informação de que havia dinheiro repassado — e o `[REVERSAL_ERRORS]`
+      // virava uma nota sem nada acionável atrás: nenhum scheduler re-tentava e a
+      // perda ficava invisível no balanço.
+      //
+      // Restaurar as marcas devolve o pedido ao estado "tem repasse a recuperar",
+      // que é o que um retry (ou a conferência manual) precisa enxergar. A
+      // idempotência segue valendo: quem ganhar o claim de novo tenta de novo, e
+      // só zera de vez quando a reversão der certo.
       await orderRepo.update(order.id, {
         notes: `${order.notes || ''}\n[REVERSAL_ERRORS] ${reversalErrors.join(' | ')}`.trim(),
-      });
+        isSettled: true,
+        ...(vendorRecebeu ? { vendorSettledAt: new Date() } : {}),
+        ...(entregadorRecebeu ? { delivererSettledAt: new Date() } : {}),
+      } as any);
+      this.logger.error(
+        `[REVERSAL_ERRORS] Pedido #${order.orderNumber}: repasse NAO recuperado — ` +
+          `marcas restauradas para permitir nova tentativa/conferencia manual.`,
+      );
     }
   }
 
   // Settle payment after delivery is confirmed.
   // Credit card: capture with split rules (Pagar.me distributes automatically).
   // PIX: manual transfers (balance is instant).
+  /**
+   * Status do repasse na linha da ENTREGA, que o superadmin exibe. Nascia
+   * pending_capture/pending_confirmation no aceite e ninguem o atualizava:
+   * pedido liquidado e pago no Pagar.me aparecia "pendente" para sempre.
+   * Falhar aqui nao desfaz o repasse — so loga.
+   */
+  private async marcarRepasseDaEntrega(
+    orderId: string,
+    campos: { payoutStatus?: string; vendorPayoutStatus?: string },
+  ): Promise<void> {
+    const sets = Object.keys(campos).map((c, i) => `"${c}" = $${i + 2}`);
+    if (sets.length === 0) return;
+    await this.paymentsRepository.manager
+      .query(`UPDATE deliveries SET ${sets.join(', ')} WHERE "orderId" = $1`, [orderId, ...Object.values(campos)])
+      .catch((err: any) => this.logger.error(`Falha ao marcar repasse da entrega ${orderId}: ${err?.message}`));
+  }
+
   async settlePayment(order: Order): Promise<void> {
     // C2: Atomic idempotency guard — prevents double settlement
+    // ALTO (auditoria 2026-08-23): o claim só olhava `isSettled`. Um settlement em
+    // voo do retryFailedSettlements (lista carregada segundos antes) ou a janela
+    // entre o findOne do refundOrder e este claim podia repassar vendedor+entregador
+    // de um pedido que JÁ tinha sido cancelado/estornado — a plataforma devolvia
+    // 100% ao cliente E pagava o repasse (double outflow). Só liquidamos pedido em
+    // estado não-terminal-de-cancelamento. DISPUTED PRECISA passar: resolveDispute
+    // (DELIVERER_FAVOR) liquida enquanto o pedido ainda está DISPUTED.
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const settleResult = await orderRepo.manager.query(
-      `UPDATE orders SET "isSettled" = true WHERE id = $1 AND "isSettled" = false RETURNING id`,
+      `UPDATE orders SET "isSettled" = true
+         WHERE id = $1 AND "isSettled" = false
+           AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
       [order.id],
     );
-    if (!settleResult || settleResult.length === 0) {
-      this.logger.warn(`Settlement skipped for order #${order.orderNumber} — already settled`);
+    if (linhasAfetadas(settleResult) === 0) {
+      this.logger.warn(`Settlement skipped for order #${order.orderNumber} — already settled or order terminated`);
       return;
     }
 
@@ -1202,6 +1728,12 @@ export class PaymentsService implements OnModuleDestroy {
         // Marca explicitamente que ESTE pedido foi liquidado via split na captura
         // — e o unico caso em que o estorno no Pagar.me desfaz os repasses sozinho.
         await orderRepo.update(order.id, { capturedAt: new Date(), settledViaSplit: true } as any);
+        // O split da captura ja pagou a loja e, se ele tinha recebedor, o
+        // entregador (sem recebedor vira DELIVERER_UNPAID e segue pendente).
+        await this.marcarRepasseDaEntrega(order.id, {
+          vendorPayoutStatus: 'completed',
+          ...((order as any).delivery?.deliverer?.pagarmeRecipientId ? { payoutStatus: 'completed' } : {}),
+        });
         const totalCents = Math.round(Number(order.total) * 100);
         this.logger.log(`Settlement for order #${order.orderNumber} | capture-with-split | total: ${totalCents} cents`);
       } catch (err: any) {
@@ -1225,6 +1757,12 @@ export class PaymentsService implements OnModuleDestroy {
     // Track settlement status on the order
     const settlementErrors: string[] = [];
 
+    // PIX agora usa split-on-charge (C1): vendedor + plataforma JA foram
+    // distribuidos pelo Pagar.me no momento do pagamento. Nao repassar de novo via
+    // /transfers (que estava quebrado). O entregador nao entrou no split (era
+    // desconhecido na cobranca), entao vira um payable off-platform aqui.
+    const pixSettledViaSplit = order.paymentMethod === 'PIX' && order.settledViaSplit;
+
     // 1. Transfer to deliverer (if applicable)
     // `!order.delivererSettledAt`: no retry de uma liquidacao PARCIAL, a parte
     // que ja saiu nao e reenviada. Antes o retry re-postava as duas
@@ -1234,11 +1772,25 @@ export class PaymentsService implements OnModuleDestroy {
     if (!store?.hasOwnDelivery && !order.isPickup && deliveryFeeCents > 0 && !order.delivererSettledAt) {
       const delivery = (order as any).delivery;
       const delivererRecipientId = delivery?.deliverer?.pagarmeRecipientId;
+      const deliveryCommissionCents = percentualEmCentavos(deliveryFeeCents, deliveryCommissionPercent);
+      const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
 
-      if (delivererRecipientId) {
-        const deliveryCommissionCents = Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100));
-        const delivererAmount = deliveryFeeCents - deliveryCommissionCents;
-
+      if (pixSettledViaSplit) {
+        // PIX split-on-charge: o frete ficou com a plataforma (entregador nao
+        // estava no split da cobranca). Registra o payable para repasse manual/
+        // off-platform e marca como resolvido para nao re-tentar o /transfers.
+        if (delivererAmount > 0) {
+          await orderRepo.update(order.id, {
+            delivererSettledAt: new Date(),
+            // Alem da nota legivel, grava o valor em coluna propria: e o que torna
+            // o passivo somavel, filtravel e baixavel pelo superadmin.
+            delivererPayableCents: delivererAmount,
+            notes: `${order.notes || ''}\n[DELIVERER_PAYABLE] R$ ${(delivererAmount / 100).toFixed(2)} a repassar ao entregador (PIX split-on-charge; frete retido na plataforma).`.trim(),
+          } as any);
+          order.delivererSettledAt = new Date();
+          this.logger.log(`[DELIVERER_PAYABLE] order #${order.orderNumber} | ${delivererAmount} cents (off-platform)`);
+        }
+      } else if (delivererRecipientId) {
         if (delivererAmount > 0) {
           try {
             const result = await this.pagarmePost('/transfers', {
@@ -1252,17 +1804,39 @@ export class PaymentsService implements OnModuleDestroy {
             }, `settle-${order.id}-deliverer`);
             this.logger.log(`Transfer to deliverer for order #${order.orderNumber} | amount: ${delivererAmount} cents | transfer: ${result.id}`);
             await orderRepo.update(order.id, { delivererSettledAt: new Date() } as any);
+            await this.marcarRepasseDaEntrega(order.id, { payoutStatus: 'completed' });
             order.delivererSettledAt = new Date();
           } catch (err: any) {
             const errorDetail = JSON.stringify(err.response?.data || err.message);
-            this.logger.error(`Transfer to deliverer failed for order #${order.orderNumber}: ${errorDetail}`);
-            settlementErrors.push(`deliverer:${delivererAmount}:${errorDetail}`);
-            this.notificationsService.sendToVendorUser(
-              store.owner?.id,
-              'Falha na transferência',
-              `Transferência para entregador do pedido #${order.orderNumber} falhou (R$ ${(delivererAmount / 100).toFixed(2)}). Verifique no painel.`,
-              { type: 'TRANSFER_FAILED', orderId: order.id },
-            ).catch(() => {});
+
+            if (PaymentsService.ehBloqueioDeOrigem(err)) {
+              // Bloqueio de origem (allowlist de IP do Pagar.me). Re-tentar não
+              // resolve: a causa é configuração NOSSA, não uma indisponibilidade
+              // do provedor. Então o valor vira PASSIVO rastreável — mesmo
+              // tratamento do PIX com split-on-charge, logo acima — em vez de
+              // ficar 48h em retry e de o lojista receber, a cada rodada, um
+              // aviso de falha que não é problema dele.
+              await orderRepo.update(order.id, {
+                delivererSettledAt: new Date(),
+                delivererPayableCents: delivererAmount,
+                notes: `${order.notes || ''}\n[DELIVERER_PAYABLE] R$ ${(delivererAmount / 100).toFixed(2)} a repassar ao entregador (repasse bloqueado: allowlist de IP do Pagar.me).`.trim(),
+              } as any);
+              order.delivererSettledAt = new Date();
+              this.logger.error(
+                `[REPASSE_BLOQUEADO] pedido #${order.orderNumber} | entregador | ` +
+                  `${delivererAmount} centavos viraram passivo. Liberar o IP de saída no ` +
+                  `allowlist do Pagar.me (mesmo bloqueio da antecipação).`,
+              );
+            } else {
+              this.logger.error(`Transfer to deliverer failed for order #${order.orderNumber}: ${errorDetail}`);
+              settlementErrors.push(`deliverer:${delivererAmount}:${errorDetail}`);
+              this.notificationsService.sendToVendorUser(
+                store.owner?.id,
+                'Falha na transferência',
+                `Transferência para entregador do pedido #${order.orderNumber} falhou (R$ ${(delivererAmount / 100).toFixed(2)}). Verifique no painel.`,
+                { type: 'TRANSFER_FAILED', orderId: order.id },
+              ).catch(() => {});
+            }
           }
         }
       } else {
@@ -1271,7 +1845,11 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     // 2. Transfer to vendor (idem: nao reenvia se ja saiu)
-    if (vendorRecipientId && !order.vendorSettledAt) {
+    if (pixSettledViaSplit) {
+      // Vendedor ja recebeu via split na cobranca PIX — nada a repassar.
+      this.logger.log(`Vendor already settled via PIX split-on-charge for order #${order.orderNumber}`);
+      await this.marcarRepasseDaEntrega(order.id, { vendorPayoutStatus: 'completed' });
+    } else if (vendorRecipientId && !order.vendorSettledAt) {
       const platformDeliveryFee = (!store?.hasOwnDelivery && !order.isPickup) ? deliveryFeeCents : 0;
       const vendorAmount = totalCents - commissionCents - platformDeliveryFee;
 
@@ -1288,17 +1866,48 @@ export class PaymentsService implements OnModuleDestroy {
           }, `settle-${order.id}-vendor`);
           this.logger.log(`Transfer to vendor for order #${order.orderNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
           await orderRepo.update(order.id, { vendorSettledAt: new Date() } as any);
+          await this.marcarRepasseDaEntrega(order.id, { vendorPayoutStatus: 'completed' });
           order.vendorSettledAt = new Date();
         } catch (err: any) {
           const errorDetail = JSON.stringify(err.response?.data || err.message);
-          this.logger.error(`Transfer to vendor failed for order #${order.orderNumber}: ${errorDetail}`);
-          settlementErrors.push(`vendor:${vendorAmount}:${errorDetail}`);
-          this.notificationsService.sendToVendorUser(
-            store.owner?.id,
-            'Falha na transferência',
-            `A transferência do pedido #${order.orderNumber} (R$ ${(vendorAmount / 100).toFixed(2)}) falhou. Entre em contato com o suporte.`,
-            { type: 'TRANSFER_FAILED', orderId: order.id },
-          ).catch(() => {});
+
+          if (PaymentsService.ehBloqueioDeOrigem(err)) {
+            // Mesmo raciocínio do entregador: bloqueio de origem é
+            // configuração NOSSA e não melhora com repetição, então o valor
+            // vira passivo rastreável em vez de ficar 48h em retry.
+            //
+            // A coluna `vendorPayableCents` veio na migration
+            // 1786600000000-AddVendorPayable. Quando este tratamento foi
+            // escrito ela não existia e o passivo ficava só no marcador em
+            // `notes` — consultável por LIKE, mas não somável. O marcador
+            // CONTINUA sendo escrito: ele é o rastro legível de POR QUE o
+            // valor ficou retido, e a coluna guarda só quanto.
+            //
+            // NÃO marco `vendorSettledAt`: diferente do caso do PIX com split
+            // (onde o vendedor REALMENTE recebeu), aqui ele não recebeu nada.
+            // Marcar como liquidado esconderia a dívida. O custo é que o retry
+            // continua tentando — e é por isso que o erro vai como ERROR com
+            // marcador próprio, para aparecer no monitoramento.
+            await orderRepo.update(order.id, {
+              vendorPayableCents: vendorAmount,
+              notes: `${order.notes || ''}\n[VENDOR_PAYABLE] R$ ${(vendorAmount / 100).toFixed(2)} a repassar ao vendedor (repasse bloqueado: allowlist de IP do Pagar.me).`.trim(),
+            } as any);
+            this.logger.error(
+              `[REPASSE_BLOQUEADO] pedido #${order.orderNumber} | vendedor | ` +
+                `${vendorAmount} centavos pendentes. Liberar o IP de saída no allowlist ` +
+                `do Pagar.me (mesmo bloqueio da antecipação).`,
+            );
+            settlementErrors.push(`vendor_bloqueado:${vendorAmount}`);
+          } else {
+            this.logger.error(`Transfer to vendor failed for order #${order.orderNumber}: ${errorDetail}`);
+            settlementErrors.push(`vendor:${vendorAmount}:${errorDetail}`);
+            this.notificationsService.sendToVendorUser(
+              store.owner?.id,
+              'Falha na transferência',
+              `A transferência do pedido #${order.orderNumber} (R$ ${(vendorAmount / 100).toFixed(2)}) falhou. Entre em contato com o suporte.`,
+              { type: 'TRANSFER_FAILED', orderId: order.id },
+            ).catch(() => {});
+          }
         }
       } else {
         // H4: Cap vendor amount at 0 (never negative) and notify vendor
@@ -1338,22 +1947,21 @@ export class PaymentsService implements OnModuleDestroy {
           WHERE id = $1 AND "overpaidRefundedAt" IS NULL RETURNING id`,
         [order.id],
       );
-      if (claim && claim.length > 0) {
+      if (linhasAfetadas(claim) > 0) {
         try {
           let chargeId: string | null = null;
           if (order.preAuthChargeId) {
             chargeId = order.preAuthChargeId;
-          } else if (order.mpPreferenceId && !order.mpPreferenceId.startsWith('link-')) {
-            const pagarmeOrder = await this.pagarmeGet(`/orders/${order.mpPreferenceId}`);
+          } else if (order.pagarmeOrderId && !order.pagarmeOrderId.startsWith('link-')) {
+            const pagarmeOrder = await this.pagarmeGet(`/orders/${order.pagarmeOrderId}`);
             chargeId = pagarmeOrder.charges?.[0]?.id ?? null;
           }
           if (!chargeId) throw new Error('cobranca nao localizada no Pagar.me');
 
-          await this.pagarmePost(
-            `/charges/${chargeId}/refund`,
-            { amount: sobraCents },
-            `weight-refund-${order.id}`,
-          );
+          await this.estornarCobranca(chargeId, {
+            amountCents: sobraCents,
+            idempotencyKey: `weight-refund-${order.id}`,
+          });
           this.logger.log(
             `Partial weight refund for order #${order.orderNumber} | paid: ${pagoCents} | final: ${totalCents} | refunded: ${sobraCents} cents`,
           );
@@ -1368,7 +1976,11 @@ export class PaymentsService implements OnModuleDestroy {
         } catch (err: any) {
           const errorDetail = JSON.stringify(err.response?.data || err.message);
           this.logger.error(`Partial weight refund failed for order #${order.orderNumber}: ${errorDetail}`);
-          // Solta o claim para o retry re-tentar; a Idempotency-Key impede duplicar.
+          // Solta o claim para o retry re-tentar. Re-tentar e seguro porque o
+          // helper so lanca quando o PROVEDOR afirmou que o estorno falhou (ver
+          // estornarCobranca) — nao ha estorno "talvez feito" neste caminho. E a
+          // causa mais comum e a janela de poucos segundos apos a captura, que
+          // fecha sozinha.
           await orderRepo.update(order.id, { overpaidRefundedAt: null } as any);
           settlementErrors.push(`weight_refund:${sobraCents}:${errorDetail}`);
         }
@@ -1390,7 +2002,7 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     const deliveryCommissionCents = (!store?.hasOwnDelivery && !order.isPickup)
-      ? Math.round(deliveryFeeCents * (deliveryCommissionPercent / 100))
+      ? percentualEmCentavos(deliveryFeeCents, deliveryCommissionPercent)
       : 0;
     const platformKeeps = commissionCents + deliveryCommissionCents;
     this.logger.log(`Settlement for order #${order.orderNumber} | platform keeps: ${platformKeeps} cents`);
@@ -1398,45 +2010,58 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Payment Link (hosted checkout) ────────────────────────────────────
 
-  private async createPaymentLink(order: Order, totalCents: number, splitRules: any[]): Promise<string> {
-    const body: any = {
-      name: `Pedido ${order.orderNumber}`,
-      type: 'order',
-      amount: totalCents,
-      accepted_payment_methods: ['credit_card', 'pix'],
-      payment_settings: {
-        credit_card: {
-          installments: [{ number: 1, total: totalCents }],
-          statement_descriptor: STATEMENT_DESCRIPTOR,
-        },
-        pix: {
-          expires_in: 1800,
-        },
-      },
-      items: [
-        {
-          description: `Pedido ${order.orderNumber}`.substring(0, 256),
-          quantity: 1,
-          amount: totalCents,
-        },
-      ],
-      ...(splitRules.length > 0 ? { split: splitRules } : {}),
-      metadata: {
-        order_id: order.id,
-        order_number: order.orderNumber,
-      },
-    };
-
+  private async createPaymentLink(order: Order, totalCents: number): Promise<{ id: string; url: string }> {
     try {
-      const result = await this.pagarmePost('/paymentlinks', body);
-      return result.url || `https://pagar.me/pay/${result.id}`;
+      return await this.criarLinkDePagamento({
+        nome: `Pedido ${order.orderNumber}`,
+        totalCents,
+        pixExpiraEm: 1800,
+      });
     } catch (err: any) {
+      if (err instanceof HttpException) throw err;
+
+      // MEDIDO no sandbox (2026-10-16): POST /paymentlinks responde 401 com
+      // CORPO VAZIO deste IP, a mesma assinatura do bloqueio de origem que
+      // trava /transfers (KAN-299/300). Ou seja: o cartao pelo site depende do
+      // allowlist de IP do Pagar.me, nao de codigo. "Tente novamente" era a
+      // pior mensagem possivel para esse caso — repetir nao resolve, e o
+      // cliente ficava sem saber que o PIX funciona.
+      if (PaymentsService.ehBloqueioDeOrigem(err)) {
+        this.logger.error(
+          `[LINK_BLOQUEADO] pedido #${order.orderNumber} | /paymentlinks recusou a origem. ` +
+            `Liberar o IP de saida no allowlist do Pagar.me (mesmo bloqueio do repasse).`,
+        );
+        throw new BadRequestException(
+          'Pagamento com cartao indisponivel neste momento. Finalize com PIX ou pague na retirada.',
+        );
+      }
+
       this.logger.error(`Payment link creation failed: ${JSON.stringify(err.response?.data || err.message)}`);
       throw new BadRequestException('Erro ao gerar link de pagamento. Tente novamente.');
     }
   }
 
   // ─── Plan Upgrade ──────────────────────────────────────────────────────
+
+  /** Endereço de cobrança do lojista: o da loja dele (a mais antiga). */
+  private async enderecoDeCobrancaDoVendedor(
+    vendorId: string,
+  ): Promise<{ line_1: string; zip_code: string; city: string; state: string; country: string } | null> {
+    const [loja] = await this.paymentsRepository.manager.query(
+      `SELECT street, number, neighborhood, city, state, "zipCode"
+         FROM stores WHERE "ownerId" = $1 ORDER BY "createdAt" ASC LIMIT 1`,
+      [vendorId],
+    );
+    const cep = String(loja?.zipCode || '').replace(/\D/g, '');
+    if (!loja || cep.length !== 8 || !loja.city) return null;
+    return {
+      line_1: [loja.number || 'S/N', loja.street, loja.neighborhood].filter(Boolean).join(', ').substring(0, 256),
+      zip_code: cep,
+      city: loja.city,
+      state: /^[A-Za-z]{2}$/.test(loja.state || '') ? loja.state.toUpperCase() : 'RS',
+      country: 'BR',
+    };
+  }
 
   async createPlanUpgrade(user: VendorUser, plan: VendorPlan, billingPeriod: string = 'monthly', cardToken?: string, paymentMethod: string = 'credit_card'): Promise<Payment> {
     // M5: Use dynamic config from platformConfigService instead of hardcoded PLAN_CONFIGS
@@ -1568,10 +2193,13 @@ export class PaymentsService implements OnModuleDestroy {
       };
 
       const result = await this.pagarmePost('/orders', orderBody);
-      const charge = result.charges?.[0];
-      const lastTransaction = charge?.last_transaction;
-      const qrCode = lastTransaction?.qr_code || '';
-      const qrCodeUrl = lastTransaction?.qr_code_url || '';
+      // Mesmo engano do 200-com-falha: sem esta guarda o painel do lojista
+      // ganhava um pagamento "pendente" com QR vazio, e ele ficava esperando
+      // um plano que nunca seria concedido.
+      const { qrCode, qrCodeUrl } = this.extrairPixDaResposta(
+        result,
+        `plano ${plan} do vendor ${user.id}`,
+      );
 
       // registra o vínculo do customer (o plano só é concedido no webhook do pagamento)
       await this.paymentsRepository.manager.getRepository(VendorUser).update(user.id, {
@@ -1634,6 +2262,11 @@ export class PaymentsService implements OnModuleDestroy {
     if (paymentMethod === 'credit_card') {
       subscriptionBody.card_token = cardToken;
       subscriptionBody.installments = installmentsCount;
+      // Sem endereço de cobrança a assinatura nasce, mas a 1ª cobrança falha com
+      // `validation_error | billing | "value" is required` (sandbox, 23/10/2026)
+      // — o lojista via "Confirmando seu pagamento..." e o plano nunca ativava.
+      const cobranca = await this.enderecoDeCobrancaDoVendedor(user.id);
+      if (cobranca) subscriptionBody.card = { billing_address: cobranca };
     }
 
     // Apply badge discount as flat discount on the subscription.
@@ -1827,14 +2460,43 @@ export class PaymentsService implements OnModuleDestroy {
     }
 
     try {
-      await this.pagarmePatch(`/subscriptions/${vendor.pagarmeSubscriptionId}`, {
-        payment_method: 'credit_card',
-        card_token: cardToken,
-      });
+      // CAMINHO CORRIGIDO. Era `PATCH /subscriptions/{id}`, que na v5 responde
+      // 405 (a rota existe, mas nao aceita PATCH). Verificado contra o sandbox
+      // em 15/10/2026, com id de assinatura inexistente para nao alterar nada:
+      //
+      //   PATCH /subscriptions/{id}                     -> 405
+      //   PATCH /subscriptions/{id}/card                -> 422 "The card_id,
+      //                                                    card_token or card
+      //                                                    field is required."
+      //   PATCH /subscriptions/{id}/card {card_token}   -> 404 "Token not found."
+      //
+      // O 422 lista os campos aceitos e o 404 de token mostra que a rota
+      // realmente valida o token — ou seja, e esta.
+      //
+      // O que isso causava: o lojista que tentasse trocar o cartao da assinatura
+      // recebia "Erro ao atualizar cartao. Verifique os dados e tente novamente."
+      // — mensagem que culpa os dados DELE, quando a causa era a rota. E o cartao
+      // nunca era trocado, entao a renovacao seguia falhando e ele perdia o plano.
+      //
+      // `payment_method` nao vai mais: na rota /card ele nao e campo (existe a
+      // rota /payment-method para esse caso).
+      await this.pagarmePatch(
+        `/subscriptions/${vendor.pagarmeSubscriptionId}/card`,
+        { card_token: cardToken },
+      );
       this.logger.log(`Updated card for subscription ${vendor.pagarmeSubscriptionId}`);
     } catch (err: any) {
-      this.logger.error(`Failed to update subscription card: ${err.response?.data?.message || err.message}`);
-      throw new BadRequestException('Erro ao atualizar cartão. Verifique os dados e tente novamente.');
+      const detalhe = err.response?.data?.message || err.message;
+      this.logger.error(`Failed to update subscription card: ${detalhe}`);
+      // Repassa a mensagem do provedor quando ela existe: "Token not found" e
+      // "cartao recusado" sao coisas diferentes para quem esta na tela, e a
+      // mensagem generica mandava o lojista conferir dados que podiam estar
+      // corretos.
+      throw new BadRequestException(
+        detalhe
+          ? `Nao foi possivel atualizar o cartao: ${detalhe}`
+          : 'Erro ao atualizar cartão. Verifique os dados e tente novamente.',
+      );
     }
   }
 
@@ -1873,45 +2535,22 @@ export class PaymentsService implements OnModuleDestroy {
   async createPromotionCheckout(promotion: Promotion, user: VendorUser): Promise<Payment> {
     const totalCents = Math.round(Number(promotion.adCost) * 100);
 
-    const body: any = {
-      name: `Promoção: ${promotion.title}`,
-      type: 'order',
-      amount: totalCents,
-      accepted_payment_methods: ['credit_card', 'pix'],
-      payment_settings: {
-        credit_card: {
-          installments: [{ number: 1, total: totalCents }],
-          statement_descriptor: STATEMENT_DESCRIPTOR,
-        },
-        pix: {
-          expires_in: 86400,
-        },
-      },
-      items: [
-        {
-          description: `Promoção: ${promotion.title}`.substring(0, 256),
-          quantity: 1,
-          amount: totalCents,
-        },
-      ],
-      metadata: {
-        type: 'promotion',
-        promotion_id: promotion.id,
-        user_id: user.id,
-      },
-    };
-
     try {
-      const result = await this.pagarmePost('/paymentlinks', body);
-      const checkoutUrl = result.url || `https://pagar.me/pay/${result.id}`;
+      // O webhook chega só com o id do link: é por `pagarmeOrderId` (= id do
+      // link) que resolverPagamentoPorLink acha esta promoção.
+      const link = await this.criarLinkDePagamento({
+        nome: `Anúncio da promoção: ${promotion.title}`,
+        totalCents,
+        pixExpiraEm: 86400,
+      });
 
       const payment = this.paymentsRepository.create({
         type: 'PROMOTION',
         description: `Promoção: ${promotion.title}`,
         amount: Number(promotion.adCost),
         status: 'pending',
-        pagarmeOrderId: result.id,
-        checkoutUrl,
+        pagarmeOrderId: link.id,
+        checkoutUrl: link.url,
         metadata: { promotionId: promotion.id },
         vendorUser: user,
       });
@@ -2178,7 +2817,16 @@ export class PaymentsService implements OnModuleDestroy {
       await this.handleChargePaid(data);
     } else if (eventType === 'charge.refunded') {
       await this.handleChargeRefunded(data);
-    } else if (eventType === 'charge.chargedback') {
+    } else if (
+      // O nome do evento de contestacao NAO esta confirmado no painel: a doc da
+      // v5 cita `charge.chargedback` e ha relato de `chargeback.received`.
+      // Escutar so um significaria PERDER TODO CHARGEBACK em silencio — sem
+      // reversao de repasse, sem cancelamento, sem nada. Aceitar as variantes e
+      // barato: a que nao existir simplesmente nunca dispara.
+      eventType === 'charge.chargedback' ||
+      eventType === 'charge.chargeback' ||
+      eventType.startsWith('chargeback.')
+    ) {
       await this.handleChargeChargedback(data);
     } else if (eventType === 'charge.payment_failed') {
       await this.handleOrderPaymentFailed(data);
@@ -2198,6 +2846,13 @@ export class PaymentsService implements OnModuleDestroy {
       await this.handleInvoicePaymentFailed(data);
     } else if (eventType === 'invoice.canceled') {
       this.logger.log(`Invoice canceled: ${data.id} | subscription: ${data.subscription?.id}`);
+    } else {
+      // Nao havia ramo final: evento desconhecido era DESCARTADO sem rastro. Se
+      // o Pagar.me renomear um evento (ou enviar um que nao mapeamos), o sintoma
+      // seria dinheiro ou estado parando de atualizar, sem nenhuma pista no log.
+      this.logger.warn(
+        `[WEBHOOK_NAO_TRATADO] tipo=${eventType} id=${data?.id} — evento ignorado; se repetir, falta um handler.`,
+      );
     }
   }
 
@@ -2253,7 +2908,7 @@ export class PaymentsService implements OnModuleDestroy {
 
   private async handleOrderPaid(data: any): Promise<void> {
     const pagarmeOrderId = data.id;
-    const metadata = data.metadata || {};
+    const metadata = await this.resolverPagamentoPorLink(data.metadata || {});
     const code = data.code || '';
 
     // Check if it's a plan upgrade
@@ -2294,8 +2949,9 @@ export class PaymentsService implements OnModuleDestroy {
 
     // Check if it's a promotion
     if (metadata.type === 'promotion') {
+      // O pagamento guarda o id do LINK (pl_...); o webhook traz o do pedido.
       const payment = await this.paymentsRepository.findOne({
-        where: { pagarmeOrderId },
+        where: [{ pagarmeOrderId }, ...(metadata.payment_link_id ? [{ pagarmeOrderId: metadata.payment_link_id }] : [])],
       });
       if (payment) {
         payment.status = 'approved';
@@ -2359,9 +3015,9 @@ export class PaymentsService implements OnModuleDestroy {
         // se anulam entre si. ANTES ambos passavam por este ponto (read-check-save)
         // e cada um incrementava o cupom + disparava "Pagamento confirmado". O
         // UPDATE condicional garante que só UM webhook confirma; o outro retorna.
-        const newMpPref = (order.mpPreferenceId?.startsWith('link-') && pagarmeOrderId)
+        const novoPagarmeOrderId = (order.pagarmeOrderId?.startsWith('link-') && pagarmeOrderId)
           ? pagarmeOrderId
-          : order.mpPreferenceId;
+          : order.pagarmeOrderId;
         const paidClaim = await orderRepo.manager.query(
           // CRITICO: "updatedAt" = NOW() e OBRIGATORIO aqui. expirePendingOrders
           // usa updatedAt para medir ha quanto tempo o pedido esta PENDING sem a
@@ -2370,16 +3026,16 @@ export class PaymentsService implements OnModuleDestroy {
           // depois da criacao virava PENDING ja "vencido" e o scheduler expirava
           // + estornava um pedido recem-pago, dizendo que a loja nao respondeu.
           `UPDATE orders
-              SET status = 'PENDING', "couponCredited" = true, "mpPreferenceId" = $2,
+              SET status = 'PENDING', "couponCredited" = true, "pagarmeOrderId" = $2,
                   "updatedAt" = NOW()${setCaptured ? ', "capturedAt" = NOW()' : ''}
             WHERE id = $1 AND status IN ('AWAITING_PAYMENT','PAYMENT_REVIEW')
             RETURNING id`,
-          [order.id, newMpPref],
+          [order.id, novoPagarmeOrderId],
         );
-        if (!paidClaim || paidClaim.length === 0) return;
+        if (linhasAfetadas(paidClaim) === 0) return;
         order.status = OrderStatus.PENDING;
         order.couponCredited = true;
-        order.mpPreferenceId = newMpPref;
+        order.pagarmeOrderId = novoPagarmeOrderId;
         if (setCaptured) {
           order.capturedAt = new Date();
           this.logger.log(`Order.paid (antifraud reprocessed): marking capturedAt for order #${order.orderNumber} — charge was auto-captured by Pagar.me`);
@@ -2474,7 +3130,7 @@ export class PaymentsService implements OnModuleDestroy {
         WHERE id = $1 AND COALESCE(notes, '') NOT LIKE '%[PAID_AFTER_EXPIRY%' RETURNING id`,
       [order.id, `\n[PAID_AFTER_EXPIRY ${new Date().toISOString()}] pagamento chegou com o pedido ${order.status}; estorno automatico em andamento.`],
     );
-    if (!claim || claim.length === 0) return; // outro webhook ja assumiu
+    if (linhasAfetadas(claim) === 0) return; // outro webhook ja assumiu
 
     try {
       // Localiza a cobranca REAL e confirma que esta paga antes de estornar.
@@ -2490,11 +3146,10 @@ export class PaymentsService implements OnModuleDestroy {
         throw new Error(`cobranca com status "${charge.status}" nao esta paga`);
       }
 
-      await this.pagarmePost(
-        `/charges/${chargeId}/refund`,
-        { amount: charge.amount },
-        `late-refund-${order.id}`,
-      );
+      // Total: o helper manda DELETE sem corpo, que e a forma validada.
+      await this.estornarCobranca(chargeId, {
+        idempotencyKey: `late-refund-${order.id}`,
+      });
       this.logger.warn(
         `Late payment auto-refunded for ${order.status} order #${order.orderNumber} | charge: ${chargeId} | amount: ${charge.amount} cents`,
       );
@@ -2580,14 +3235,21 @@ export class PaymentsService implements OnModuleDestroy {
       return;
     }
 
-    // Mesmo motivo do handleOrderCanceled: a guarda so pulava CANCELLED, entao um
-    // pedido ja EXPIRED/REJECTED (estoque devolvido) ganhava estoque de novo.
+    // CRITICO (auditoria 2026-08-23): o claim so podia excluir os terminais, mas
+    // isso deixava PENDING/ACCEPTED/.../COMPLETED passarem. Um `charge.payment_failed`
+    // TARDIO (tentativa recusada num payment link que aceita varias tentativas)
+    // chegando DEPOIS do `order.paid` da tentativa que pagou cancelava um pedido
+    // JA PAGO e devolvia o estoque — sem disparar estorno neste handler. Cliente
+    // pagava, pedido morria, dinheiro retido em silencio.
+    // Falha de pagamento so pode cancelar pedido que ainda NAO foi pago
+    // (AWAITING_PAYMENT). PAYMENT_REVIEW ja foi tratado com return acima; a partir
+    // de PENDING o pedido esta pago e um payment_failed e de outra charge/tentativa.
     const claimFalha = await orderRepo.manager.query(
       `UPDATE orders SET status = 'CANCELLED', "updatedAt" = NOW()
-         WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+         WHERE id = $1 AND status = 'AWAITING_PAYMENT' RETURNING id`,
       [order.id],
     );
-    if (!claimFalha || claimFalha.length === 0) return;
+    if (linhasAfetadas(claimFalha) === 0) return;
     order.status = OrderStatus.CANCELLED;
     this.logger.log(`Pedido #${order.orderNumber} cancelado por falha no pagamento`);
 
@@ -2647,14 +3309,19 @@ export class PaymentsService implements OnModuleDestroy {
     // que dispara `order.canceled` minutos depois. O webhook via EXPIRED !=
     // CANCELLED e devolvia tudo outra vez -> oversell na sequencia.
     //
-    // Claim atomico com a mesma lista de terminais usada no estorno: 0 linhas
-    // significa que outro fluxo ja encerrou o pedido e nao ha o que devolver.
+    // CRITICO (auditoria 2026-08-23): antes o claim excluia so os terminais, o que
+    // deixava um `order.canceled` TARDIO (ex.: cancelamento manual no painel do
+    // Pagar.me, ou abandono de tentativa antiga num payment link) destruir um
+    // pedido JA PAGO (PENDING+) e devolver o estoque, sem estornar. `order.canceled`
+    // so representa cancelamento de order NAO paga (QR PIX expirado, tentativa
+    // abandonada); estorno de pedido pago chega por `charge.refunded`/`chargedback`,
+    // que revertem repasse corretamente. So cancelamos aqui se ainda AWAITING_PAYMENT.
     const claimCancel = await orderRepo.manager.query(
       `UPDATE orders SET status = 'CANCELLED', "updatedAt" = NOW()
-         WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
+         WHERE id = $1 AND status = 'AWAITING_PAYMENT' RETURNING id`,
       [order.id],
     );
-    if (!claimCancel || claimCancel.length === 0) return;
+    if (linhasAfetadas(claimCancel) === 0) return;
     order.status = OrderStatus.CANCELLED;
     this.logger.log(`Pedido #${order.orderNumber} cancelado via Pagar.me webhook`);
 
@@ -2702,6 +3369,19 @@ export class PaymentsService implements OnModuleDestroy {
   }
 
   private async handleChargePaid(data: any): Promise<void> {
+    // Pago por LINK de pagamento: o metadata só traz payment_link_id. Promoção e
+    // agendamento vão para o mesmo tratamento do order.paid; pedido ganha o
+    // order_id para seguir o caminho normal abaixo.
+    const metaDoLink = data.metadata || data.order?.metadata || {};
+    if (metaDoLink.payment_link_id) {
+      const resolvido = await this.resolverPagamentoPorLink(metaDoLink);
+      if (resolvido.type === 'promotion' || resolvido.type === 'appointment') {
+        await this.handleOrderPaid({ id: data.order?.id || data.id, code: data.order?.code, metadata: resolvido, charges: [data] });
+        return;
+      }
+      if (resolvido.order_id) data = { ...data, metadata: { ...metaDoLink, order_id: resolvido.order_id } };
+    }
+
     // Fallback: if order.paid webhook doesn't fire, charge.paid confirms the payment
     const orderId = this.extractOrderIdFromCharge(data);
 
@@ -2715,11 +3395,11 @@ export class PaymentsService implements OnModuleDestroy {
       relations: ['customer', 'store'],
     });
 
-    // Update mpPreferenceId with real Pagar.me order ID if still placeholder
-    if (order && order.mpPreferenceId?.startsWith('link-')) {
+    // Update pagarmeOrderId with real Pagar.me order ID if still placeholder
+    if (order && order.pagarmeOrderId?.startsWith('link-')) {
       const realOrderId = data.order?.id || data.id;
       if (realOrderId) {
-        order.mpPreferenceId = realOrderId;
+        order.pagarmeOrderId = realOrderId;
         await orderRepo.save(order);
       }
     }
@@ -2742,7 +3422,7 @@ export class PaymentsService implements OnModuleDestroy {
            WHERE id = $1 AND status IN ('AWAITING_PAYMENT','PAYMENT_REVIEW') RETURNING id`,
         [order.id],
       );
-      if (!chargeClaim || chargeClaim.length === 0) return;
+      if (linhasAfetadas(chargeClaim) === 0) return;
       order.status = OrderStatus.PENDING;
       order.couponCredited = true;
       if (setCaptured) {
@@ -2845,9 +3525,29 @@ export class PaymentsService implements OnModuleDestroy {
         return;
       }
 
-      const wasCompleted = order.status === OrderStatus.COMPLETED;
+      // ATOMICO (auditoria 2026-08-23): antes era read-check-save com guarda so
+      // `!= CANCELLED` + `save(order)` de entidade inteira. Um pedido ja em
+      // REJECTED/EXPIRED pelo NOSSO proprio refundOrder (ex.: vendedor rejeita PIX
+      // pago -> refundOrder estorna e devolve estoque, status=REJECTED) passava a
+      // guarda quando o Pagar.me disparava o `charge.refunded` correspondente ->
+      // estoque devolvido uma SEGUNDA vez (oversell) e status sobrescrito. Claim
+      // atomico com a lista COMPLETA de terminais (igual aos outros handlers),
+      // capturando o status anterior no mesmo comando para decidir wasCompleted e
+      // se havia repasse a reverter. 0 linhas = outro fluxo ja encerrou -> no-op.
+      const [claim] = await orderRepo.manager.query(
+        `WITH prev AS (SELECT status, "isSettled" FROM orders WHERE id = $1 FOR UPDATE)
+         UPDATE orders o SET status = 'CANCELLED', "updatedAt" = NOW()
+         FROM prev
+         WHERE o.id = $1 AND prev.status NOT IN ('CANCELLED','REJECTED','EXPIRED')
+         RETURNING prev.status AS old_status, prev."isSettled" AS was_settled`,
+        [order.id],
+      );
+      if (!claim) {
+        this.logger.log(`Estorno de #${order.orderNumber} ignorado — pedido ja terminal (sem re-devolver estoque)`);
+        return;
+      }
+      const wasCompleted = claim.old_status === OrderStatus.COMPLETED;
       order.status = OrderStatus.CANCELLED;
-      await orderRepo.save(order);
       this.logger.log(`Pedido #${order.orderNumber} cancelado por estorno | wasCompleted: ${wasCompleted}`);
 
       // Se o pedido ja estava COMPLETED e liquidado, reverter os repasses ao
@@ -2863,7 +3563,7 @@ export class PaymentsService implements OnModuleDestroy {
       // devolvia ao cliente sem recuperar o repasse. `isSettled` sozinho ja e a
       // condicao correta ("o dinheiro ja saiu") e reverseSettlementTransfers ja
       // e no-op quando nao houve liquidacao.
-      if (order.isSettled) {
+      if (claim.was_settled) {
         this.logger.error(`CRITICAL: Estorno em pedido COMPLETED #${order.orderNumber} — revertendo repasses`);
         try {
           await this.reverseSettlementTransfers(order);
@@ -2931,7 +3631,7 @@ export class PaymentsService implements OnModuleDestroy {
            WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
         [order.id],
       );
-      const encerradoAqui = !!claimChargeback && claimChargeback.length > 0;
+      const encerradoAqui = linhasAfetadas(claimChargeback) > 0;
       order.status = OrderStatus.CANCELLED;
       this.logger.warn(`Pedido #${order.orderNumber} cancelado por chargeback | wasCompleted: ${wasCompleted} | encerradoAqui: ${encerradoAqui}`);
 
@@ -3000,7 +3700,7 @@ export class PaymentsService implements OnModuleDestroy {
     });
 
     if (!order) throw new NotFoundException('Pedido não encontrado');
-    if (!order.mpPreferenceId && !order.preAuthChargeId) throw new BadRequestException('Este pedido não possui pagamento online para estornar');
+    if (!order.pagarmeOrderId && !order.preAuthChargeId) throw new BadRequestException('Este pedido não possui pagamento online para estornar');
 
     // Pedido terminal COM marcador de estorno falho e re-tentavel. Sem isso, um
     // estorno que caia por timeout/5xx deixava o pedido CANCELLED para sempre:
@@ -3032,7 +3732,7 @@ export class PaymentsService implements OnModuleDestroy {
            WHERE id = $1 AND notes LIKE '%[REFUND_FAILED%' RETURNING id`,
         [order.id],
       );
-      if (!claim || claim.length === 0) {
+      if (linhasAfetadas(claim) === 0) {
         throw new BadRequestException('Este pedido já está sendo re-estornado.');
       }
       // status ja e terminal; nao mexe nele.
@@ -3042,7 +3742,7 @@ export class PaymentsService implements OnModuleDestroy {
            WHERE id = $1 AND status NOT IN ('CANCELLED','REJECTED','EXPIRED') RETURNING id`,
         [order.id, statusFinal],
       );
-      if (!claim || claim.length === 0) {
+      if (linhasAfetadas(claim) === 0) {
         throw new BadRequestException('Este pedido já está sendo cancelado/estornado.');
       }
       order.status = statusFinal; // reflete o claim no objeto em memória
@@ -3088,9 +3788,9 @@ export class PaymentsService implements OnModuleDestroy {
       if (order.preAuthChargeId) {
         chargeId = order.preAuthChargeId;
       }
-      // 2. Try mpPreferenceId as Pagar.me order ID (PIX or payment link with real ID)
-      else if (order.mpPreferenceId && !order.mpPreferenceId.startsWith('link-')) {
-        const pagarmeOrder = await this.pagarmeGet(`/orders/${order.mpPreferenceId}`);
+      // 2. Try pagarmeOrderId as Pagar.me order ID (PIX or payment link with real ID)
+      else if (order.pagarmeOrderId && !order.pagarmeOrderId.startsWith('link-')) {
+        const pagarmeOrder = await this.pagarmeGet(`/orders/${order.pagarmeOrderId}`);
         const charge = pagarmeOrder.charges?.[0];
         if (!charge) throw new BadRequestException('Cobrança não encontrada no Pagar.me');
         chargeId = charge.id;
@@ -3101,16 +3801,41 @@ export class PaymentsService implements OnModuleDestroy {
         throw new BadRequestException('Não foi possível localizar a cobrança no Pagar.me para estorno. O webhook pode não ter atualizado o ID do pedido.');
       }
 
-      // Verify charge status before refunding
-      const chargeData = await this.pagarmeGet(`/charges/${chargeId}`);
-      if (chargeData.status !== 'paid' && chargeData.status !== 'captured') {
-        throw new BadRequestException(`Cobrança com status "${chargeData.status}" não pode ser estornada`);
+      // Guarda explicita: os ramos acima ou atribuem `chargeId` ou lancam, mas o
+      // tipo segue `string | null`. Antes isso passava porque o id ia dentro de
+      // template string (que aceita null e geraria a URL "/charges/null"); agora
+      // ele e passado como argumento, e o compilador cobra — com razao.
+      if (!chargeId) {
+        throw new BadRequestException('Cobrança não localizada no Pagar.me para estorno.');
       }
 
-      // Request refund
-      await this.pagarmePost(`/charges/${chargeId}/refund`, {
-        amount: chargeAmount,
-      });
+      // Verify charge status before refunding
+      const chargeData = await this.pagarmeGet(`/charges/${chargeId}`);
+      const st = String(chargeData.status || '').toLowerCase();
+      if (st === 'authorized' || st === 'pending_capture' || st === 'pending') {
+        // ALTO (auditoria 2026-08-23): cartão PRÉ-AUTORIZADO ainda não capturado.
+        // Ocorre na disputa a favor do cliente a partir de DELIVERER_CONFIRMED_DELIVERY
+        // (antes do settle/captura): a charge está só `authorized`. Um /refund é
+        // recusado pelo Pagar.me -> [REFUND_FAILED] em loop e o limite do cliente
+        // fica preso até a pré-auth caducar (dias). O correto é VOID (DELETE /charges),
+        // que libera a autorização na hora e não move dinheiro (não houve captura).
+        // Mesma troca do `cancelPreAuth`: o void agora e conferido. Aqui a
+        // excecao SOBE — e o certo neste caminho. O bloco externo marca
+        // [REFUND_FAILED] e permite nova tentativa; dar o estorno por feito sem
+        // ter liberado a autorizacao seria pior, porque e justamente o cenario
+        // que o comentario acima descreve como o bug original.
+        await this.estornarCobranca(chargeId);
+        this.logger.log(`Pre-auth voided (refund path) for order #${order.orderNumber} | charge: ${chargeId}`);
+      } else if (st === 'paid' || st === 'captured') {
+        // Dinheiro ja capturado: estorno de verdade. O helper confere
+        // `last_transaction.status` — o 200 do provedor nao garante nada.
+        await this.estornarCobranca(chargeId);
+      } else if (st === 'refunded' || st === 'voided' || st === 'canceled') {
+        // Já estornada/cancelada no gateway — idempotente, segue como sucesso.
+        this.logger.log(`Charge ${chargeId} já está "${st}" — estorno idempotente p/ pedido #${order.orderNumber}`);
+      } else {
+        throw new BadRequestException(`Cobrança com status "${chargeData.status}" não pode ser estornada`);
+      }
 
       // status CANCELLED já foi gravado no claim atômico acima (R#1).
       this.logger.log(`Refund requested for order #${order.orderNumber} | charge: ${chargeId}`);
@@ -3157,6 +3882,253 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Recipient Balance & Anticipation ─────────────────────────────────
 
+  /**
+   * Data de pagamento valida para uma antecipacao, no formato "YYYY-MM-DD".
+   *
+   * A regra e do proprio Pagar.me e veio da mensagem de validacao dele:
+   *   "prazo minimo de antecipacao: D+0 ate 11AM ou D+1"
+   * Ou seja: ate as 11h da manha da-se para antecipar no MESMO dia; depois
+   * disso, o mais cedo possivel e o proximo dia util.
+   *
+   * O codigo anterior nao tratava esse corte de 11h de jeito nenhum: montava a
+   * data com `new Date()` + `toISOString()`, ou seja em UTC, e so desviava de
+   * sabado e domingo. Dois problemas:
+   *
+   *  - Entre 11h e 21h de um dia util (a faixa em que o lojista mais usa o app),
+   *    mandava D+0, que o Pagar.me RECUSA com "data de pagamento invalida".
+   *  - O desvio de fim de semana lia o dia da semana em UTC. Entre 21h e
+   *    meia-noite de Brasilia a data UTC ja e a de amanha, entao a conta do fim
+   *    de semana era feita sobre o dia errado.
+   *
+   * Aqui tudo e decidido no fuso do NEGOCIO (America/Sao_Paulo), com os helpers
+   * de business-time.ts — que existem exatamente por causa desta classe de bug
+   * e nunca tinham chegado neste arquivo.
+   *
+   * Feriado nacional nao e tratado (nem era antes): nao ha calendario de
+   * feriados no projeto. Nesse caso o Pagar.me recusa a data e o erro chega ao
+   * lojista — o que e visivel, ao contrario de uma data silenciosamente errada.
+   */
+  private static dataDeAntecipacao(agora: Date = new Date()): string {
+    const CORTE_MINUTOS = 11 * 60; // 11:00 no fuso do negocio
+    // Parte do dia comercial de hoje e caminha em dias inteiros sobre ele.
+    const [ano, mes, dia] = businessToday(agora).split('-').map(Number);
+    const data = new Date(Date.UTC(ano, mes - 1, dia));
+
+    // Passou das 11h? O mais cedo possivel ja e amanha.
+    if (businessMinutes(agora) >= CORTE_MINUTOS) {
+      data.setUTCDate(data.getUTCDate() + 1);
+    }
+    // E anda para o proximo dia util. getUTCDay() aqui e seguro: `data` foi
+    // construida a partir da data BRASILEIRA ao meio-dia-zero UTC, entao o dia
+    // da semana e o brasileiro.
+    while (data.getUTCDay() === 0 || data.getUTCDay() === 6) {
+      data.setUTCDate(data.getUTCDate() + 1);
+    }
+    return data.toISOString().split('T')[0];
+  }
+
+  /**
+   * Centavos a liberar ("waiting funds") de um recebedor, a partir da resposta
+   * de `GET /recipients/{id}/balance`.
+   *
+   * BUG CORRIGIDO AQUI (confirmado ao vivo em 15/10/2026): o codigo lia
+   * `balance.waiting_funds?.amount` — forma ANINHADA, da v4 — em quatro pontos.
+   * A v5 devolve o campo PLANO. Resposta real do sandbox:
+   *
+   *   { "currency": "BRL", "available_amount": 0, "waiting_funds_amount": -99,
+   *     "transferred_amount": 0, "payment_profile_id": null, "recipient": {...} }
+   *
+   * Entao `waiting_funds` era sempre undefined, o `?.amount` virava undefined e
+   * o `|| 0` fechava a conta em ZERO. Consequencias, todas em producao:
+   *
+   *  - "Valores a liberar" mostrava R$ 0,00 para TODO vendedor e entregador,
+   *    independente do que existisse de fato;
+   *  - `simulateAnticipation` e `requestAnticipation` liam o mesmo campo, viam
+   *    zero e desistiam antes de chamar o provedor;
+   *  - a tela de ganhos so renderiza a secao de antecipacao quando
+   *    `waitingFundsAmount > 0`, entao a secao NUNCA apareceu.
+   *
+   * Isso explica por que o caminho errado de antecipacao (ver
+   * `simulateAnticipation`) nunca deu sinal: o codigo nem chegava a chama-lo.
+   *
+   * O leitor aceita as DUAS formas de proposito. Nao e indecisao: e um ponto de
+   * integracao com um provedor que ja mudou de forma uma vez, e cair para a
+   * forma antiga custa uma linha e evita que o campo volte a zerar em silencio
+   * se a resposta variar entre ambientes.
+   */
+  /**
+   * O erro do provedor e o bloqueio de ORIGEM (allowlist de IP), e nao uma falha
+   * passageira?
+   *
+   * Importa porque muda o que fazer: falha passageira merece retry; bloqueio de
+   * configuracao nossa nao melhora com repeticao. O settlement re-tentava a cada
+   * 60s por ate 48h contra um 401 que nunca ia mudar, e a cada rodada avisava o
+   * LOJISTA que "a transferencia falhou - entre em contato com o suporte", o que
+   * joga nele um problema que e nosso.
+   */
+  private static ehBloqueioDeOrigem(err: any): boolean {
+    const status = err?.response?.status;
+    const msg = String(
+      err?.response?.data?.message || err?.message || '',
+    ).toLowerCase();
+    return status === 401 || msg.includes('ip de origem') || msg.includes('not authorized');
+  }
+
+  /**
+   * DRENA OS PASSIVOS: paga automaticamente o que está registrado como devido.
+   *
+   * ─── Por que isto existe, e por que não resolve nada hoje ──────────────
+   *
+   * Três situações deixam dinheiro devido e registrado em coluna própria:
+   *
+   *   `delivererPayableCents` em orders       — frete retido no split do PIX
+   *   `vendorPayableCents`    em orders       — transferência recusada
+   *   `vendorPayableCents`    em appointments — idem, em serviços
+   *
+   * Todas eram pagas à mão. Este job tenta pagá-las pelo `POST /transfers` do
+   * Pagar.me, que é o mesmo caminho que o settle já usa.
+   *
+   * HOJE ELE NÃO VAI CONSEGUIR, e isso é esperado: aquela rota responde 401
+   * "IP de origem não autorizado" porque está atrás da allowlist de IP da
+   * conta (KAN-299). Não existe rota de API para configurar essa allowlist —
+   * conferi, todas as formas plausíveis dão 404; é ajuste no painel
+   * dash.pagar.me.
+   *
+   * Então por que escrever agora: no minuto em que o IP for liberado, este job
+   * zera a dívida acumulada sozinho, na primeira rodada, sem ninguém abrir a
+   * tela de repasses e dar baixa em cada linha. A alternativa seria descobrir
+   * depois que havia semanas de passivo para conciliar à mão.
+   *
+   * ─── Comportamento diante do bloqueio ─────────────────────────────────
+   *
+   * Ao detectar bloqueio de origem, PARA A RODADA INTEIRA. Insistir nos
+   * outros itens é gastar requisição contra um 401 que vale para todos, e
+   * encher o log de ruído idêntico — o mesmo erro que o retry de 48h cometia
+   * antes de aprender a reconhecer o bloqueio.
+   *
+   * A chave de idempotência é por PASSIVO, não por rodada: se a resposta se
+   * perder na rede, a tentativa seguinte não paga duas vezes.
+   */
+  async drenarPassivos(): Promise<{ pagos: number; bloqueado: boolean }> {
+    const orderRepo = this.paymentsRepository.manager.getRepository(Order);
+    const aptRepo = this.paymentsRepository.manager.getRepository(Appointment);
+    let pagos = 0;
+
+    type Item = {
+      rotulo: string;
+      recipientId?: string | null;
+      centavos: number;
+      chave: string;
+      baixa: () => Promise<any>;
+    };
+    const itens: Item[] = [];
+
+    // 1. frete retido do entregador (PIX com split-on-charge)
+    const pedidosEntregador = await orderRepo
+      .createQueryBuilder('pedido')
+      .leftJoinAndSelect('pedido.delivery', 'delivery')
+      .leftJoinAndSelect('delivery.deliverer', 'deliverer')
+      .where('pedido.delivererPayableCents > 0')
+      .andWhere('pedido.delivererPayablePaidAt IS NULL')
+      .take(100)
+      .getMany();
+    for (const p of pedidosEntregador) {
+      itens.push({
+        rotulo: `pedido #${p.orderNumber} entregador`,
+        recipientId: (p as any).delivery?.deliverer?.pagarmeRecipientId,
+        centavos: Number(p.delivererPayableCents),
+        chave: `payable-deliverer-${p.id}`,
+        baixa: () => orderRepo.update(p.id, { delivererPayablePaidAt: new Date() } as any),
+      });
+    }
+
+    // 2. repasse do lojista recusado
+    const pedidosLojista = await orderRepo
+      .createQueryBuilder('pedido')
+      .leftJoinAndSelect('pedido.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .where('pedido.vendorPayableCents > 0')
+      .andWhere('pedido.vendorPayablePaidAt IS NULL')
+      .take(100)
+      .getMany();
+    for (const p of pedidosLojista) {
+      itens.push({
+        rotulo: `pedido #${p.orderNumber} lojista`,
+        recipientId: p.store?.owner?.pagarmeRecipientId,
+        centavos: Number(p.vendorPayableCents),
+        chave: `payable-vendor-${p.id}`,
+        baixa: () => orderRepo.update(p.id, { vendorPayablePaidAt: new Date() } as any),
+      });
+    }
+
+    // 3. repasse do prestador de serviço recusado
+    const agendamentos = await aptRepo
+      .createQueryBuilder('apt')
+      .leftJoinAndSelect('apt.store', 'store')
+      .leftJoinAndSelect('store.owner', 'owner')
+      .where('apt.vendorPayableCents > 0')
+      .andWhere('apt.vendorPayablePaidAt IS NULL')
+      .take(100)
+      .getMany();
+    for (const a of agendamentos) {
+      itens.push({
+        rotulo: `agendamento ${a.appointmentNumber} prestador`,
+        recipientId: a.store?.owner?.pagarmeRecipientId,
+        centavos: Number(a.vendorPayableCents),
+        chave: `payable-apt-vendor-${a.id}`,
+        baixa: () => aptRepo.update(a.id, { vendorPayablePaidAt: new Date() } as any),
+      });
+    }
+
+    if (itens.length === 0) return { pagos: 0, bloqueado: false };
+
+    for (const item of itens) {
+      if (!item.recipientId) {
+        // Sem recebedor não há para onde mandar. Não é falha do job: a pessoa
+        // ainda não concluiu o cadastro no Pagar.me, e o passivo continua
+        // registrado esperando por isso.
+        continue;
+      }
+      try {
+        const r = await this.pagarmePost(
+          '/transfers',
+          {
+            amount: item.centavos,
+            recipient_id: item.recipientId,
+            metadata: { tipo: 'drenagem_de_passivo', referencia: item.chave },
+          },
+          item.chave,
+        );
+        await item.baixa();
+        pagos++;
+        this.logger.log(
+          `[PASSIVO_PAGO] ${item.rotulo} | ${item.centavos} centavos | transfer: ${r?.id || '-'}`,
+        );
+      } catch (err: any) {
+        if (PaymentsService.ehBloqueioDeOrigem(err)) {
+          this.logger.warn(
+            `[PASSIVO_BLOQUEADO] a allowlist de IP do Pagar.me segue barrando o repasse ` +
+              `(KAN-299). ${itens.length} passivo(s) aguardando; nenhum foi pago nesta rodada. ` +
+              `Parando aqui em vez de repetir o mesmo 401 para cada um.`,
+          );
+          return { pagos, bloqueado: true };
+        }
+        this.logger.error(
+          `[PASSIVO_FALHOU] ${item.rotulo}: ${JSON.stringify(err?.response?.data || err?.message)}`,
+        );
+      }
+    }
+    return { pagos, bloqueado: false };
+  }
+
+  private static centavosAguardando(balance: any): number {
+    const plano = balance?.waiting_funds_amount;
+    if (typeof plano === 'number') return plano;
+    const aninhado = balance?.waiting_funds?.amount;
+    if (typeof aninhado === 'number') return aninhado;
+    return 0;
+  }
+
   async getRecipientBalance(recipientId: string): Promise<{ availableAmount: number; waitingFundsAmount: number; transferredAmount: number; autoAnticipationEnabled: boolean }> {
     try {
       const [balance, recipient] = await Promise.all([
@@ -3165,7 +4137,7 @@ export class PaymentsService implements OnModuleDestroy {
       ]);
       return {
         availableAmount: (balance.available_amount || 0) / 100,
-        waitingFundsAmount: (balance.waiting_funds?.amount || 0) / 100,
+        waitingFundsAmount: PaymentsService.centavosAguardando(balance) / 100,
         transferredAmount: (balance.transferred_amount || 0) / 100,
         autoAnticipationEnabled: recipient?.automatic_anticipation_settings?.enabled ?? false,
       };
@@ -3175,37 +4147,112 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
-  async simulateAnticipation(recipientId: string): Promise<{ originalAmount: number; anticipatedAmount: number; fee: number; feePercentage: number }> {
+  /**
+   * HISTORICO — O CAMINHO DE ANTECIPACAO ESTAVA ERRADO (corrigido em 15/10/2026).
+   *
+   * O caminho usado aqui e no requestAnticipation era
+   * `/recipients/{id}/anticipations`, que NAO EXISTE na v5: e nome da v4. Na v5 o
+   * recurso vive em `/recipients/{id}/bulk_anticipations`, e a simulacao e uma
+   * rota propria, `/bulk_anticipations/simulate`.
+   *
+   * Verificado contra o sandbox em 14/10/2026, usando o recebedor da PLATAFORMA
+   * (que existe: GET /recipients/{id} responde 200):
+   *   GET /recipients/{plataforma}/anticipations      -> 404 com CORPO VAZIO
+   *   GET /recipients/{plataforma}/rota_inventada_xyz -> 404 com CORPO VAZIO  (identico)
+   *   GET /recipients/{id}/balance (recebedor falso)  -> 404 {"message":"The recipient could not be found"}
+   *   GET /recipients/{plataforma}/bulk_anticipations -> 401 {"message":"IP de origem nao autorizado..."}
+   * Ou seja: `/anticipations` responde como ROTA INEXISTENTE (igual a uma rota
+   * que eu inventei), enquanto `/bulk_anticipations` responde como rota que
+   * EXISTE e esta barrada por allowlist de IP. Nao e recebedor ausente.
+   *
+   * Consequencias, as duas em producao hoje:
+   *  - `requestAnticipation` SEMPRE falha com 404. A antecipacao nunca funcionou,
+   *    em nenhum ambiente.
+   *  - `simulateAnticipation` SEMPRE cai no catch abaixo e devolvia uma taxa fixa
+   *    de 3,5% com a mesma forma de uma cotacao real. A tela de ganhos mostra
+   *    "Voce recebe R$ X" em destaque, e aquele X era invencao nossa.
+   *
+   * Nada disso aparecia porque o catch so logava `warn`.
+   *
+   * NAO corrigi o caminho aqui de proposito. Corrigir exige (a) confirmar os
+   * nomes dos campos do corpo na v5 — o codigo manda `requested_amount` e
+   * `type`, que sao da v4 — e (b) a allowlist de IP do Pagar.me, que nao esta
+   * configurada e nao e algo que se resolva no codigo (o mesmo bloqueio ja
+   * conhecido do `/transfers`). Chutar o corpo certo numa rota que MOVE DINHEIRO,
+   * sem poder testar, troca "falha sempre e em silencio" por "faz algo
+   * inesperado" — que e pior. O estado atual falha fechado; o que mudo aqui e
+   * parar de MENTIR o numero e passar a gritar no log.
+   */
+  async simulateAnticipation(recipientId: string): Promise<{ originalAmount: number; anticipatedAmount: number; fee: number; feePercentage: number; isEstimate: boolean }> {
     try {
       // Get waiting funds first
       const balance = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
-      const waitingCents = balance.waiting_funds?.amount || 0;
+      const waitingCents = PaymentsService.centavosAguardando(balance);
 
       if (waitingCents <= 0) {
-        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0 };
+        // Saldo a liberar veio do provedor e e zero: valor real, nao estimativa.
+        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0, isEstimate: false };
       }
 
-      // Simulate anticipation
-      const result = await this.pagarmePost(`/recipients/${recipientId}/anticipations`, {
-        payment_date: new Date().toISOString().split('T')[0],
-        timeframe: 'start',
-        requested_amount: waitingCents,
-        type: 'full',
-        simulate: true,
-      });
+      // CAMINHO CORRIGIDO. Era `POST /recipients/{id}/anticipations` com
+      // `simulate: true`, e nenhuma das duas coisas existe na v5: a rota e
+      // `/bulk_anticipations` e a simulacao e uma ROTA PROPRIA, nao um campo.
+      //
+      // Contrato confirmado contra a API em 15/10/2026, interrogando o endpoint
+      // de simulacao (que devolve 400 com a lista de campos e, ao contrario da
+      // rota de criacao, NAO e barrado pelo allowlist de IP):
+      //   {}                                   -> "valor esta faltando, data de pagamento invalida
+      //                                          (prazo minimo: D+0 ate 11AM ou D+1), tipo de
+      //                                          antecipacao invalido (opcoes: 'start','end')"
+      //   { amount: ... }                      -> continua "valor esta faltando"  => NAO e `amount`
+      //   { requested_amount: ... }            -> a reclamacao de valor SAI       => e `requested_amount`
+      //   { type: 'start' }                    -> continua "tipo invalido"        => NAO e `type`
+      //   { timeframe: 'start' }               -> a reclamacao de tipo SAI        => e `timeframe`
+      // Com os tres campos validos, o erro passa a ser de regra de negocio
+      // ("O valor requisitado esta fora do permitido para este recebedor"), o
+      // que confirma que a rota existe e valida de verdade.
+      //
+      // Ou seja: os NOMES dos campos no codigo ja estavam certos; o que estava
+      // errado era o caminho, mais o `type: 'full'` e o `simulate: true`, que
+      // nao sao campos de nada.
+      const result = await this.pagarmePost(
+        `/recipients/${recipientId}/bulk_anticipations/simulate`,
+        {
+          payment_date: PaymentsService.dataDeAntecipacao(),
+          timeframe: 'start',
+          requested_amount: waitingCents,
+        },
+      );
 
       const originalAmount = waitingCents / 100;
       const anticipatedAmount = (result.amount || 0) / 100;
       const fee = originalAmount - anticipatedAmount;
       const feePercentage = originalAmount > 0 ? (fee / originalAmount) * 100 : 0;
 
-      return { originalAmount, anticipatedAmount, fee, feePercentage: Math.round(feePercentage * 100) / 100 };
+      // Cotacao de verdade, vinda do provedor.
+      return {
+        originalAmount,
+        anticipatedAmount,
+        fee,
+        feePercentage: Math.round(feePercentage * 100) / 100,
+        isEstimate: false,
+      };
     } catch (err: any) {
-      this.logger.warn(`Failed to simulate anticipation: ${err.response?.data?.message || err.message}`);
-      // Fallback: estimate ~3.5% fee
+      // ERROR, nao WARN: hoje este caminho e percorrido em TODA chamada (ver o
+      // comentario do metodo) e ninguem notou em meses justamente porque era um
+      // warn sem marcador. O marcador existe para dar grep e alerta.
+      this.logger.error(
+        `[ANTECIPACAO_INDISPONIVEL] simulacao falhou para ${recipientId}: ` +
+          `${err.response?.data?.message || err.message}. ` +
+          `O caminho ja esta no formato v5 (/bulk_anticipations); o bloqueio provavel ` +
+          `e a allowlist de IP do Pagar.me, a mesma que barra o /transfers.`,
+      );
+      // Fallback: estimativa de ~3,5%, MARCADA como estimativa. O valor serve
+      // para a pessoa ter uma nocao de ordem de grandeza; o que nao pode e ele
+      // se passar por cotacao do provedor, que era o caso antes.
       try {
         const balance = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
-        const waitingCents = balance.waiting_funds?.amount || 0;
+        const waitingCents = PaymentsService.centavosAguardando(balance);
         const originalAmount = waitingCents / 100;
         const estimatedFee = originalAmount * 0.035;
         return {
@@ -3213,34 +4260,42 @@ export class PaymentsService implements OnModuleDestroy {
           anticipatedAmount: originalAmount - estimatedFee,
           fee: Math.round(estimatedFee * 100) / 100,
           feePercentage: 3.5,
+          isEstimate: true,
         };
       } catch {
-        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0 };
+        return { originalAmount: 0, anticipatedAmount: 0, fee: 0, feePercentage: 0, isEstimate: true };
       }
     }
   }
 
   async requestAnticipation(recipientId: string): Promise<{ id: string; status: string; requestedAmount: number; approvedAmount: number; fee: number; createdAt: string }> {
     const balance = await this.pagarmeGet(`/recipients/${recipientId}/balance`);
-    const waitingCents = balance.waiting_funds?.amount || 0;
+    const waitingCents = PaymentsService.centavosAguardando(balance);
 
     if (waitingCents <= 0) {
       throw new BadRequestException('Não há valores pendentes para antecipar');
     }
 
     try {
-      // Use next business day if today is weekend
-      const today = new Date();
-      const day = today.getDay();
-      if (day === 0) today.setDate(today.getDate() + 1); // Sunday → Monday
-      if (day === 6) today.setDate(today.getDate() + 2); // Saturday → Monday
-      const paymentDate = today.toISOString().split('T')[0];
+      // Data pela regra do provedor (D+0 ate 11h, senao proximo dia util), no
+      // fuso do negocio. Ver dataDeAntecipacao: o calculo anterior era em UTC e
+      // ignorava o corte das 11h.
+      const paymentDate = PaymentsService.dataDeAntecipacao();
 
-      const result = await this.pagarmePost(`/recipients/${recipientId}/anticipations`, {
+      // CAMINHO CORRIGIDO: /bulk_anticipations (v5), nao /anticipations (v4).
+      // Os nomes dos campos foram confirmados contra a API — ver o comentario em
+      // simulateAnticipation. O `type: 'full'` saiu porque nao e campo.
+      //
+      // ATENCAO: esta rota (diferente da de simulacao) e barrada pelo allowlist
+      // de IP do Pagar.me — "IP de origem nao autorizado a realizar essa
+      // operacao." —, o mesmo bloqueio que o /transfers tem. Enquanto o IP de
+      // saida da API nao estiver liberado, a antecipacao continua falhando, mas
+      // agora falha com 401 e mensagem clara em vez de 404 silencioso. Nao tive
+      // como exercitar o caminho de sucesso daqui.
+      const result = await this.pagarmePost(`/recipients/${recipientId}/bulk_anticipations`, {
         payment_date: paymentDate,
         timeframe: 'start',
         requested_amount: waitingCents,
-        type: 'full',
       });
 
       return {
@@ -3253,8 +4308,21 @@ export class PaymentsService implements OnModuleDestroy {
       };
     } catch (err: any) {
       const errorData = err.response?.data;
-      this.logger.error(`Anticipation request failed: ${JSON.stringify(errorData || err.message)}`);
-      throw new BadRequestException(errorData?.message || 'Erro ao solicitar antecipação');
+      this.logger.error(
+        `[ANTECIPACAO_INDISPONIVEL] pedido falhou para ${recipientId}: ` +
+          `${JSON.stringify(errorData || err.message)}. ` +
+          `O caminho ja esta no formato v5 (/bulk_anticipations); o bloqueio provavel ` +
+          `e a allowlist de IP do Pagar.me, a mesma que barra o /transfers.`,
+      );
+      // A mensagem do provedor so e repassada quando ELE respondeu algo. Num 404
+      // de rota inexistente — o caso de hoje — nao ha mensagem, e o lojista via
+      // "Erro ao solicitar antecipacao", que soa como falha momentanea e convida
+      // a tentar de novo para sempre. Dizer que o recurso esta indisponivel e
+      // honesto e evita o retry infinito.
+      throw new BadRequestException(
+        errorData?.message ||
+          'A antecipação está indisponível no momento. Nossa equipe já foi avisada.',
+      );
     }
   }
 
@@ -3416,37 +4484,15 @@ export class PaymentsService implements OnModuleDestroy {
     const totalCents = Math.round(Number(appointment.price) * 100);
 
     try {
-      const body: any = {
-        name: `Agendamento ${appointment.appointmentNumber}`,
-        type: 'order',
-        amount: totalCents,
-        accepted_payment_methods: ['credit_card', 'pix'],
-        payment_settings: {
-          credit_card: {
-            installments: [{ number: 1, total: totalCents }],
-            statement_descriptor: STATEMENT_DESCRIPTOR,
-          },
-          pix: { expires_in: 1800 },
-        },
-        items: [
-          {
-            description: `Agendamento ${appointment.appointmentNumber}`.substring(0, 256),
-            quantity: 1,
-            amount: totalCents,
-          },
-        ],
-        metadata: {
-          type: 'appointment',
-          appointment_id: appointment.id,
-          appointment_number: appointment.appointmentNumber,
-        },
-      };
+      const link = await this.criarLinkDePagamento({
+        nome: `Agendamento ${appointment.appointmentNumber}`,
+        totalCents,
+        pixExpiraEm: 1800,
+      });
 
-      const result = await this.pagarmePost('/paymentlinks', body);
-      const checkoutUrl = result.url || `https://pagar.me/pay/${result.id}`;
-
-      this.logger.log(`Pagar.me payment link for appointment ${appointment.appointmentNumber} | total: ${appointment.price}`);
-      return { checkoutUrl, preferenceId: `link-${appointment.id}-${Date.now()}` };
+      this.logger.log(`Pagar.me payment link for appointment ${appointment.appointmentNumber} | total: ${appointment.price} | link ${link.id}`);
+      // 'link-' + id do link: é por ele que o webhook acha o agendamento.
+      return { checkoutUrl: link.url, preferenceId: `link-${link.id}` };
     } catch (err: any) {
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me appointment checkout failed: ${JSON.stringify(errorData || err.message)}`);
@@ -3501,10 +4547,10 @@ export class PaymentsService implements OnModuleDestroy {
 
     try {
       const result = await this.pagarmePost('/orders', orderBody);
-      const charge = result.charges?.[0];
-      const lastTransaction = charge?.last_transaction;
-      const qrCode = lastTransaction?.qr_code || '';
-      const qrCodeUrl = lastTransaction?.qr_code_url || '';
+      const { qrCode, qrCodeUrl } = this.extrairPixDaResposta(
+        result,
+        `agendamento ${appointment.appointmentNumber}`,
+      );
 
       this.logger.log(`Pagar.me PIX for appointment ${appointment.appointmentNumber} | total: ${appointment.price} | pagarme_order: ${result.id}`);
 
@@ -3515,6 +4561,8 @@ export class PaymentsService implements OnModuleDestroy {
         qrCodeUrl,
       };
     } catch (err: any) {
+      // Repassa o [PIX_NAO_GERADO] sem reembrulhar na mensagem generica.
+      if (err instanceof HttpException) throw err;
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me appointment PIX failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(errorData?.message || 'Erro ao criar pagamento PIX no Pagar.me');
@@ -3624,15 +4672,39 @@ export class PaymentsService implements OnModuleDestroy {
     // Cartao pre-autorizado e nao capturado: basta soltar a reserva.
     if (appointment.preAuthChargeId) {
       try {
-        await this.pagarmeDelete(`/charges/${appointment.preAuthChargeId}`);
+        // Era `pagarmeDelete` cru, com o resultado descartado — o mesmo ponto
+        // cego que o cancelPreAuth dos pedidos tinha.
+        //
+        // O detalhe que torna isto pior aqui: o comentario deste metodo, logo
+        // acima, descreve como BUG exatamente o estado que o silencio
+        // reproduzia — "os R$ X ficavam bloqueados no limite do cliente ate a
+        // pre-autorizacao caducar sozinha na adquirente, dias depois". Este
+        // metodo foi escrito para resolver isso e, ao nao conferir se a soltura
+        // de fato aconteceu, devolvia o cliente ao mesmo lugar sem avisar
+        // ninguem. O provedor responde 200 nesta rota mesmo quando recusa.
+        await this.estornarCobranca(appointment.preAuthChargeId);
         this.logger.log(
           `Pre-auth liberada no cancelamento do agendamento ${appointment.appointmentNumber}`,
         );
       } catch (err: any) {
-        this.logger.warn(
-          `Falha ao liberar pre-auth do agendamento ${appointment.appointmentNumber} ` +
-            `(pode ja ter expirado): ${err.response?.data?.message || err.message}`,
-        );
+        // Mesma separacao do cancelPreAuth: 412 do provedor e benigno (ja
+        // caducou, ja foi solta); recusa dentro de um 200 e dinheiro preso no
+        // cartao do cliente e precisa aparecer no monitoramento.
+        //
+        // Nenhum dos dois lanca: como o doc diz, o cancelamento do agendamento
+        // nao pode falhar por causa do estorno.
+        if (String(err?.message || '').startsWith('estorno recusado')) {
+          this.logger.error(
+            `[PREAUTH_NAO_LIBERADA] agendamento ${appointment.appointmentNumber} ` +
+              `| charge ${appointment.preAuthChargeId} | o limite do cliente pode seguir ` +
+              `preso: ${err.message}`,
+          );
+        } else {
+          this.logger.warn(
+            `Falha ao liberar pre-auth do agendamento ${appointment.appointmentNumber} ` +
+              `(pode ja ter expirado): ${err.response?.data?.message || err.message}`,
+          );
+        }
       }
       return;
     }
@@ -3652,8 +4724,8 @@ export class PaymentsService implements OnModuleDestroy {
           );
           return;
         }
-        await this.pagarmePost(`/charges/${charge.id}/refund`, {
-          amount: charge.amount,
+        await this.estornarCobranca(charge.id, {
+          idempotencyKey: `appointment-refund-${appointment.id}`,
         });
         this.logger.log(
           `Estorno solicitado no cancelamento do agendamento ${appointment.appointmentNumber}`,
@@ -3674,7 +4746,7 @@ export class PaymentsService implements OnModuleDestroy {
       `UPDATE appointments SET "isSettled" = true WHERE id = $1 AND "isSettled" = false RETURNING id`,
       [appointment.id],
     );
-    if (!settleResult || settleResult.length === 0) {
+    if (linhasAfetadas(settleResult) === 0) {
       this.logger.warn(`Settlement skipped for appointment ${appointment.appointmentNumber} — already settled`);
       return;
     }
@@ -3714,6 +4786,8 @@ export class PaymentsService implements OnModuleDestroy {
             options: { charge_processing_fee: true, liable: true },
           });
         }
+
+        taxaPorContaDaLoja(splitRules, vendorRecipientId, platformRecipientId);
 
         const body: any = {
           amount: totalCents,
@@ -3760,6 +4834,39 @@ export class PaymentsService implements OnModuleDestroy {
         this.logger.log(`Transfer to vendor for appointment ${appointment.appointmentNumber} | amount: ${vendorAmount} cents | transfer: ${result.id}`);
       } catch (err: any) {
         const errorDetail = JSON.stringify(err.response?.data || err.message);
+
+        if (PaymentsService.ehBloqueioDeOrigem(err)) {
+          // MESMA CORRECAO QUE O CAMINHO DE PEDIDO JA TINHA RECEBIDO (9a79460),
+          // e que nao foi aplicada nesta copia — classico conserto que pega um
+          // lado so.
+          //
+          // Bloqueio de origem (allowlist de IP do Pagar.me) e configuracao
+          // NOSSA: re-tentar nao melhora. Antes, este caminho gastava as 48h da
+          // janela de retry contra um 401 que nunca muda, avisando o LOJISTA a
+          // cada rodada que a transferencia dele falhou — e no fim da janela o
+          // agendamento saia da fila com o dinheiro na plataforma e nenhum
+          // registro de que havia divida.
+          //
+          // Agora o valor vira passivo rastreavel, somavel na tela de repasses
+          // retidos junto com os de pedido.
+          //
+          // `isSettled` SEGUE FALSE: o lojista nao recebeu, e marcar como
+          // liquidado esconderia a divida. O retry continua passando por aqui —
+          // e por isso o log vai como ERROR com marcador proprio, para aparecer
+          // no monitoramento em vez de se diluir entre falhas de rede.
+          await aptRepo.update(appointment.id, {
+            isSettled: false,
+            vendorPayableCents: vendorAmount,
+            notes: `${appointment.notes || ''}\n[VENDOR_PAYABLE] R$ ${(vendorAmount / 100).toFixed(2)} a repassar ao prestador (repasse bloqueado: allowlist de IP do Pagar.me).`.trim(),
+          } as any);
+          this.logger.error(
+            `[REPASSE_BLOQUEADO] agendamento ${appointment.appointmentNumber} | prestador | ` +
+              `${vendorAmount} centavos viraram passivo. Liberar o IP de saida no allowlist ` +
+              `do Pagar.me (mesmo bloqueio da antecipacao).`,
+          );
+          return;
+        }
+
         this.logger.error(`Transfer to vendor failed for appointment ${appointment.appointmentNumber}: ${errorDetail}`);
         // BUGFIX: `isSettled` foi marcado ANTES da transferencia e continuava
         // `true` mesmo com a transferencia falhando — o agendamento saia da fila

@@ -1,5 +1,11 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { OrdersService } from '../orders/orders.service';
+import { DeliveryCodesService } from '../orders/delivery-codes.service';
+import { PaymentsService } from '../payments/payments.service';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { comTravaDistribuida } from '../common/utils/trava-distribuida';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
 
 @Injectable()
 export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDestroy {
@@ -15,6 +21,10 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
 
   constructor(
     private ordersService: OrdersService,
+    private deliveryCodesService: DeliveryCodesService,
+    private paymentsService: PaymentsService,
+    private fidelidadeService: FidelidadeService,
+    @InjectDataSource() private dataSource: DataSource,
   ) {}
 
   onModuleInit() {
@@ -35,14 +45,91 @@ export class DeliveryConfirmationScheduler implements OnModuleInit, OnModuleDest
     }
     this.isRunning = true;
     try {
-      await this.expireAwaitingPaymentOrders();
-      await this.expirePendingOrders();
-      await this.autoAdvanceVendorConfirmedPickup();
-      await this.autoConfirmExpiredDeliveries();
-      await this.alertNoDeliverer();
-      await this.retryFailedSettlements();
+      // KAN-254: a guarda `isRunning` protege contra a rodada anterior DESTE
+      // processo. Com duas instancias da API, as duas acordam no mesmo minuto
+      // e rodam a mesma rotina sobre as mesmas linhas — trabalho duplicado e,
+      // o que o cliente ve, notificacao duplicada. A trava e do banco (advisory
+      // lock), entao vale para a frota inteira. Quem nao pegar, pula o tick.
+      await comTravaDistribuida(this.dataSource, 'tick:confirmacao-de-entrega', async () => {
+        await this.expireAwaitingPaymentOrders();
+        await this.expirePendingOrders();
+        await this.autoAdvanceVendorConfirmedPickup();
+        await this.autoConfirmExpiredDeliveries();
+        await this.alertNoDeliverer();
+        await this.liberarEntregasSemCodigoVencidas();
+        await this.retryFailedSettlements();
+        await this.drenarPassivos();
+        await this.varrerFidelidade();
+      });
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  /**
+   * KAN-12: rede de seguranca da fidelidade.
+   *
+   * O premio e avaliado na CONCLUSAO do pedido, que e quando ele significa
+   * alguma coisa para o cliente. Esta varredura existe para o caso de aquele
+   * caminho ter falhado (processo reiniciado no meio, erro de rede): ela
+   * reavalia as conclusoes recentes. O codigo do cupom e deterministico e a
+   * unicidade e constraint, entao reavaliar NAO premia de novo.
+   */
+  private async varrerFidelidade() {
+    try {
+      const premiados = await this.fidelidadeService.varrerPendentes(2);
+      if (premiados > 0) {
+        this.logger.log(
+          `[FIDELIDADE] varredura premiou ${premiados} cliente(s) que o caminho normal nao premiou`,
+        );
+      }
+    } catch (err) {
+      this.logger.error('Varredura de fidelidade falhou:', err);
+    }
+  }
+
+  /**
+   * Paga automaticamente o que esta registrado como devido (passivos).
+   *
+   * Hoje nao vai conseguir: a rota de transferencia do Pagar.me esta atras da
+   * allowlist de IP da conta (KAN-299). Fica no tick de proposito — no minuto
+   * em que o IP for liberado, a divida acumulada zera sozinha na primeira
+   * rodada, em vez de alguem descobrir semanas de passivo para conciliar a
+   * mao na tela de repasses.
+   *
+   * O `bloqueado: true` so vira log em nivel WARN, e uma vez por rodada: o
+   * detalhe de POR QUE esta bloqueado ja esta no proprio metodo, e repetir
+   * aqui so encheria o log.
+   */
+  private async drenarPassivos() {
+    try {
+      const r = await this.paymentsService.drenarPassivos();
+      if (r.pagos > 0) {
+        this.logger.log(`Drenagem de passivos: ${r.pagos} repasse(s) pago(s)`);
+      }
+    } catch (err) {
+      this.logger.error('Falha na drenagem de passivos:', err);
+    }
+  }
+
+  // Liberar entregas registradas SEM o código do cliente, cuja janela de
+  // contestação venceu sem o cliente contestar.
+  //
+  // Este job é o que substitui o auto-confirm por decurso de prazo que existia
+  // antes: ali o pagamento saía sem prova nenhuma e sem o cliente ter sido
+  // avisado; aqui ele só sai depois de um registro com foto, GPS e horário, e
+  // depois de o cliente ter tido a janela inteira para contestar.
+  private async liberarEntregasSemCodigoVencidas() {
+    try {
+      const count =
+        await this.deliveryCodesService.liberarEntregasSemCodigoVencidas();
+      if (count > 0) {
+        this.logger.log(
+          `Liberadas ${count} entrega(s) sem código após a janela de contestação`,
+        );
+      }
+    } catch (err) {
+      this.logger.error('Falha ao liberar entregas sem código:', err);
     }
   }
 

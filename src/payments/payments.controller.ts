@@ -1,4 +1,5 @@
 import { Controller, Post, Get, Body, Query, Res, Headers, HttpCode, UnauthorizedException, Logger } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ConfigService } from '@nestjs/config';
 import * as express from 'express';
 import * as crypto from 'crypto';
@@ -13,6 +14,10 @@ export class PaymentsController {
     private configService: ConfigService,
   ) {}
 
+  // O Pagar.me REENTREGA webhooks em rajada apos uma falha. Estrangular aqui
+  // faria o retry legitimo tomar 429 e o evento de pagamento se perder — a
+  // protecao desta rota e o Basic Auth, nao o rate limit.
+  @SkipThrottle()
   @Post('webhook')
   @HttpCode(200)
   async handleWebhook(

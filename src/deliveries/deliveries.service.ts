@@ -1,15 +1,18 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject, forwardRef, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, In, IsNull } from 'typeorm';
 import { PubSub } from 'graphql-subscriptions';
 import { Delivery } from './entities/delivery.entity';
 import { AppUser } from '../users/entities/app-user.entity';
 import { OrdersService } from '../orders/orders.service';
+import { DeliveryCodesService } from '../orders/delivery-codes.service';
 import { DeliveryOfferService } from './delivery-offer.service';
+import { motivoParaNaoSomar, SQL_ENTREGAS_EM_ANDAMENTO } from './regras-de-acumulo';
 import { OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { percentualEmCentavos } from '../common/dinheiro';
 
 @Injectable()
 export class DeliveriesService implements OnModuleInit {
@@ -22,23 +25,69 @@ export class DeliveriesService implements OnModuleInit {
     private notificationsService: NotificationsService,
     private platformConfigService: PlatformConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
+    // Garantia de entrega por códigos: o código do entregador nasce no aceite
+    // da corrida, que acontece aqui.
+    @Inject(forwardRef(() => DeliveryCodesService))
+    private deliveryCodesService: DeliveryCodesService,
   ) {}
 
+  private readonly logger = new Logger(DeliveriesService.name);
+
   onModuleInit() {
-    this.ordersService.onOrderReady((order) => {
-      const store = order.store;
-      if (!store) return;
-      this.offerService.startOffer({
-        id: order.id,
-        customerId: order.customer?.id || '',
-        orderNumber: order.orderNumber,
-        storeLat: Number(store.latitude),
-        storeLng: Number(store.longitude),
-        storeAddress: `${store.street}, ${store.number} - ${store.neighborhood}`,
-        deliveryAddress: order.deliveryAddress,
-        deliveryFee: Number(order.deliveryFee),
-        itemCount: order.items?.length || 0,
-      });
+    this.ordersService.onOrderReady((order) => this.abrirOferta(order));
+    this.offerService.definirFiltroDeCandidato((userId, storeId) => this.podeReceberOferta(userId, storeId));
+
+    // A cascata vive em memória: reiniciar a API apagava todas, e os pedidos
+    // prontos ficavam sem ninguém ser chamado. Retoma as dos pedidos prontos
+    // sem entregador. (Fora do boot síncrono — o banco pode demorar.)
+    setTimeout(() => {
+      this.ordersService
+        .findPendingForDelivery()
+        .then((pedidos) => {
+          for (const pedido of pedidos) this.abrirOferta(pedido);
+          if (pedidos.length) this.logger.log(`[OFFER] ${pedidos.length} cascata(s) retomada(s) no boot`);
+        })
+        .catch((err) => this.logger.error(`[OFFER] falha ao retomar cascatas: ${err?.message}`));
+    }, 5_000);
+  }
+
+  /**
+   * Quem pode receber a vez exclusiva: tem conta de recebimento e pode SOMAR
+   * esta corrida às que já tem — mesma regra do acceptDelivery
+   * (regras-de-acumulo.ts). Quem já está na mesma loja, esperando coleta,
+   * recebe; quem está com corrida de outra loja ou já saiu, é pulado. Sem isto
+   * o entregador ocupado recebia a vez, não conseguia aceitar, e o pedido
+   * ficava 60s parado em cada volta da cascata.
+   */
+  private async podeReceberOferta(userId: string, storeId: string): Promise<boolean> {
+    // `paymentConnected` da entidade mora na coluna "mpConnected".
+    const conta = await this.deliveriesRepository.manager.query(
+      `SELECT "mpConnected" AS conectado FROM app_users WHERE id = $1`,
+      [userId],
+    );
+    if (!conta?.[0]?.conectado) return false;
+    const emAndamento = await this.deliveriesRepository.manager.query(
+      SQL_ENTREGAS_EM_ANDAMENTO,
+      [userId],
+    );
+    return motivoParaNaoSomar(emAndamento, storeId) === null;
+  }
+
+  /** Oferece a corrida aos entregadores (pedido pronto, ou de volta à fila). */
+  private abrirOferta(order: any) {
+    const store = order.store;
+    if (!store) return;
+    this.offerService.startOffer({
+      id: order.id,
+      storeId: store.id,
+      customerId: order.customer?.id || '',
+      orderNumber: order.orderNumber,
+      storeLat: Number(store.latitude),
+      storeLng: Number(store.longitude),
+      storeAddress: `${store.street}, ${store.number} - ${store.neighborhood}`,
+      deliveryAddress: order.deliveryAddress,
+      deliveryFee: Number(order.deliveryFee),
+      itemCount: order.items?.length || 0,
     });
   }
 
@@ -59,40 +108,59 @@ export class DeliveriesService implements OnModuleInit {
     // feito nada errado e sem forma de destravar pelo app. (Confirmado em dados
     // reais: pedido COMPLETED com a entrega ainda sem deliveredAt.)
     //
-    // A regra continua a mesma — um entregador so leva uma entrega por vez. So
-    // deixamos de contar como "em andamento" a entrega cujo pedido ja acabou.
-    const activeDelivery = await this.deliveriesRepository.findOne({
-      where: {
-        deliverer: { id: deliverer.id },
-        deliveredAt: IsNull(),
-        order: {
-          status: Not(
-            In([
-              OrderStatus.COMPLETED,
-              OrderStatus.CANCELLED,
-              OrderStatus.REJECTED,
-              OrderStatus.EXPIRED,
-              OrderStatus.DISPUTED,
-            ]),
-          ),
-        },
-      },
-      relations: ['order'],
-    });
-    if (activeDelivery) {
-      throw new BadRequestException(
-        'Voce ja tem uma entrega em andamento. Finalize-a antes de aceitar outra.',
-      );
+    // Nao conta como "em andamento" a entrega cujo pedido ja acabou.
+    //
+    // A regra deixou de ser "uma entrega por vez": o entregador pode somar
+    // corridas da MESMA loja enquanto ainda nao saiu dela (ver
+    // regras-de-acumulo.ts). Corrida de outra loja, ou depois da coleta,
+    // continua bloqueada.
+    const order = await this.ordersService.findById(orderId);
+    const emAndamento = await this.deliveriesRepository.manager.query(
+      SQL_ENTREGAS_EM_ANDAMENTO,
+      [deliverer.id],
+    );
+    const naoPode = motivoParaNaoSomar(emAndamento, order.store?.id);
+    if (naoPode) throw new BadRequestException(naoPode);
+
+    // ALTO (auditoria 2026-08-23): AUTOENTREGA. Sem esta checagem, um cliente com
+    // conta de entregador aceitava a PRÓPRIA entrega — passava a controlar as duas
+    // pontas da "prova de entrega" (confirma a coleta, o scheduler avança, confirma
+    // a entrega e o próprio recebimento -> COMPLETED, e ~90% da taxa volta ao bolso
+    // dele) e ainda podia abrir disputa em 48h para estornar tudo com a mercadoria
+    // em mãos. O dono da loja (owner) também não pode ser o entregador do próprio
+    // pedido. (customer e deliverer são a mesma tabela app_users; owner é vendor_users.)
+    if (order.customer?.id && order.customer.id === deliverer.id) {
+      throw new BadRequestException('Você não pode aceitar a entrega do seu próprio pedido.');
+    }
+    if (order.store?.owner?.id && order.store.owner.id === deliverer.id) {
+      throw new BadRequestException('O dono da loja não pode ser o entregador do próprio pedido.');
     }
 
-    const order = await this.ordersService.findById(orderId);
+    // CRITICO (auditoria 2026-08-23): pedido de retirada ou de loja com frota
+    // própria não remunera o entregador do app no settlePayment. A listagem já os
+    // exclui, mas aceitar por orderId direto contornava o filtro — bloqueio aqui.
+    if (order.isPickup) {
+      throw new BadRequestException('Pedido de retirada não precisa de entregador.');
+    }
+    if (order.store?.hasOwnDelivery) {
+      throw new BadRequestException('Esta loja faz as próprias entregas.');
+    }
+
+    // Vez exclusiva: enquanto a corrida está na cascata, só o entregador da
+    // vez aceita. Antes qualquer um que visse a corrida aceitava, e a vez do
+    // mais perto não valia nada.
+    if (this.offerService.reservadaParaOutro(orderId, deliverer.id)) {
+      throw new BadRequestException(
+        'Esta corrida está com outro entregador agora. Se ninguém aceitar, ela volta para você.',
+      );
+    }
 
     // Atomic acceptance using DB transaction with row-level lock
     // Prevents race condition when 2 deliverers click at the same time
     const result = await this.deliveriesRepository.manager.transaction(async (manager) => {
       // Lock the order row to prevent concurrent acceptance
       const lockedOrder = await manager.query(
-        `SELECT id, status FROM orders WHERE id = $1 FOR UPDATE`,
+        `SELECT id, status, "storeId" FROM orders WHERE id = $1 FOR UPDATE`,
         [orderId],
       );
 
@@ -111,21 +179,11 @@ export class DeliveriesService implements OnModuleInit {
       await manager.query(`SELECT id FROM app_users WHERE id = $1 FOR UPDATE`, [
         deliverer.id,
       ]);
-      const jaTem = await manager.query(
-        `SELECT d.id
-           FROM deliveries d
-           JOIN orders o ON o.id = d."orderId"
-          WHERE d."delivererId" = $1
-            AND d."deliveredAt" IS NULL
-            AND o.status NOT IN ('COMPLETED','CANCELLED','REJECTED','EXPIRED','DISPUTED')
-          LIMIT 1`,
-        [deliverer.id],
-      );
-      if (jaTem && jaTem.length > 0) {
-        throw new BadRequestException(
-          'Voce ja tem uma entrega em andamento. Finalize-a antes de aceitar outra.',
-        );
-      }
+      // Mesma regra de acumulo, revalidada sob o lock (duas corridas de lojas
+      // diferentes aceitas em paralelo passariam pela checagem de fora).
+      const jaTem = await manager.query(SQL_ENTREGAS_EM_ANDAMENTO, [deliverer.id]);
+      const naoPodeAqui = motivoParaNaoSomar(jaTem, lockedOrder[0].storeId);
+      if (naoPodeAqui) throw new BadRequestException(naoPodeAqui);
 
       // O pedido precisa estar READY para ser aceito para entrega. Sem isto, um
       // entregador podia aceitar pedido PENDING/CANCELLED/COMPLETED: travava o
@@ -168,6 +226,22 @@ export class DeliveriesService implements OnModuleInit {
       relations: ['order', 'order.store', 'order.customer', 'deliverer'],
     });
 
+    // Garantia de entrega por códigos: agora que existe entregador, ele ganha o
+    // SEU código — o que o lojista vai digitar na coleta para provar que
+    // entregou o pedido à pessoa certa. Antes deste ponto não há entregador, e
+    // por isso este é o único lugar onde esse código pode nascer.
+    //
+    // Não bloqueia o aceite se falhar: o entregador não pode perder a corrida
+    // por causa disso, e a geração é idempotente (claim atômico), então o
+    // caminho de recuperação é simplesmente chamar de novo.
+    await this.deliveryCodesService
+      .gerarCodigoDoEntregador(orderId)
+      .catch((err: any) =>
+        this.logger.error(
+          `[CODIGO] falha ao gerar o codigo do entregador no pedido ${orderId}: ${err?.message}`,
+        ),
+      );
+
     // Stop the offer cascade — delivery was accepted
     this.offerService.cancelOffer(orderId);
 
@@ -179,6 +253,88 @@ export class DeliveriesService implements OnModuleInit {
     // The order disappears from "Disponíveis" because it now has a delivery record
     this.notifyVendorDeliveryAccepted(order, deliverer);
     return saved;
+  }
+
+  // ─── Desistir da corrida ──────────────────────────────────────────────
+  //
+  // Antes não existia, nem para o entregador nem para o admin. Se a loja não
+  // entregava o pedido (fechou, sumiu, o produto acabou), o entregador ficava
+  // preso: a regra "uma entrega por vez" o impedia de pegar outra, e nada no
+  // sistema desfazia o aceite.
+  //
+  // Só antes da coleta (pedido READY). Depois dela a mercadoria está com o
+  // entregador, e devolver o pedido à fila deixaria a coisa física sem dono.
+  //
+  // O código do entregador é APAGADO: ele nasceu no aceite e quem desistiu o
+  // conhece. Se o próximo entregador herdasse o mesmo código, quem desistiu
+  // continuaria com uma prova válida para retirar o pedido. Limpo, o próximo
+  // aceite gera outro (gerarCodigoDoEntregador só gera quando está vazio).
+
+  async desistirDaEntrega(
+    orderId: string,
+    quem: { tipo: 'ENTREGADOR' | 'ADMIN'; id: string },
+    motivo?: string,
+  ): Promise<boolean> {
+    const motivoLimpo = (motivo || '').trim().slice(0, 200) || null;
+
+    await this.deliveriesRepository.manager.transaction(async (manager) => {
+      const pedido = await manager.query(
+        `SELECT id, status FROM orders WHERE id = $1 FOR UPDATE`,
+        [orderId],
+      );
+      if (!pedido?.length) throw new NotFoundException('Pedido não encontrado.');
+
+      const entrega = await manager.query(
+        `SELECT id, "delivererId" FROM deliveries WHERE "orderId" = $1`,
+        [orderId],
+      );
+      const linha = entrega?.[0];
+      if (!linha?.delivererId) {
+        throw new BadRequestException('Esta entrega não tem entregador.');
+      }
+      if (quem.tipo === 'ENTREGADOR' && linha.delivererId !== quem.id) {
+        throw new BadRequestException('Esta entrega não é sua.');
+      }
+      if (pedido[0].status !== OrderStatus.READY) {
+        throw new BadRequestException(
+          'A coleta já foi feita: não dá mais para desistir. Fale com o suporte.',
+        );
+      }
+
+      await manager.query(
+        `UPDATE deliveries SET "delivererId" = NULL, "updatedAt" = NOW() WHERE id = $1`,
+        [linha.id],
+      );
+      await manager.query(
+        `UPDATE orders
+            SET "codigoEntregador" = NULL,
+                "codigoVendedorUsadoEm" = NULL,
+                "codigoEntregadorUsadoEm" = NULL,
+                "updatedAt" = NOW()
+          WHERE id = $1`,
+        [orderId],
+      );
+      // Fica no histórico do pedido: quem largou, e por quê.
+      await manager.query(
+        `INSERT INTO order_status_logs ("orderId", "fromStatus", "toStatus", "changedBy", reason)
+         VALUES ($1, 'READY', 'READY', $2, $3)`,
+        [
+          orderId,
+          quem.id,
+          `${quem.tipo === 'ADMIN' ? 'Admin liberou a entrega' : 'Entregador desistiu'}${motivoLimpo ? `: ${motivoLimpo}` : ''}`,
+        ],
+      );
+    });
+
+    this.logger.log(
+      `[DESISTENCIA] pedido ${orderId} voltou para a fila (${quem.tipo} ${quem.id})`,
+    );
+
+    // De volta à fila: lojista vê no painel, entregadores recebem a oferta.
+    const order = await this.ordersService.findById(orderId);
+    this.pubSub.publish('orderUpdated', { orderUpdated: order });
+    this.abrirOferta(order);
+    return true;
   }
 
   // KAN: publica deliveryUpdated sempre com o delivery COMPLETO (order.customer,
@@ -241,6 +397,34 @@ export class DeliveriesService implements OnModuleInit {
     return saved;
   }
 
+  /**
+   * Com várias corridas da mesma loja, o app manda a posição de UMA entrega só
+   * (a primeira). Sem isto, os outros clientes viam o entregador parado no mapa.
+   * A posição é da pessoa, não do pedido: vale para todas as entregas em
+   * andamento dela. Devolve as outras, para o gateway avisar cada sala.
+   */
+  async propagarPosicao(
+    delivererId: string,
+    deliveryIdOrigem: string,
+    latitude: number,
+    longitude: number,
+  ): Promise<{ deliveryId: string; orderId: string }[]> {
+    const outras: { deliveryId: string; orderId: string }[] = await this.deliveriesRepository.manager.query(
+      `SELECT d.id AS "deliveryId", d."orderId" AS "orderId"
+         FROM deliveries d
+         JOIN orders o ON o.id = d."orderId"
+        WHERE d."delivererId" = $1
+          AND d.id <> $2
+          AND d."deliveredAt" IS NULL
+          AND o.status NOT IN ('COMPLETED','CANCELLED','REJECTED','EXPIRED','DISPUTED')`,
+      [delivererId, deliveryIdOrigem],
+    );
+    for (const o of outras) {
+      await this.updateLocation(o.deliveryId, latitude, longitude);
+    }
+    return outras;
+  }
+
   // Entregador confirma que pegou o pedido
   async confirmPickup(deliveryId: string, delivererId: string): Promise<Delivery> {
     const delivery = await this.deliveriesRepository.findOne({
@@ -250,6 +434,15 @@ export class DeliveriesService implements OnModuleInit {
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
     if (delivery.deliverer?.id !== delivererId) {
       throw new BadRequestException('Esta entrega não pertence a você.');
+    }
+    // Pedido com código não confirma coleta por botão: a prova é a troca de
+    // códigos na loja. Deixar o botão aberto seria manter um caminho mais fraco
+    // capaz de avançar o mesmo pedido — e o mais fraco é o que acaba sendo
+    // usado.
+    if (delivery.order?.codigoVendedor) {
+      throw new BadRequestException(
+        'Este pedido usa confirmação por código. Digite o código da loja na coleta.',
+      );
     }
 
     const order = delivery.order;
@@ -264,7 +457,21 @@ export class DeliveriesService implements OnModuleInit {
   }
 
   // Entregador confirma que entregou pro cliente
-  async confirmDelivery(deliveryId: string, delivererId: string): Promise<Delivery> {
+  /**
+   * @param viaCodigo true somente quando chamado pelo fluxo de códigos.
+   *
+   * Sem esse parâmetro havia um desvio real: o entregador chamava
+   * `confirmDelivery` direto pelo GraphQL, o pedido ia a
+   * DELIVERER_CONFIRMED_DELIVERY sem o código do cliente, e dez minutos depois
+   * o auto-confirm finalizava e LIBERAVA O REPASSE — exatamente a fraqueza que
+   * os códigos existem para fechar. Agora, em pedido com código, só entra por
+   * aqui quem veio do registro do código do cliente.
+   */
+  async confirmDelivery(
+    deliveryId: string,
+    delivererId: string,
+    viaCodigo = false,
+  ): Promise<Delivery> {
     const delivery = await this.deliveriesRepository.findOne({
       where: { id: deliveryId },
       relations: ['order', 'order.store', 'order.store.owner', 'deliverer'],
@@ -272,6 +479,11 @@ export class DeliveriesService implements OnModuleInit {
     if (!delivery) throw new NotFoundException('Entrega nao encontrada');
     if (delivery.deliverer?.id !== delivererId) {
       throw new BadRequestException('Esta entrega não pertence a você.');
+    }
+    if (delivery.order?.codigoVendedor && !viaCodigo) {
+      throw new BadRequestException(
+        'Este pedido usa confirmação por código. Digite o código do cliente na entrega.',
+      );
     }
 
     delivery.deliveredAt = new Date();
@@ -315,10 +527,40 @@ export class DeliveriesService implements OnModuleInit {
           await this.platformConfigService.getDeliveryCommissionPercent();
         const brutoCents = Math.round(deliveryFee * 100);
         const liquidoCents =
-          brutoCents - Math.round((brutoCents * comissaoPct) / 100);
+          brutoCents - percentualEmCentavos(brutoCents, comissaoPct);
         delivery.payoutAmount = liquidoCents / 100;
         delivery.payoutStatus = 'pending_confirmation';
       }
+    }
+
+    // ENTREGA RÁPIDA NÃO PODIA SER CONFIRMADA (achado em 15/10/2026).
+    //
+    // A máquina de estados só aceita DELIVERING -> DELIVERER_CONFIRMED_DELIVERY.
+    // Mas `confirmPickup` deixa o pedido em PICKED_UP, e quem o move para
+    // DELIVERING é o scheduler `autoAdvanceVendorConfirmedPickup`, que exige
+    // `updatedAt <= agora - 5min`.
+    //
+    // Resultado: nos primeiros 5 minutos depois da coleta, o entregador que
+    // aperta "Confirmar entrega" — botão que o app mostra justamente em
+    // PICKED_UP — recebia "Nao pode mudar de PICKED_UP para
+    // DELIVERER_CONFIRMED_DELIVERY", que o app traduz para "Nao foi possivel
+    // confirmar a entrega." Entrega de 3 minutos é o normal em Pelotas, e era
+    // exatamente a que não dava para fechar.
+    //
+    // Isto é ANTERIOR à feature de códigos (a lista de transições vem de
+    // 324c981) e vale para o fluxo antigo — que segue sendo o fluxo dos pedidos
+    // criados antes do deploy dos códigos.
+    //
+    // O conserto atravessa DELIVERING em vez de afrouxar a máquina de estados.
+    // É o mesmo raciocínio do registro de entrega sem código: "eu entreguei"
+    // implica "eu estava entregando", então o passo intermediário é dado, e não
+    // dispensado. Afrouxar a máquina abriria DELIVERER_CONFIRMED_DELIVERY a
+    // qualquer origem, e é dela que o dinheiro sai.
+    if (
+      order.status === OrderStatus.PICKED_UP ||
+      order.status === OrderStatus.VENDOR_CONFIRMED_PICKUP
+    ) {
+      await this.ordersService.updateStatus(order.id, OrderStatus.DELIVERING);
     }
 
     // Muda pra DELIVERER_CONFIRMED_DELIVERY (aguarda confirmação do cliente)

@@ -130,6 +130,20 @@ export class StorefrontResult {
   @Field({ nullable: true })
   bannerUrl: string;
 
+  // KAN-13: sem estes campos aqui a loja escolhe a cor e o cliente nunca ve —
+  // a vitrine publica e justamente a tela que o cliente abre.
+  @Field({ nullable: true })
+  primaryColor: string;
+
+  @Field({ nullable: true })
+  backgroundColor: string;
+
+  @Field({ nullable: true })
+  textColor: string;
+
+  @Field({ nullable: true })
+  productLayout: string;
+
   @Field()
   phone: string;
 

@@ -146,41 +146,31 @@ export class GeolocationAutomationService implements OnModuleInit, OnModuleDestr
       }
     }
 
-    // ─── Auto-confirm delivery by proximity ─────────────────────────
-    if (order.status === OrderStatus.DELIVERER_CONFIRMED_DELIVERY && order.delivererConfirmedDeliveryAt) {
-      if (order.deliveryLatitude && order.deliveryLongitude) {
-        const distToCustomer = this.haversineDistance(
-          location.latitude, location.longitude,
-          Number(order.deliveryLatitude), Number(order.deliveryLongitude),
-        );
-
-        const timeSinceDelivererConfirmed = now - new Date(order.delivererConfirmedDeliveryAt).getTime();
-        // Within 100m of customer for 10+ minutes
-        if (distToCustomer < 100 && timeSinceDelivererConfirmed > 10 * 60 * 1000) {
-          this.logger.log(`Auto-confirming delivery for order #${order.orderNumber} (proximity: ${Math.round(distToCustomer)}m)`);
-          try {
-            // `customerConfirmedAt` era setado so no objeto em memoria, e
-            // `completeOrderWithPayment` grava apenas status e completedAt — a
-            // coluna nunca era persistida. O pedido ficava COMPLETED e liquidado
-            // com customerConfirmedAt NULL, e no modelo de custodia essa e
-            // justamente a prova de recebimento que autoriza o repasse: numa
-            // disputa ou chargeback a plataforma nao conseguia demonstrar quando
-            // e como a entrega foi confirmada, tendo ja repassado a vendedor e
-            // entregador. Os outros dois caminhos de confirmacao usam claim
-            // atomico e persistem; aqui usamos o mesmo padrao.
-            const claim = await this.ordersService.claimCustomerConfirmation(
-              order.id,
-            );
-            if (claim) {
-              const fullOrder = await this.ordersService.findById(order.id);
-              await this.ordersService.completeOrderWithPayment(fullOrder);
-            }
-          } catch (err) {
-            this.logger.error(`Auto-confirm delivery failed for order ${order.id}:`, err);
-          }
-        }
-      }
-    }
+    // ─── Auto-confirm delivery by proximity: REMOVIDO ───────────────
+    //
+    // Aqui existia a finalização automática do pedido por PROXIMIDADE: se o
+    // entregador ficasse 10 minutos a menos de 100 m do endereço do cliente,
+    // o pedido era finalizado e o REPASSE LIBERADO sem nenhuma ação do
+    // cliente.
+    //
+    // Foi removido porque a prova era falsificável: a auditoria encontrou
+    // este caminho sendo acionável com GPS FORJADO pelo socket — ponto falso
+    // perto do cliente por 10 minutos e o dinheiro saía de um pedido que
+    // nunca foi entregue. O problema não era o limiar de distância nem o de
+    // tempo; era a natureza da prova. Coordenada é informação que o próprio
+    // interessado envia.
+    //
+    // O substituto é a garantia por CÓDIGOS (DeliveryCodesService): o código
+    // do cliente é um segredo que só ele tem, e quem digita é o entregador —
+    // o que só acontece se os dois estiverem no mesmo lugar. E para o caso em
+    // que o cliente não informa o código (ausente, dormindo, ou recusa), a
+    // saída é `registrarEntregaSemCodigo`: exige motivo, grava GPS e horário,
+    // e abre janela de contestação em vez de pagar no escuro.
+    //
+    // O GPS continua sendo gravado NO MOMENTO do registro de cada código,
+    // como EVIDÊNCIA para contestação de chargeback (KAN-303). A diferença é
+    // que ele deixou de ser a prova que autoriza o pagamento e passou a ser
+    // um dado de apoio àquela prova.
 
     // ─── Anomaly detection during DELIVERING ────────────────────────
     if (order.status === OrderStatus.DELIVERING) {

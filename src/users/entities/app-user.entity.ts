@@ -147,6 +147,12 @@ export class AppUser {
   @Column({ nullable: true })
   pagarmeRecipientId: string;
 
+  // Chave PIX do entregador para o repasse semanal (frete do PIX, pago toda
+  // quarta). Sem @Field: é dado de pagamento, sai só nas consultas do próprio
+  // entregador e do fechamento do superadmin.
+  @Column({ type: 'varchar', nullable: true })
+  chavePix: string | null;
+
   // Pagar.me customer ID (for saved cards)
   @Column({ nullable: true })
   pagarmeCustomerId: string;

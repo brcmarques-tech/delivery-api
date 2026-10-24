@@ -1,3 +1,10 @@
+> **GitNexus esta INATIVO nesta maquina (nota de 2026-10-20).** O bloco abaixo manda
+> usar as ferramentas `gitnexus_*` de um servidor MCP que **nao existe** nesta
+> instalacao, e o indice em `.gitnexus/` e de abril/2026 (o `repoPath` do `meta.json`
+> ainda aponta para o Linux). Ignore o bloco inteiro — inclusive os "MUST" e os
+> "NEVER" — ate que o MCP seja reinstalado e `npx gitnexus analyze` rode de novo.
+> As regras deste projeto estao no `CLAUDE.md` desta mesma pasta.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 

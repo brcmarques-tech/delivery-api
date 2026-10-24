@@ -8,6 +8,9 @@ import { VerificationLevel } from '../common/enums/verification-level.enum';
 import { VendorPlan } from '../common/enums/vendor-plan.enum';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { linhasAfetadas } from '../common/utils/db-claim';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 const LEVEL_ORDER = [
   VerificationLevel.NONE,
@@ -31,6 +34,8 @@ export class VerificationService {
     @Inject(forwardRef(() => PlatformConfigService))
     private configService: PlatformConfigService,
     private whatsAppService: WhatsAppService,
+    // KAN-82: dono OU membro da equipe com o modulo.
+    private equipeService: EquipeService,
   ) {}
 
   async getThresholds(): Promise<Record<string, number>> {
@@ -92,7 +97,7 @@ export class VerificationService {
         RETURNING id`,
       [store.id, threshold],
     );
-    if (!claim || claim.length === 0) return; // outro evento ja concedeu
+    if (linhasAfetadas(claim) === 0) return; // outro evento ja concedeu
 
     const rewards = await this.configService.getBadgeRewards(store.verificationLevel);
     this.logger.log(`Auto-granting first badge rewards to store ${store.id} (level: ${store.verificationLevel})`);
@@ -163,9 +168,12 @@ export class VerificationService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
-    if (store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      store.id,
+      ModuloDaLoja.SETTINGS,
+      'Voce nao e dono desta loja',
+    );
 
     const thresholds = await this.getThresholds();
     const threshold = thresholds[level];
@@ -192,7 +200,7 @@ export class VerificationService {
         RETURNING "badgeClaimCount"`,
       [storeId, threshold],
     );
-    if (!claim || claim.length === 0) {
+    if (linhasAfetadas(claim) === 0) {
       throw new BadRequestException('Recompensa já resgatada ou pontos insuficientes.');
     }
     const isFirstEver = Number(claim[0].badgeClaimCount) === 1;
@@ -291,7 +299,7 @@ export class VerificationService {
     const store = await this.storesRepository.findOne({ where: { id: storeId }, relations: ['owner'] });
     if (!store) throw new NotFoundException('Loja nao encontrada');
 
-    if (userId && store.owner?.id !== userId) {
+    if (userId && !(await this.equipeService.podeGerenciar(userId, store.id, ModuloDaLoja.SETTINGS))) {
       throw new ForbiddenException('Esta loja nao pertence a voce');
     }
 

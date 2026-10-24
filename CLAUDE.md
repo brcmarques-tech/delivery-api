@@ -1,3 +1,10 @@
+> **GitNexus esta INATIVO nesta maquina (nota de 2026-10-20).** O bloco abaixo manda
+> usar as ferramentas `gitnexus_*` de um servidor MCP que **nao existe** nesta
+> instalacao, e o indice em `.gitnexus/` e de abril/2026 (o `repoPath` do `meta.json`
+> ainda aponta para o Linux). Ignore o bloco inteiro — inclusive os "MUST" e os
+> "NEVER" — ate que o MCP seja reinstalado e `npx gitnexus analyze` rode de novo.
+> As regras validas do projeto comecam depois de `<!-- gitnexus:end -->`.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
@@ -106,7 +113,7 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 - NestJS + TypeScript + TypeORM + PostgreSQL
 - GraphQL (Apollo Server 4, schema auto-gerado)
 - WebSocket subscriptions via graphql-subscriptions (PubSub in-memory)
-- Deploy: Render Free Tier
+- Deploy: Docker na AWS Lightsail (ver `../SUBIR_PROD.md`) — Render foi abandonado
 
 ## Regras Específicas
 
@@ -115,7 +122,7 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 - Relations obrigatórias: `['customer', 'store', 'items', 'items.product', 'delivery', 'delivery.deliverer', 'coupon']`
 
 ### Banco de Dados
-- TypeORM com `synchronize: true` (dev) — cuidado com mudanças destrutivas em entities
+- TypeORM com `synchronize: true` **só em dev**; produção roda `migrationsRun` com as migrations de `src/migrations/` (KAN-214). Coluna nova em entity **exige migration** — sem ela o deploy quebra toda leitura da tabela
 - Timestamps salvos como UTC mas o servidor roda BRT (UTC-3) — os frontends compensam com `SERVER_OFFSET_MS`
 - Soft delete em notifications (campo `deletedAt`)
 

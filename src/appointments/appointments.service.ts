@@ -8,7 +8,8 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, In, IsNull, Between, LessThanOrEqual } from 'typeorm';
+import { Repository, Not, In, IsNull, Between, LessThanOrEqual, MoreThanOrEqual, MoreThan } from 'typeorm';
+import { linhasAfetadas } from '../common/utils/db-claim';
 import { Appointment } from './entities/appointment.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Service } from '../services/entities/service.entity';
@@ -22,6 +23,9 @@ import { RequestQuoteInput } from './dto/request-quote.input';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
+import { percentualEmReais } from '../common/dinheiro';
 
 const RELATIONS = ['customer', 'store', 'store.owner', 'service', 'service.category'];
 
@@ -54,6 +58,8 @@ export class AppointmentsService {
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
     private platformConfigService: PlatformConfigService,
+    // KAN-82: dono OU membro da equipe com o modulo.
+    private equipeService: EquipeService,
   ) {}
 
   // ─── Available Slots ────────────────────────────────────
@@ -206,7 +212,7 @@ export class AppointmentsService {
       // com `||`, o 0 (falsy) virava 5, cobrando 5% de comissão de quem tem 0%
       // contratado. Só usa o default 5 quando o valor é realmente ausente.
       const commissionPercent = planConfig?.commissionPercent ?? 5;
-      commissionAmount = Math.round(Number(service.price) * commissionPercent) / 100;
+      commissionAmount = percentualEmReais(Number(service.price), commissionPercent);
     }
 
     // Transaction to prevent race condition
@@ -393,7 +399,7 @@ export class AppointmentsService {
 
   async respondQuote(id: string, price: number, response: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.QUOTED);
 
     appointment.price = price;
@@ -526,7 +532,7 @@ export class AppointmentsService {
 
   async confirmAppointment(id: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.CONFIRMED);
 
     appointment.status = AppointmentStatus.CONFIRMED;
@@ -575,7 +581,7 @@ export class AppointmentsService {
 
   async vendorCancelAppointment(id: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.CANCELLED);
 
     appointment.status = AppointmentStatus.CANCELLED;
@@ -606,7 +612,7 @@ export class AppointmentsService {
 
   async completeAppointment(id: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.COMPLETED);
 
     appointment.status = AppointmentStatus.COMPLETED;
@@ -631,7 +637,7 @@ export class AppointmentsService {
 
   async markNoShow(id: string, vendorId: string): Promise<Appointment> {
     const appointment = await this.findByIdWithRelations(id);
-    this.validateStoreOwner(appointment, vendorId);
+    await this.validateStoreOwner(appointment, vendorId);
     this.validateTransition(appointment.status, AppointmentStatus.NO_SHOW);
 
     appointment.status = AppointmentStatus.NO_SHOW;
@@ -664,9 +670,12 @@ export class AppointmentsService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
-    if (store.owner.id !== vendorId) {
-      throw new BadRequestException('Sem permissao');
-    }
+    await this.equipeService.exigirPermissao(
+      vendorId,
+      store.id,
+      ModuloDaLoja.ORDERS,
+      'Sem permissao',
+    );
 
     const where: any = { storeId, deletedAt: IsNull() };
     if (date) where.scheduledDate = date;
@@ -757,6 +766,92 @@ export class AppointmentsService {
 
   // ─── Reminder ───────────────────────────────────────────
 
+
+  /**
+   * Re-tenta a liquidação de agendamentos concluídos cujo repasse falhou.
+   *
+   * `completeAppointment` chama `settleAppointmentPayment` em fire-and-forget:
+   * um `.catch` que só escreve no log. Se a chamada ao Pagar.me falhar (rede,
+   * 5xx, recipient momentaneamente recusado), NADA re-tentava — o agendamento
+   * ficava COMPLETED com `isSettled = false` para sempre e o lojista nunca
+   * recebia por um serviço já prestado. Pedidos já tinham
+   * `retryFailedSettlements`; agendamentos ficaram de fora.
+   *
+   * Mesma janela de 48h dos pedidos: fora dela o caso vira reconciliação manual
+   * em vez de ficar re-tentando para sempre.
+   */
+  async retryFailedAppointmentSettlements(): Promise<number> {
+    const janela = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const pendentes = await this.appointmentsRepository.find({
+      where: {
+        status: AppointmentStatus.COMPLETED,
+        isSettled: false,
+        paymentMethod: In(['PIX', 'CREDIT_CARD']),
+        updatedAt: MoreThanOrEqual(janela),
+        deletedAt: IsNull(),
+      },
+      relations: RELATIONS,
+    });
+
+    let liquidados = 0;
+    for (const apt of pendentes) {
+      try {
+        await this.paymentsService.settleAppointmentPayment(apt);
+        liquidados++;
+      } catch (err: any) {
+        // Segue isSettled=false; volta no próximo ciclo enquanto estiver na janela.
+        this.logger.error(
+          `Retry de liquidação falhou para ${apt.appointmentNumber}: ${err?.message}`,
+        );
+      }
+    }
+    return liquidados;
+  }
+
+  /**
+   * Agendamentos com repasse de PRESTADOR retido na plataforma e não pago.
+   *
+   * Irmã de `vendorPayables` em orders. A transferência FOI tentada e o
+   * provedor recusou por bloqueio de origem (allowlist de IP, KAN-299).
+   *
+   * Estes seguem com `isSettled = false`: o prestador não recebeu, e marcar
+   * como liquidado esconderia a dívida. É também por isso que continuam
+   * aparecendo no retry de 48h — e isso é desejado: no dia em que o IP for
+   * liberado, o próprio retry zera o passivo sozinho, sem ninguém ter de
+   * conciliar nada à mão.
+   */
+  async vendorPayables(apenasAbertos = true): Promise<Appointment[]> {
+    const where: any = {
+      vendorPayableCents: MoreThan(0),
+      deletedAt: IsNull(),
+    };
+    if (apenasAbertos) where.vendorPayablePaidAt = IsNull();
+    return this.appointmentsRepository.find({
+      where,
+      relations: RELATIONS,
+      order: { updatedAt: 'ASC' },
+      take: 500,
+    });
+  }
+
+  /** Dá baixa no repasse manual do prestador. Idempotente, como as irmãs. */
+  async markVendorPayablePaid(appointmentId: string): Promise<Appointment> {
+    const claim = await this.appointmentsRepository.manager.query(
+      `UPDATE appointments SET "vendorPayablePaidAt" = NOW()
+         WHERE id = $1
+           AND "vendorPayableCents" IS NOT NULL
+           AND "vendorPayablePaidAt" IS NULL
+         RETURNING id`,
+      [appointmentId],
+    );
+    if (linhasAfetadas(claim) === 0) {
+      throw new BadRequestException(
+        'Este repasse não está em aberto (já foi baixado ou não existe).',
+      );
+    }
+    return this.findByIdWithRelations(appointmentId);
+  }
+
   async sendUpcomingReminders(): Promise<number> {
     // BUGFIX: o comentario antigo dizia "server runs in BRT" — em producao NAO
     // roda (TZ=UTC). O lembrete de 1 hora era calculado em UTC contra horarios
@@ -819,10 +914,17 @@ export class AppointmentsService {
     }
   }
 
-  private validateStoreOwner(appointment: Appointment, vendorId: string): void {
-    if (appointment.store.owner.id !== vendorId) {
-      throw new BadRequestException('Sem permissao para este agendamento');
-    }
+  // KAN-82: virou assincrono porque a autorizacao agora CONSULTA a equipe da
+  // loja — nao da mais para decidir so olhando o objeto em memoria. Os cinco
+  // chamadores passaram a aguardar; sem o await, a excecao viraria uma Promise
+  // rejeitada ignorada e a checagem de permissao simplesmente nao aconteceria.
+  private async validateStoreOwner(appointment: Appointment, vendorId: string): Promise<void> {
+    await this.equipeService.exigirPermissao(
+      vendorId,
+      appointment.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Sem permissao para este agendamento',
+    );
   }
 
   private validateCustomer(appointment: Appointment, customerId: string): void {

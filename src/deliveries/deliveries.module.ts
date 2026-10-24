@@ -11,15 +11,22 @@ import { DeliveryConfirmationScheduler } from './delivery-confirmation.scheduler
 import { GeolocationAutomationService } from './geolocation-automation.service';
 import { OrdersModule } from '../orders/orders.module';
 import { UsersModule } from '../users/users.module';
-// PaymentsModule no longer needed — Pagar.me split handles all payments at transaction time
+// O scheduler de confirmacao de entrega tambem DRENA OS PASSIVOS
+// (PaymentsService.drenarPassivos, KAN-300), entao o PaymentsService voltou a
+// ser dependencia deste modulo. forwardRef porque PaymentsModule alcanca
+// UsersModule/OrdersModule, que alcancam este de volta.
+import { PaymentsModule } from '../payments/payments.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PlatformConfigModule } from '../config/platform-config.module';
+import { FidelidadeModule } from '../loyalty/fidelidade.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Delivery, Order]),
     forwardRef(() => OrdersModule),
     forwardRef(() => UsersModule),
+    forwardRef(() => PaymentsModule),
+    FidelidadeModule,
     NotificationsModule,
     PlatformConfigModule,
   ],

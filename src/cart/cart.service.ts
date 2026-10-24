@@ -44,12 +44,17 @@ export class CartService {
       // o mesmo valor e um sobrescreve o outro (lost update: some uma adicao).
       // `increment` gera SET quantity = quantity + n no banco (atomico). Peso e
       // set absoluto (ultimo a escrever vence, que e o esperado para peso).
-      if (input.weightGrams !== undefined) {
+      // `!= null`, nao `!== undefined`: o app manda `weightGrams: null` e
+      // `notes: null` para produto por unidade. Com `!== undefined` o null
+      // entrava no ramo do PESO e pulava a soma: adicionar de novo um item que
+      // ja estava no carrinho nunca aumentava a quantidade — e apagava a
+      // observacao que a pessoa tinha escrito.
+      if (input.weightGrams != null) {
         await this.cartItemRepo.update(existing.id, { weightGrams: input.weightGrams });
       } else {
         await this.cartItemRepo.increment({ id: existing.id }, 'quantity', input.quantity);
       }
-      if (input.notes !== undefined) {
+      if (input.notes != null) {
         await this.cartItemRepo.update(existing.id, { notes: input.notes });
       }
       return this.findById(existing.id);
@@ -83,12 +88,12 @@ export class CartService {
         });
         if (concurrent) {
           // mesmo lost-update do ramo "ja existe": incremento atomico
-          if (input.weightGrams !== undefined) {
+          if (input.weightGrams != null) {
             await this.cartItemRepo.update(concurrent.id, { weightGrams: input.weightGrams });
           } else {
             await this.cartItemRepo.increment({ id: concurrent.id }, 'quantity', input.quantity);
           }
-          if (input.notes !== undefined) {
+          if (input.notes != null) {
             await this.cartItemRepo.update(concurrent.id, { notes: input.notes });
           }
           return this.findById(concurrent.id);

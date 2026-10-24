@@ -6,6 +6,7 @@ import { OrderStatusLog } from './entities/order-status-log.entity';
 import { Delivery } from '../deliveries/entities/delivery.entity';
 import { OrdersService } from './orders.service';
 import { OrdersResolver } from './orders.resolver';
+import { DeliveryCodesService } from './delivery-codes.service';
 import { ProductsModule } from '../products/products.module';
 import { StoresModule } from '../stores/stores.module';
 import { DeliveriesModule } from '../deliveries/deliveries.module';
@@ -15,10 +16,17 @@ import { AddressesModule } from '../addresses/addresses.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CouponsModule } from '../coupons/coupons.module';
 import { MailModule } from '../mail/mail.module';
+import { FidelidadeModule } from '../loyalty/fidelidade.module';
+import { RepasseEntregador } from './entities/repasse-entregador.entity';
+import { RepassesEntregadorService } from './repasses-entregador.service';
+import { RepassesEntregadorResolver } from './repasses-entregador.resolver';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Order, OrderItem, Delivery, OrderStatusLog]),
+    TypeOrmModule.forFeature([Order, OrderItem, Delivery, OrderStatusLog, RepasseEntregador]),
+    // KAN-12: a conclusao do pedido e o momento em que o marco de fidelidade e
+    // avaliado — o premio chega com a pessoa ainda com o app na mao.
+    FidelidadeModule,
     ProductsModule,
     forwardRef(() => StoresModule),
     forwardRef(() => DeliveriesModule),
@@ -29,7 +37,9 @@ import { MailModule } from '../mail/mail.module';
     CouponsModule,
     MailModule,
   ],
-  providers: [OrdersService, OrdersResolver],
-  exports: [OrdersService],
+  providers: [OrdersService, OrdersResolver, DeliveryCodesService, RepassesEntregadorService, RepassesEntregadorResolver],
+  // Exportado porque a camada de entregas precisa dele para gerar o código do
+  // entregador no momento em que a corrida é aceita.
+  exports: [OrdersService, DeliveryCodesService],
 })
 export class OrdersModule {}

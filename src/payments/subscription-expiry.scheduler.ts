@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, Not, IsNull } from 'typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { Repository, LessThan, Not, IsNull, DataSource } from 'typeorm';
+import { comTravaDistribuida } from '../common/utils/trava-distribuida';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { Subscription } from './entities/subscription.entity';
 import { VendorPlan } from '../common/enums';
@@ -23,6 +24,7 @@ export class SubscriptionExpiryScheduler implements OnModuleInit, OnModuleDestro
     private notificationsService: NotificationsService,
     private whatsAppService: WhatsAppService,
     private vendorUsersService: VendorUsersService,
+    @InjectDataSource() private dataSource: DataSource,
   ) {}
 
   onModuleInit() {
@@ -31,9 +33,11 @@ export class SubscriptionExpiryScheduler implements OnModuleInit, OnModuleDestro
     // o processo dependendo da config do Node). Com o `.catch`, uma rodada com
     // problema apenas loga e o scheduler continua vivo.
     this.intervalRef = setInterval(() => {
-      this.checkExpiredPlans().catch((err) =>
-        this.logger.error('checkExpiredPlans falhou:', err),
-      );
+      // KAN-254: rebaixar plano e avisar o lojista sao acoes visiveis; em duas
+      // instancias saiam em dobro. A trava e do banco (ver trava-distribuida).
+      comTravaDistribuida(this.dataSource, 'tick:expiracao-de-plano', () =>
+        this.checkExpiredPlans(),
+      ).catch((err) => this.logger.error('checkExpiredPlans falhou:', err));
     }, CHECK_INTERVAL_MS);
     this.logger.log('Subscription expiry scheduler started (60s interval)');
   }

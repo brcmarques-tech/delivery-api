@@ -76,6 +76,18 @@ export class DeliveriesGateway
     return (client.data as any)?.user?.sub ?? null;
   }
 
+  // ALTO (auditoria 2026-08-23): os handlers de entregador (delivererOnline,
+  // location, acceptOffer, declineOffer) só checavam identidade, não ROLE. Como
+  // entrar na sala 'deliverers'/no tracker não exigia ser entregador, qualquer
+  // conta logada podia se declarar online e passar a receber `newAvailableDelivery`
+  // / `deliveryOffer` — que carregam o ENDEREÇO do cliente, nº e valor do pedido —
+  // além de poluir o tracker e sabotar a cascata de ofertas. O JWT do entregador
+  // carrega role='DELIVERER' (a aprovação seta role E isDeliverer juntos), que é o
+  // mesmo que o guard HTTP de acceptDelivery já exige.
+  private isDeliverer(client: Socket): boolean {
+    return (client.data as any)?.user?.role === 'DELIVERER';
+  }
+
   handleConnection(client: Socket) {
     const raw =
       (client.handshake.auth as any)?.token ||
@@ -100,7 +112,9 @@ export class DeliveriesGateway
     // aparelho, continuava com o socket valido ate o JWT expirar (7 dias) —
     // seguia online, aparecia no getNearestDeliverers, recebia ofertas e podia
     // aceitar por `acceptOffer`, prendendo um pedido que o guard HTTP recusa.
-    this.appUsersService
+    //
+    // A promessa fica guardada: os handlers esperam por ela (ver autenticado).
+    (client.data as any).autenticacao = this.appUsersService
       .findById(payload?.sub)
       .then((user) => {
         const revogado =
@@ -111,9 +125,28 @@ export class DeliveriesGateway
           client.disconnect(true);
           return;
         }
-        (client.data as any).user = payload;
+        // O papel vem do BANCO, nao do JWT. O JWT guarda o papel da hora do
+        // login: o entregador recem-aprovado seguia com 'CUSTOMER' no token, o
+        // app mostrava "Online" (o HTTP ja le o papel do banco) e o socket o
+        // tratava como cliente — fora do tracker, sem receber corrida nenhuma
+        // ate sair e entrar de novo.
+        (client.data as any).user = { ...payload, role: user.role };
       })
       .catch(() => client.disconnect(true));
+  }
+
+  /**
+   * Espera a validação da conexão terminar.
+   *
+   * Ela é assíncrona (consulta o banco), e o app manda 'delivererOnline' no
+   * MESMO instante do connect. Sem esperar, a mensagem às vezes chegava antes
+   * de `client.data.user` existir, voltava 'unauthorized' e era descartada em
+   * silêncio: o entregador ficava "Online" na tela, mas fora do tracker — não
+   * recebia corrida nenhuma e não era rastreado. Corrida de tempo: uns
+   * entregadores entravam, outros não.
+   */
+  private async autenticado(client: Socket): Promise<void> {
+    await ((client.data as any)?.autenticacao ?? Promise.resolve());
   }
 
   handleDisconnect(client: Socket) {
@@ -129,6 +162,7 @@ export class DeliveriesGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() data: string | { orderId: string },
   ) {
+    await this.autenticado(client);
     const uid = this.userIdOf(client);
     if (!uid) return;
     const orderId = typeof data === 'string' ? data : data.orderId;
@@ -145,6 +179,7 @@ export class DeliveriesGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { deliveryId: string; latitude: number; longitude: number },
   ) {
+    await this.autenticado(client);
     const uid = this.userIdOf(client);
     if (!uid) return;
     // So o entregador DAQUELA entrega pode mover o ponto dela.
@@ -161,6 +196,22 @@ export class DeliveriesGateway
       latitude: data.latitude,
       longitude: data.longitude,
     });
+
+    // Várias corridas da mesma loja: a mesma posição vale para todas, e cada
+    // cliente acompanha o entregador no SEU pedido.
+    const outras = await this.deliveriesService.propagarPosicao(
+      uid,
+      data.deliveryId,
+      data.latitude,
+      data.longitude,
+    );
+    for (const o of outras) {
+      this.server.to(`order:${o.orderId}`).emit('locationUpdate', {
+        deliveryId: o.deliveryId,
+        latitude: data.latitude,
+        longitude: data.longitude,
+      });
+    }
   }
 
   @SubscribeMessage('delivererOnline')
@@ -168,10 +219,12 @@ export class DeliveriesGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { userId?: string; latitude: number; longitude: number },
   ) {
+    await this.autenticado(client);
     // Identidade da SESSAO — antes vinha do payload, permitindo se passar por
     // qualquer entregador e injetar GPS falso no tracker.
     const uid = this.userIdOf(client);
     if (!uid) return { status: 'unauthorized' };
+    if (!this.isDeliverer(client)) return { status: 'forbidden' };
     data = { ...data, userId: uid };
     const now = Date.now();
     const last = this.lastOnlineEvent.get(uid) || 0;
@@ -193,12 +246,14 @@ export class DeliveriesGateway
   }
 
   @SubscribeMessage('delivererLocationUpdate')
-  handleDelivererLocationUpdate(
+  async handleDelivererLocationUpdate(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { userId?: string; latitude: number; longitude: number },
   ) {
+    await this.autenticado(client);
     const uid = this.userIdOf(client);
     if (!uid) return;
+    if (!this.isDeliverer(client)) return;
     const now = Date.now();
     const last = this.lastLocationUpdate.get(uid) || 0;
     if (now - last < DeliveriesGateway.LOCATION_THROTTLE_MS) {
@@ -209,10 +264,11 @@ export class DeliveriesGateway
   }
 
   @SubscribeMessage('delivererOffline')
-  handleDelivererOffline(
+  async handleDelivererOffline(
     @ConnectedSocket() client: Socket,
     @MessageBody() _data: { userId?: string },
   ) {
+    await this.autenticado(client);
     // Identidade da sessao — antes dava para derrubar qualquer entregador.
     const uid = this.userIdOf(client);
     if (!uid) return { status: 'unauthorized' };
@@ -224,25 +280,29 @@ export class DeliveriesGateway
   }
 
   @SubscribeMessage('acceptOffer')
-  handleAcceptOffer(
+  async handleAcceptOffer(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { orderId: string; delivererId?: string },
   ) {
+    await this.autenticado(client);
     // Identidade da sessao — antes qualquer cliente aceitava a oferta em nome de
     // outro, encerrando a cascata (o pedido ficava sem entregador nenhum).
     const uid = this.userIdOf(client);
     if (!uid) return { accepted: false };
+    if (!this.isDeliverer(client)) return { accepted: false };
     const accepted = this.offerService.acceptOffer(data.orderId, uid);
     return { accepted };
   }
 
   @SubscribeMessage('declineOffer')
-  handleDeclineOffer(
+  async handleDeclineOffer(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { orderId: string; delivererId?: string },
   ) {
+    await this.autenticado(client);
     const uid = this.userIdOf(client);
     if (!uid) return { status: 'unauthorized' };
+    if (!this.isDeliverer(client)) return { status: 'forbidden' };
     this.offerService.declineOffer(data.orderId, uid);
     return { status: 'declined' };
   }

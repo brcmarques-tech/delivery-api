@@ -1,9 +1,10 @@
-import { Resolver, Query, Mutation, Args, Subscription, Int, ObjectType, Field, ID, Float } from '@nestjs/graphql';
-import { UseGuards, Inject, BadRequestException } from '@nestjs/common';
+import { Resolver, Query, Mutation, Args, Subscription, Int, ObjectType, Field, ID, Float, ResolveField, Parent, Context } from '@nestjs/graphql';
+import { UseGuards, Inject, BadRequestException, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PubSub } from 'graphql-subscriptions';
 import { Order } from './entities/order.entity';
 import { OrdersService } from './orders.service';
+import { DeliveryCodesService } from './delivery-codes.service';
 import { CreateOrderInput } from './dto/create-order.input';
 import { OrderPage } from './dto/order-page.output';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard';
@@ -14,6 +15,11 @@ import { Permission } from '../auth/decorators/permission.decorator';
 import { AppUser } from '../users/entities/app-user.entity';
 import { UserRole, OrderStatus } from '../common/enums';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
+import { DeliveryOfferService } from '../deliveries/delivery-offer.service';
+import { PlatformConfigService } from '../config/platform-config.service';
+import { percentualEmCentavos } from '../common/dinheiro';
 
 // KAN: escopo de ownership das subscriptions de pedido. O usuário autenticado do
 // WebSocket chega no `context.wsUser` (validado no onConnect do GraphQLModule).
@@ -28,6 +34,57 @@ function wsUserIsOrderParty(order: any, user: any): boolean {
     order?.store?.owner?.id === uid ||
     order?.delivery?.deliverer?.id === uid
   );
+}
+
+/**
+ * A evidência de uma entrega, para a plataforma decidir uma disputa.
+ *
+ * NENHUM CAMPO AQUI É UM CÓDIGO, e isso é a regra do tipo, não um descuido.
+ * O que decide uma disputa é SE e QUANDO cada código foi registrado, com qual
+ * GPS e com que motivo — nunca qual era o número. Devolver o valor abriria uma
+ * rota de leitura para o segredo sem utilidade nenhuma na tela de quem decide.
+ *
+ * Quem for acrescentar campo aqui: datas, coordenadas, contadores e texto
+ * escrito por pessoas, sim. Os seis dígitos, não.
+ */
+@ObjectType()
+export class EvidenciaDeEntrega {
+  @Field(() => ID) orderId: string;
+
+  /** Pedido antigo (criado antes do deploy) não tem código nenhum. */
+  @Field() usaCodigo: boolean;
+
+  @Field(() => Date, { nullable: true }) codigoDaLojaEm: Date | null;
+  @Field(() => Date, { nullable: true }) codigoDoEntregadorEm: Date | null;
+  @Field(() => Date, { nullable: true }) codigoDoClienteEm: Date | null;
+
+  /** Onde o entregador estava ao registrar o código da LOJA. */
+  @Field(() => Float, { nullable: true }) coletaLat: number | null;
+  @Field(() => Float, { nullable: true }) coletaLng: number | null;
+
+  /** Onde ele estava ao registrar o código do CLIENTE, ou a entrega sem código. */
+  @Field(() => Float, { nullable: true }) entregaLat: number | null;
+  @Field(() => Float, { nullable: true }) entregaLng: number | null;
+
+  @Field(() => Date, { nullable: true }) entregaSemCodigoEm: Date | null;
+  // Tipo EXPLÍCITO. Com `string | null` o reflect-metadata entrega `Object` e
+  // o Nest recusa a montar o schema — a API nem sobe. O typecheck passa liso;
+  // quem denuncia é o boot.
+  @Field(() => String, { nullable: true }) entregaSemCodigoMotivo: string | null;
+
+  @Field(() => Int) janelaDeContestacaoHoras: number;
+  @Field(() => Date, { nullable: true }) janelaVenceEm: Date | null;
+
+  /**
+   * Tentativas erradas acumuladas. Não prova má-fé por si só — digitar errado
+   * acontece —, mas cinco tentativas num pedido contestado é um fato que quem
+   * decide tem de ver.
+   */
+  @Field(() => Int) tentativasErradas: number;
+  @Field(() => Date, { nullable: true }) bloqueadoAte: Date | null;
+
+  /** A prova de recebimento, quando o cliente confirmou de verdade. */
+  @Field(() => Date, { nullable: true }) confirmadoPeloClienteEm: Date | null;
 }
 
 @ObjectType()
@@ -101,7 +158,56 @@ export class OrdersResolver {
     private ordersService: OrdersService,
     @Inject(PUB_SUB) private pubSub: PubSub,
     private configService: ConfigService,
+    private deliveryCodesService: DeliveryCodesService,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
+    // Vez exclusiva da cascata de ofertas (ver DeliveryOfferService).
+    @Inject(forwardRef(() => DeliveryOfferService))
+    private offerService: DeliveryOfferService,
+    private platformConfigService: PlatformConfigService,
   ) {}
+
+  /**
+   * Quanto o entregador do app recebe por esta corrida: o frete menos a
+   * comissão de entrega da plataforma — a mesma conta do settlePayment. O app
+   * mostrava o frete BRUTO como "Taxa de entrega" (R$ 0,98 na tela, R$ 0,88 no
+   * bolso). Null quando não há entregador do app (retirada ou frota própria).
+   */
+  @ResolveField(() => Float, { nullable: true })
+  async ganhoDoEntregador(@Parent() order: Order): Promise<number | null> {
+    if (order.isPickup || order.store?.hasOwnDelivery) return null;
+    const freteCents = Math.round((Number(order.deliveryFee) || 0) * 100);
+    const pct = await this.platformConfigService.getDeliveryCommissionPercent();
+    return (freteCents - percentualEmCentavos(freteCents, pct)) / 100;
+  }
+
+  /**
+   * Segundos que restam na vez exclusiva DESTE entregador para esta corrida.
+   * Nulo quando a corrida está aberta para todos (ou não é a vez dele). O app
+   * desenha a barra a partir daqui — o número vem pronto do servidor porque o
+   * relógio do celular pode estar errado.
+   *
+   * Lê o usuário pelo contexto e não pelo @CurrentUser: este campo pode ser
+   * pedido num contexto sem `req` (assinatura por WebSocket), e o decorator
+   * quebraria lá.
+   */
+  @ResolveField(() => Int, { nullable: true })
+  vezSegundosRestantes(@Parent() order: Order, @Context() ctx: any): number | null {
+    const userId: string | undefined = ctx?.req?.user?.id;
+    if (!userId) return null;
+    return this.offerService.estadoPara(order.id, userId).segundosRestantes;
+  }
+
+  /**
+   * O cliente chegou a ser cobrado? Decide o texto do cancelamento no app
+   * ("nenhuma cobrança foi feita" x "o estorno volta em..."). Ver
+   * OrdersService.cobrancaFeita.
+   */
+  @ResolveField(() => Boolean)
+  cobrancaFeita(@Parent() order: Order): Promise<boolean> {
+    return this.ordersService.cobrancaFeita(order);
+  }
 
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard)
@@ -181,17 +287,34 @@ export class OrdersResolver {
     @CurrentUser() user: AppUser,
   ): Promise<Order[]> {
     const store = await this.ordersService.findStoreById(storeId);
-    if (store?.owner?.id !== user.id) {
-      throw new BadRequestException('Você não tem permissão para ver pedidos desta loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      store?.id,
+      ModuloDaLoja.ORDERS,
+      'Você não tem permissão para ver pedidos desta loja.',
+    );
     return this.ordersService.findByStore(storeId);
   }
 
   @Query(() => [Order])
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.DELIVERER)
-  availableDeliveries(): Promise<Order[]> {
-    return this.ordersService.findPendingForDelivery();
+  async availableDeliveries(@CurrentUser() user: AppUser): Promise<Order[]> {
+    // Vez exclusiva: corrida na cascata só aparece para quem está com a vez.
+    // Antes todo entregador via todas, e a vez do mais perto não valia nada.
+    const pedidos = await this.ordersService.findPendingForDelivery();
+    return pedidos.filter((p) => this.offerService.estadoPara(p.id, user.id).visivel);
+  }
+
+  /** O entregador passa a vez: a corrida vai na hora para o próximo. */
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  recusarOferta(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): boolean {
+    return this.offerService.declineOffer(orderId, user.id);
   }
 
   // KAN-292: paginado no servidor (status/busca/limit/offset). Antes retornava a
@@ -250,9 +373,12 @@ export class OrdersResolver {
     @CurrentUser() user: AppUser,
   ): Promise<Order> {
     const order = await this.ordersService.findById(orderId);
-    if (order.store?.owner?.id !== user.id) {
-      throw new BadRequestException('Você não tem permissão para este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Você não tem permissão para este pedido',
+    );
     return this.ordersService.requestCancelDispute(orderId, user.id);
   }
 
@@ -306,6 +432,201 @@ export class OrdersResolver {
     return this.ordersService.vendorConfirmPickup(orderId, user.id);
   }
 
+  // ─── Garantia de entrega por CÓDIGOS ──────────────────────────────────
+  //
+  // LEITURA: cada parte lê SÓ o seu código, por uma query dedicada que valida
+  // posse e devolve um único valor.
+  //
+  // Isto não é preciosismo de API: os códigos NÃO são campos do tipo `Order`
+  // (ver order.entity.ts) exatamente para que nenhuma query de pedido os
+  // carregue de carona. Se o código do cliente fosse campo do pedido, a query
+  // do ENTREGADOR o traria — e ele é justamente o segredo que o entregador tem
+  // de receber da pessoa, não de ler no próprio app. Esse erro já aconteceu
+  // três vezes neste projeto com outros dados sensíveis.
+
+  /**
+   * A EVIDÊNCIA DE UMA ENTREGA, para a plataforma decidir uma disputa.
+   *
+   * Existe porque recuperar repasse já feito é IMPOSSÍVEL (KAN-303): a defesa
+   * da plataforma num chargeback é a prova de entrega, e quem decide precisa
+   * tê-la na tela. Hoje a aba de disputas do superadmin mostra só o motivo que
+   * o cliente escreveu — ou seja, só um dos dois lados.
+   *
+   * Query DEDICADA, e não campos no tipo `Order`, por dois motivos:
+   *
+   *  1. o GPS do entregador e o motivo que ele escreveu são informação sobre
+   *     pessoas. Posto no `Order`, qualquer um que leia o pedido os recebe —
+   *     inclusive o cliente, que é a outra parte da disputa.
+   *  2. é o mesmo desenho das três queries de código acima, e por consistência
+   *     é mais fácil de auditar: dado sensível de entrega mora em query
+   *     guardada, não em campo de pedido.
+   *
+   * NÃO DEVOLVE CÓDIGO NENHUM — nem para o superadmin. Ele não precisa: o que
+   * decide uma disputa é SE e QUANDO cada código foi registrado, com qual GPS,
+   * não qual era o número. Devolver o valor aqui criaria uma rota de leitura
+   * para o segredo, e o segredo não tem utilidade nenhuma nesta tela.
+   */
+  @Query(() => EvidenciaDeEntrega)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  async evidenciaDeEntrega(
+    @Args('orderId') orderId: string,
+  ): Promise<EvidenciaDeEntrega> {
+    const pedido = await this.ordersService.findById(orderId);
+    const horas = Math.max(
+      1,
+      Number(process.env.DELIVERY_NO_CODE_DISPUTE_HOURS) || 24,
+    );
+    const semCodigoEm = pedido.entregaSemCodigoEm;
+    return {
+      orderId: pedido.id,
+      usaCodigo: !!pedido.codigoVendedor,
+      codigoDaLojaEm: pedido.codigoVendedorUsadoEm ?? null,
+      codigoDoEntregadorEm: pedido.codigoEntregadorUsadoEm ?? null,
+      codigoDoClienteEm: pedido.codigoClienteUsadoEm ?? null,
+      coletaLat: pedido.codigoVendedorLat ?? null,
+      coletaLng: pedido.codigoVendedorLng ?? null,
+      entregaLat: pedido.codigoClienteLat ?? null,
+      entregaLng: pedido.codigoClienteLng ?? null,
+      entregaSemCodigoEm: semCodigoEm ?? null,
+      entregaSemCodigoMotivo: pedido.entregaSemCodigoMotivo ?? null,
+      janelaDeContestacaoHoras: horas,
+      // Quando a janela vence (ou venceu). Calculado aqui e não no cliente
+      // porque a duração é de uma env var do servidor — o painel não tem como
+      // saber, e chutar 24h daria data errada se alguém reconfigurar.
+      janelaVenceEm: semCodigoEm
+        ? new Date(semCodigoEm.getTime() + horas * 3600_000)
+        : null,
+      tentativasErradas: pedido.codigoTentativas ?? 0,
+      bloqueadoAte: pedido.codigoBloqueadoAte ?? null,
+      confirmadoPeloClienteEm: pedido.customerConfirmedAt ?? null,
+    };
+  }
+
+  /** O lojista lê o código QUE O ENTREGADOR vai digitar na coleta. */
+  @Query(() => String, { nullable: true })
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  codigoDaMinhaLoja(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<string | null> {
+    return this.deliveryCodesService.lerCodigo(orderId, 'VENDEDOR', user.id);
+  }
+
+  /** O entregador lê o código QUE O LOJISTA vai digitar na coleta. */
+  @Query(() => String, { nullable: true })
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  meuCodigoDeEntregador(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<string | null> {
+    return this.deliveryCodesService.lerCodigo(orderId, 'ENTREGADOR', user.id);
+  }
+
+  /** O cliente lê o código QUE O ENTREGADOR vai digitar na porta. */
+  @Query(() => String, { nullable: true })
+  @UseGuards(GqlAuthGuard)
+  meuCodigoDeEntrega(
+    @Args('orderId') orderId: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<string | null> {
+    return this.deliveryCodesService.lerCodigo(orderId, 'CLIENTE', user.id);
+  }
+
+  // REGISTRO: quem digita é sempre a OUTRA parte. É essa troca cruzada que faz
+  // o código provar presença física — e não apenas que alguém logado tocou num
+  // botão, que era toda a "prova" do fluxo anterior.
+
+  /** Coleta: o ENTREGADOR digita o código da loja. */
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  registrarCodigoDaLoja(
+    @Args('orderId') orderId: string,
+    @Args('codigo') codigo: string,
+    @CurrentUser() user: AppUser,
+    // O GPS do entregador no instante do registro. É a evidência que sustenta
+    // a contestação de chargeback (KAN-303), onde recuperar repasse já feito é
+    // impossível e a defesa é a prova de entrega.
+    @Args('latitude', { type: () => Float, nullable: true }) latitude?: number,
+    @Args('longitude', { type: () => Float, nullable: true }) longitude?: number,
+  ): Promise<Order> {
+    return this.deliveryCodesService.registrarCodigo({
+      orderId,
+      parte: 'VENDEDOR',
+      codigo,
+      digitadoPor: user.id,
+      latitude,
+      longitude,
+    });
+  }
+
+  /** Coleta: o LOJISTA digita o código do entregador. */
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  registrarCodigoDoEntregador(
+    @Args('orderId') orderId: string,
+    @Args('codigo') codigo: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<Order> {
+    return this.deliveryCodesService.registrarCodigo({
+      orderId,
+      parte: 'ENTREGADOR',
+      codigo,
+      digitadoPor: user.id,
+    });
+  }
+
+  /**
+   * Entrega sem o código do cliente (ausente, dormindo, ou que se recusa).
+   *
+   * Não libera dinheiro: registra a evidência e abre a janela de contestação.
+   * O caminho rápido continua sendo o código — este existe para o pagamento do
+   * entregador não ficar preso à boa vontade do cliente.
+   */
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  registrarEntregaSemCodigo(
+    @Args('orderId') orderId: string,
+    @Args('motivo') motivo: string,
+    @CurrentUser() user: AppUser,
+    @Args('latitude', { type: () => Float, nullable: true }) latitude?: number,
+    @Args('longitude', { type: () => Float, nullable: true }) longitude?: number,
+  ): Promise<Order> {
+    return this.deliveryCodesService.registrarEntregaSemCodigo({
+      orderId,
+      delivererId: user.id,
+      motivo,
+      latitude,
+      longitude,
+    });
+  }
+
+  /** Entrega: o ENTREGADOR digita o código do cliente. LIBERA o dinheiro. */
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  registrarCodigoDoCliente(
+    @Args('orderId') orderId: string,
+    @Args('codigo') codigo: string,
+    @CurrentUser() user: AppUser,
+    @Args('latitude', { type: () => Float, nullable: true }) latitude?: number,
+    @Args('longitude', { type: () => Float, nullable: true }) longitude?: number,
+  ): Promise<Order> {
+    return this.deliveryCodesService.registrarCodigo({
+      orderId,
+      parte: 'CLIENTE',
+      codigo,
+      digitadoPor: user.id,
+      latitude,
+      longitude,
+    });
+  }
+
   @Mutation(() => Order)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
@@ -326,9 +647,12 @@ export class OrdersResolver {
   ): Promise<Order> {
     // Verify vendor owns the store associated with this order
     const order = await this.ordersService.findById(id);
-    if (order.store?.owner?.id !== user.id) {
-      throw new BadRequestException('Você não tem permissão para alterar este pedido');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      order.store?.id,
+      ModuloDaLoja.ORDERS,
+      'Você não tem permissão para alterar este pedido',
+    );
     // BL#1 (CRÍTICO): o vendedor só pode AVANÇAR o pedido no preparo. Antes esta
     // mutation aceitava qualquer transição da tabela de estados — inclusive
     // READY→DELIVERING→DELIVERER_CONFIRMED_DELIVERY. O vendedor conseguia se
@@ -352,10 +676,21 @@ export class OrdersResolver {
     // por PIX ficava em READY para SEMPRE — nunca virava COMPLETED, o
     // `settlePayment` nunca rodava e o lojista nunca recebia. Custódia eterna.
     //
-    // Liberar DELIVERED aqui NÃO reabre o BL#1 descrito acima: o cliente ainda
-    // precisa de `confirmReceipt` para chegar a COMPLETED, e o scheduler de
-    // auto-confirmação só casa `DELIVERER_CONFIRMED_DELIVERY` — o lojista não
-    // consegue se auto-pagar. E só vale onde de fato não há entregador do app.
+    // Liberar DELIVERED aqui NÃO reabre o BL#1 do ponto de vista de "pular
+    // estados": o pedido ainda passa por COMPLETED só via `confirmReceipt` ou
+    // pela auto-confirmação por tempo.
+    //
+    // ATENÇÃO — o comentário anterior aqui dizia que "o scheduler de
+    // auto-confirmação só casa DELIVERER_CONFIRMED_DELIVERY, então o lojista não
+    // consegue se auto-pagar". Isso DEIXOU DE SER VERDADE quando o scheduler
+    // passou a cobrir também DELIVERED (sem isso, pedido de retirada ficava
+    // preso em custódia se o cliente nunca abrisse o app). Hoje o lojista marca
+    // DELIVERED e, passada a janela, o repasse sai sem nenhuma ação do cliente.
+    //
+    // Isso é uma ESCOLHA, não um descuido: a alternativa é o dinheiro travar
+    // indefinidamente. O contrapeso é a janela de disputa de 48h, e o cliente é
+    // notificado no momento em que o pedido vira DELIVERED. A janela é
+    // configurável por `PICKUP_AUTOCONFIRM_MINUTES` — ver o scheduler.
     const entregaPropriaOuRetirada =
       order.isPickup === true || order.store?.hasOwnDelivery === true;
     if (entregaPropriaOuRetirada) {
@@ -385,6 +720,56 @@ export class OrdersResolver {
   @Roles(UserRole.SUPERADMIN)
   disputedOrders(): Promise<Order[]> {
     return this.ordersService.findDisputed();
+  }
+
+  /**
+   * Repasses de entregador retidos na plataforma (PIX com split-on-charge).
+   * Sem isto o passivo só existia como texto em `notes`.
+   */
+  @Query(() => [Order])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('deliveries')
+  delivererPayables(
+    @Args('apenasAbertos', { nullable: true, defaultValue: true })
+    apenasAbertos: boolean,
+  ): Promise<Order[]> {
+    return this.ordersService.delivererPayables(apenasAbertos);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('deliveries')
+  markDelivererPayablePaid(@Args('orderId') orderId: string): Promise<Order> {
+    return this.ordersService.markDelivererPayablePaid(orderId);
+  }
+
+  /**
+   * Repasses de LOJISTA retidos. Origem diferente da do entregador: aqui o
+   * repasse FOI tentado e o provedor recusou por bloqueio de origem (KAN-299).
+   *
+   * Usa `@Permission('finance')` e não `'deliveries'`: isto é dívida com a
+   * loja, não com quem entrega, e quem concilia uma coisa não é
+   * necessariamente quem concilia a outra.
+   */
+  @Query(() => [Order])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('finance')
+  vendorPayables(
+    @Args('apenasAbertos', { nullable: true, defaultValue: true })
+    apenasAbertos: boolean,
+  ): Promise<Order[]> {
+    return this.ordersService.vendorPayables(apenasAbertos);
+  }
+
+  @Mutation(() => Order)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('finance')
+  markVendorPayablePaid(@Args('orderId') orderId: string): Promise<Order> {
+    return this.ordersService.markVendorPayablePaid(orderId);
   }
 
   @Mutation(() => Order)

@@ -52,3 +52,43 @@ export function businessToday(now: Date = new Date()): string {
 export function businessTodayDate(now: Date = new Date()): Date {
   return new Date(`${businessToday(now)}T00:00:00.000Z`);
 }
+
+/**
+ * Instante EXATO em que o dia comercial começou, no fuso do negócio.
+ *
+ * `businessTodayDate()` devolve meia-noite **UTC** da data brasileira — para
+ * 15/10 isso é `2026-10-15T00:00:00Z`, que em Brasília é **14/10 às 21:00**.
+ * Contra uma data pura (o `scheduledDate` dos agendamentos) isso é inofensivo,
+ * e é por isso que lá a função está correta. Mas contra um TIMESTAMP
+ * (`createdAt`) o corte do dia fica 3 horas adiantado: todo pedido feito entre
+ * 21:00 e meia-noite — justamente o pico do delivery — era contado DUAS vezes,
+ * no resumo de ontem e de novo no de hoje.
+ *
+ * O offset é descoberto via Intl, não fixado em -03:00: assim continua certo se
+ * o país voltar a ter horário de verão ou se o fuso do negócio mudar.
+ */
+export function businessDayStartInstant(now: Date = new Date()): Date {
+  const dia = businessToday(now); // 'YYYY-MM-DD' já no fuso do negócio
+  const palpite = new Date(`${dia}T00:00:00.000Z`);
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BUSINESS_TIMEZONE,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(palpite);
+  const v = (t: string) => Number(partes.find((p) => p.type === t)?.value ?? 0);
+  const comoSeFosseUtc = Date.UTC(
+    v('year'),
+    v('month') - 1,
+    v('day'),
+    v('hour'),
+    v('minute'),
+    v('second'),
+  );
+  const offset = comoSeFosseUtc - palpite.getTime();
+  return new Date(palpite.getTime() - offset);
+}

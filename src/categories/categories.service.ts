@@ -4,6 +4,8 @@ import { Repository } from 'typeorm';
 import { Category } from './entities/category.entity';
 import { Product } from '../products/entities/product.entity';
 import { Store } from '../stores/entities/store.entity';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @Injectable()
 export class CategoriesService {
@@ -14,6 +16,9 @@ export class CategoriesService {
     private productsRepository: Repository<Product>,
     @InjectRepository(Store)
     private storeRepository: Repository<Store>,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
   ) {}
 
   // Sem estas checagens, qualquer VENDOR criava/editava/excluia categorias em
@@ -23,9 +28,12 @@ export class CategoriesService {
     if (!storeId) throw new BadRequestException('Loja nao encontrada.');
     const store = await this.storeRepository.findOne({ where: { id: storeId }, relations: ['owner'] });
     if (!store) throw new BadRequestException('Loja nao encontrada.');
-    if (store.owner?.id !== userId) {
-      throw new BadRequestException('Voce nao tem permissao sobre esta loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      store.id,
+      ModuloDaLoja.PRODUCTS,
+      'Voce nao tem permissao sobre esta loja.',
+    );
   }
 
   private async loadOwnedCategory(id: string, userId: string): Promise<Category> {
@@ -34,9 +42,12 @@ export class CategoriesService {
       relations: ['store', 'store.owner'],
     });
     if (!category) throw new NotFoundException('Categoria nao encontrada');
-    if (category.store?.owner?.id !== userId) {
-      throw new BadRequestException('Voce nao tem permissao sobre esta categoria.');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      category.store?.id,
+      ModuloDaLoja.PRODUCTS,
+      'Voce nao tem permissao sobre esta categoria.',
+    );
     return category;
   }
 

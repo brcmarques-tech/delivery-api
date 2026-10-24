@@ -33,6 +33,30 @@ export class DeliveriesResolver {
     return this.deliveriesService.acceptDelivery(orderId, user);
   }
 
+  /** O entregador larga a corrida antes da coleta; o pedido volta à fila. */
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERER)
+  desistirDaEntrega(
+    @Args('orderId') orderId: string,
+    @Args('motivo', { nullable: true }) motivo: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<boolean> {
+    return this.deliveriesService.desistirDaEntrega(orderId, { tipo: 'ENTREGADOR', id: user.id }, motivo);
+  }
+
+  /** O admin tira o entregador de uma corrida parada (antes da coleta). */
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  liberarEntrega(
+    @Args('orderId') orderId: string,
+    @Args('motivo', { nullable: true }) motivo: string,
+    @CurrentUser() user: AppUser,
+  ): Promise<boolean> {
+    return this.deliveriesService.desistirDaEntrega(orderId, { tipo: 'ADMIN', id: user.id }, motivo);
+  }
+
   @Mutation(() => Delivery)
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.DELIVERER)

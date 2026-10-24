@@ -412,4 +412,49 @@ export class MailService {
     `;
     await this.sendEmail(to, subject, html);
   }
+
+  /**
+   * KAN-82: convite para a equipe de uma loja.
+   *
+   * O link carrega um token de uso unico e validade curta — e um direito
+   * de acesso ao painel da loja, nao um aviso.
+   */
+  async sendTeamInvite(
+    to: string,
+    storeName: string,
+    link: string,
+    permissions: string[],
+    jaTemConta: boolean,
+    dias: number,
+  ): Promise<void> {
+    const subject = `Convite para a equipe de ${storeName}`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #FF6B35; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0;">bcmTech Shopping</h1>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 12px 12px;">
+          <h2 style="color: #2D3436;">Voce foi convidado para a equipe de ${storeName}</h2>
+          <p style="color: #555; font-size: 15px; line-height: 1.6;">
+            Acesso liberado: <strong>${permissions.join(', ')}</strong>
+          </p>
+          <p style="color: #555; font-size: 15px; line-height: 1.6;">
+            ${jaTemConta
+              ? 'Entre com a sua conta de lojista e aceite o convite:'
+              : 'Crie sua conta de lojista com ESTE mesmo e-mail e aceite o convite:'}
+          </p>
+          <div style="text-align: center; margin: 28px 0;">
+            <a href="${link}" style="display: inline-block; background: #FF6B35; color: white; padding: 14px 28px; border-radius: 10px; font-size: 16px; font-weight: bold; text-decoration: none;">
+              Aceitar convite
+            </a>
+          </div>
+          <p style="color: #999; font-size: 13px;">O convite vale por ${dias} dias.</p>
+          <p style="color: #999; font-size: 13px;">
+            Se voce nao esperava este convite, ignore este e-mail — nada acontece sem voce aceitar.
+          </p>
+        </div>
+      </div>
+    `;
+    await this.sendEmail(to, subject, html);
+  }
 }

@@ -1,13 +1,11 @@
-import { Injectable, BadRequestException, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, OnModuleDestroy, Inject } from '@nestjs/common';
 import { randomInt } from 'crypto';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { MailService } from '../mail/mail.service';
-
-interface OtpEntry {
-  code: string;
-  expiresAt: number;
-  attempts: number;
-}
+import { OTP_STORE } from './otp-store';
+// `import type` porque o tipo aparece numa assinatura decorada e o TS, com
+// isolatedModules + emitDecoratorMetadata, exige que tipo-only venha assim.
+import type { OtpStore } from './otp-store';
 
 /**
  * KAN-231: janela em que uma verificacao bem-sucedida continua valendo como
@@ -19,10 +17,6 @@ const VERIFIED_PROOF_TTL_MS = 15 * 60 * 1000;
 @Injectable()
 export class OtpService implements OnModuleDestroy {
   private readonly logger = new Logger(OtpService.name);
-  // Error#5: guarda o handle do interval para poder limpar no teardown.
-  private cleanupInterval?: ReturnType<typeof setInterval>;
-  // key = "phone:5599999999" or "email:user@mail.com"
-  private readonly store = new Map<string, OtpEntry>();
 
   /**
    * KAN-231: prova de que o contato FOI verificado.
@@ -37,26 +31,21 @@ export class OtpService implements OnModuleDestroy {
    * Agora a verificacao deixa um registro de curta duracao, consumido no
    * cadastro (uso unico).
    */
-  private readonly verified = new Map<string, number>();
-
-  // Limpa entradas expiradas a cada 5 min
+  // KAN-295: o estado (codigos e provas) saiu do processo e foi para o store
+  // injetado — Redis em producao, memoria em dev/teste. Com duas instancias da
+  // API, um Map aqui dentro significava "o codigo que o cliente recebeu nao
+  // existe nesta instancia": erro intermitente, sem padrao visivel.
+  //
+  // A expiracao agora e do store (TTL do Redis); nao ha mais varredura
+  // periodica neste servico. As chaves continuam "phone:559..." / "email:...".
   constructor(
     private whatsAppService: WhatsAppService,
     private mailService: MailService,
-  ) {
-    this.cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      for (const [key, entry] of this.store) {
-        if (entry.expiresAt < now) this.store.delete(key);
-      }
-      for (const [key, expiresAt] of this.verified) {
-        if (expiresAt < now) this.verified.delete(key);
-      }
-    }, 5 * 60 * 1000);
-  }
+    @Inject(OTP_STORE) private readonly store: OtpStore,
+  ) {}
 
-  onModuleDestroy() {
-    if (this.cleanupInterval) clearInterval(this.cleanupInterval);
+  async onModuleDestroy() {
+    await this.store.encerrar();
   }
 
   private phoneKey(phone: string): string {
@@ -71,20 +60,13 @@ export class OtpService implements OnModuleDestroy {
    * Consome a prova de verificacao de telefone (uso unico).
    * Retorna `true` se o telefone foi verificado ha pouco.
    */
-  consumePhoneVerification(phone: string): boolean {
-    return this.consumeVerification(this.phoneKey(phone));
+  consumePhoneVerification(phone: string): Promise<boolean> {
+    return this.store.consumirVerificado(this.phoneKey(phone));
   }
 
   /** Idem para e-mail. */
-  consumeEmailVerification(email: string): boolean {
-    return this.consumeVerification(this.emailKey(email));
-  }
-
-  private consumeVerification(key: string): boolean {
-    const expiresAt = this.verified.get(key);
-    if (!expiresAt) return false;
-    this.verified.delete(key);
-    return expiresAt >= Date.now();
+  consumeEmailVerification(email: string): Promise<boolean> {
+    return this.store.consumirVerificado(this.emailKey(email));
   }
 
   private generateCode(): string {
@@ -94,8 +76,8 @@ export class OtpService implements OnModuleDestroy {
   }
 
   async sendPhoneCode(phone: string, fallbackEmail?: string): Promise<{ method: 'whatsapp' | 'email' }> {
-    const key = `phone:${phone.replace(/\D/g, '')}`;
-    const existing = this.store.get(key);
+    const key = this.phoneKey(phone);
+    const existing = await this.store.pegar(key);
 
     // Rate limit: 1 codigo a cada 60s
     if (existing && existing.expiresAt - 9 * 60 * 1000 > Date.now()) {
@@ -103,7 +85,7 @@ export class OtpService implements OnModuleDestroy {
     }
 
     const code = this.generateCode();
-    this.store.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0 });
+    await this.store.gravar(key, { code, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0 });
 
     const sent = await this.whatsAppService.sendText(
       phone,
@@ -128,7 +110,7 @@ export class OtpService implements OnModuleDestroy {
     // codigo proprio sob a chave do email. Assim ninguem reivindica um telefone
     // sem prova de posse via WhatsApp, e quem se cadastra com WhatsApp fora do ar
     // ainda conclui provando o proprio e-mail.
-    this.store.delete(key);
+    await this.store.apagar(key);
 
     if (fallbackEmail) {
       // sendEmailCode gera e grava o codigo sob a chave do email e retorna
@@ -140,15 +122,15 @@ export class OtpService implements OnModuleDestroy {
   }
 
   async sendEmailCode(email: string, fallbackPhone?: string): Promise<{ method: 'email' | 'whatsapp' }> {
-    const key = `email:${email.toLowerCase()}`;
-    const existing = this.store.get(key);
+    const key = this.emailKey(email);
+    const existing = await this.store.pegar(key);
 
     if (existing && existing.expiresAt - 9 * 60 * 1000 > Date.now()) {
       throw new BadRequestException('Aguarde 60 segundos para reenviar o codigo');
     }
 
     const code = this.generateCode();
-    this.store.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0 });
+    await this.store.gravar(key, { code, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0 });
 
     try {
       await this.mailService.sendVerificationCode(email, code);
@@ -167,33 +149,37 @@ export class OtpService implements OnModuleDestroy {
         }
       }
 
-      this.store.delete(key);
+      await this.store.apagar(key);
       throw new BadRequestException('Nao foi possivel enviar o codigo por email nem por WhatsApp.');
     }
   }
 
-  verifyPhoneCode(phone: string, code: string): boolean {
+  verifyPhoneCode(phone: string, code: string): Promise<boolean> {
     return this.verifyCode(this.phoneKey(phone), code);
   }
 
-  verifyEmailCode(email: string, code: string): boolean {
+  verifyEmailCode(email: string, code: string): Promise<boolean> {
     return this.verifyCode(this.emailKey(email), code);
   }
 
-  private verifyCode(key: string, code: string): boolean {
-    const entry = this.store.get(key);
+  private async verifyCode(key: string, code: string): Promise<boolean> {
+    const entry = await this.store.pegar(key);
 
     if (!entry) {
       throw new BadRequestException('Codigo nao encontrado. Solicite um novo.');
     }
 
     if (entry.expiresAt < Date.now()) {
-      this.store.delete(key);
+      await this.store.apagar(key);
       throw new BadRequestException('Codigo expirado. Solicite um novo.');
     }
 
-    entry.attempts++;
-    if (entry.attempts > 5) {
+    // Incremento ATOMICO no store: com duas requisicoes simultaneas, um
+    // read-modify-write local deixaria o contador atras do numero real de
+    // palpites — e o limite de 5 e a unica barreira contra forca bruta num
+    // espaco de 10^6 codigos.
+    const attempts = await this.store.contarTentativa(key);
+    if (attempts > 5) {
       // KAN-280: NAO apaga a entrada. O cooldown de reenvio e derivado da
       // EXISTENCIA dela — apagar zerava o cooldown junto, entao errar 5 vezes e
       // pedir codigo novo IMEDIATAMENTE virava um loop de forca bruta (~5
@@ -201,20 +187,21 @@ export class OtpService implements OnModuleDestroy {
       // vitima. A entrada fica, com o codigo envenenado (nunca casa) e, na
       // PRIMEIRA vez que estoura, o cooldown re-armado — so na primeira, senao
       // um atacante espameando verify bloquearia o reenvio do dono para sempre.
-      if (entry.attempts === 6) {
-        entry.code = '';
-        entry.expiresAt = Date.now() + 10 * 60 * 1000;
+      if (attempts === 6) {
+        await this.store.envenenar(key, Date.now() + 10 * 60 * 1000);
       }
       throw new BadRequestException('Muitas tentativas. Solicite um novo codigo.');
     }
 
-    if (entry.code !== code) {
+    // Codigo envenenado (string vazia) nunca casa, nem com `code` vazio na
+    // requisicao: o `!entry.code` barra antes da comparacao.
+    if (!entry.code || entry.code !== code) {
       throw new BadRequestException('Codigo incorreto.');
     }
 
-    this.store.delete(key);
+    await this.store.apagar(key);
     // KAN-231: deixa a prova de verificacao para o cadastro consumir.
-    this.verified.set(key, Date.now() + VERIFIED_PROOF_TTL_MS);
+    await this.store.marcarVerificado(key, Date.now() + VERIFIED_PROOF_TTL_MS);
     return true;
   }
 }

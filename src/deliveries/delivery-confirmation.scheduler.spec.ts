@@ -1,8 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
+import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
 import { DeliveryConfirmationScheduler } from './delivery-confirmation.scheduler';
 import { OrdersService } from '../orders/orders.service';
+import { DeliveryCodesService } from '../orders/delivery-codes.service';
+import { PaymentsService } from '../payments/payments.service';
 import { Order } from '../orders/entities/order.entity';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
 
 describe('DeliveryConfirmationScheduler', () => {
   let scheduler: DeliveryConfirmationScheduler;
@@ -30,7 +33,45 @@ describe('DeliveryConfirmationScheduler', () => {
       providers: [
         DeliveryConfirmationScheduler,
         { provide: getRepositoryToken(Order), useValue: mockOrdersRepo },
+        // KAN-254: o tick roda dentro de uma trava distribuida (advisory lock
+        // do Postgres) para duas instancias da API nao repetirem a mesma
+        // rodada. Aqui a trava e um passa-livre: estes testes exercitam o que
+        // o tick FAZ, nao a concorrencia entre instancias — essa tem prova
+        // propria, contra o banco de verdade, em
+        // common/utils/trava-distribuida.spec.ts.
+        {
+          provide: getDataSourceToken(),
+          useValue: {
+            createQueryRunner: () => ({
+              connect: async () => undefined,
+              query: async (sql: string) =>
+                /pg_try_advisory_lock/.test(sql) ? [{ ok: true }] : [],
+              release: async () => undefined,
+            }),
+          },
+        },
         { provide: OrdersService, useValue: mockOrdersService },
+        // O scheduler passou a liberar as entregas registradas SEM o código do
+        // cliente cuja janela de contestação venceu.
+        // O tick tambem drena os passivos registrados (frete retido no PIX e
+        // repasses recusados pelo bloqueio de IP). Mock minimo: nenhum teste
+        // deste arquivo exercita a drenagem; ela so precisa existir para o
+        // Nest montar o scheduler.
+        {
+          // KAN-12: o tick tambem varre a fidelidade (rede de seguranca do
+          // premio). Mock minimo: nenhum teste deste arquivo exercita a
+          // varredura — ela tem prova propria em prova-cliente-fiel.mjs.
+          provide: FidelidadeService,
+          useValue: { varrerPendentes: jest.fn().mockResolvedValue(0) },
+        },
+        {
+          provide: PaymentsService,
+          useValue: { drenarPassivos: jest.fn().mockResolvedValue({ pagos: 0, bloqueado: false }) },
+        },
+        {
+          provide: DeliveryCodesService,
+          useValue: { liberarEntregasSemCodigoVencidas: jest.fn().mockResolvedValue(0) },
+        },
       ],
     }).compile();
 

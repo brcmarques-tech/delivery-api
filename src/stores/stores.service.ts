@@ -36,6 +36,8 @@ import { RatingsService } from '../ratings/ratings.service';
 import { fetchWithTimeout } from '../common/utils/fetch-with-timeout'; // KAN-253
 import { resolvePublicUrl } from '../common/utils/public-url';
 import { brazilPhoneCandidates } from '../common/utils/phone';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @Injectable()
 export class StoresService implements OnApplicationBootstrap {
@@ -56,6 +58,8 @@ export class StoresService implements OnApplicationBootstrap {
     private configService: ConfigService,
     @Inject(PUB_SUB) private pubSub: PubSub,
     private ratingsService: RatingsService,
+    // KAN-82: dono OU membro da equipe com o modulo.
+    private equipeService: EquipeService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -226,6 +230,11 @@ export class StoresService implements OnApplicationBootstrap {
       verificationLevel: store.verificationLevel,
       averageRating: avgRating,
       totalRatings,
+      // KAN-13: a identidade visual escolhida pela loja.
+      primaryColor: store.primaryColor,
+      backgroundColor: store.backgroundColor,
+      textColor: store.textColor,
+      productLayout: store.productLayout,
       categories,
     };
   }
@@ -315,6 +324,20 @@ export class StoresService implements OnApplicationBootstrap {
     );
   }
 
+  /**
+   * Frete grátis só existe com a frota PRÓPRIA da loja (decisão do Bruno,
+   * 23/10/2026). Com entregador do app o frete é o pagamento do entregador:
+   * zerado, a corrida saía para ele por R$ 0,00 e ninguém o pagava. O painel já
+   * escondia a opção nesse modo, mas o valor salvo antes de trocar de modo (ou
+   * por mutation direta) continuava valendo. Frete grátis com entregador do app
+   * fica para cupom, no futuro.
+   */
+  static freteGratisSoComFrotaPropria(store: Partial<Store>): void {
+    if (store.hasOwnDelivery) return;
+    store.freeDelivery = false;
+    store.freeDeliveryAbove = null as any;
+  }
+
   async create(input: CreateStoreInput, owner: VendorUser): Promise<Store> {
     const planConfig = await this.platformConfigService.getPlanConfig(
       owner.vendorPlan || 'FREE',
@@ -341,6 +364,7 @@ export class StoresService implements OnApplicationBootstrap {
     }
 
     const store = this.storesRepository.create({ ...input, owner });
+    StoresService.freteGratisSoComFrotaPropria(store);
     const saved = await this.storesRepository.save(store);
 
     // Gerar slug após salvar (precisamos do id para garantir unicidade)
@@ -415,12 +439,86 @@ export class StoresService implements OnApplicationBootstrap {
     return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
-  async findAll(): Promise<Store[]> {
-    const stores = await this.storesRepository.find({
-      where: { isActive: true },
-      relations: ['owner', 'categories'],
-    });
-    return this.sortByPriority(stores);
+  /**
+   * Vitrine publica de lojas. Perf (F6): era SEMPRE a tabela inteira de lojas
+   * ativas, com owner e categories, e o unico consumidor (a aba de busca do app)
+   * ainda filtrava tudo no cliente — nome, tipo, "aberto agora" e "frete gratis".
+   * Cada loja nova entrava na carga de todo mundo, para sempre.
+   *
+   * Agora os filtros existem no servidor e a lista e paginada. Todos os
+   * argumentos sao OPCIONAIS e, sem nenhum deles, o comportamento e identico ao
+   * de antes — nada mais no sistema depende desta query, mas a compatibilidade
+   * fica de graca.
+   *
+   * Sobre a ORDEM, que aqui e regra de negocio e nao detalhe tecnico: a
+   * prioridade por plano pago (sortByPriority) depende do plano do dono e nao sai
+   * em SQL. Entao ha dois caminhos, e eles espelham como a propria tela ordena:
+   *
+   *  - COM busca: a tela ordena por NOME. Ordenamos e paginamos no banco, sem
+   *    carregar o resto. Paginacao de verdade.
+   *  - SEM busca (vitrine): a tela mostra o ranking pago. Rankeamos o conjunto
+   *    filtrado INTEIRO e so depois cortamos a pagina, para que o recorte
+   *    respeite a ordem GLOBAL. Isso mantem o ranking exatamente como era — o
+   *    servidor continua lendo as lojas ativas para ordenar, e o ganho aqui e do
+   *    lado do app (payload e montagem de tela), nao do banco. Trocar isso por
+   *    ordenacao em SQL mudaria QUAL loja aparece primeiro, e isso e decisao
+   *    comercial (ver KAN-281), nao otimizacao.
+   */
+  async findAll(opcoes?: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    storeType?: string;
+    onlyOpen?: boolean;
+    onlyFreeDelivery?: boolean;
+  }): Promise<Store[]> {
+    const busca = (opcoes?.search || '').trim();
+    const limite = Math.min(Math.max(Number(opcoes?.limit) || 0, 0), 100) || undefined;
+    const deslocamento = Math.max(Number(opcoes?.offset) || 0, 0);
+
+    const qb = this.storesRepository
+      .createQueryBuilder('loja')
+      .leftJoinAndSelect('loja.owner', 'owner')
+      .leftJoinAndSelect('loja.categories', 'categories')
+      .where('loja.isActive = :ativa', { ativa: true });
+
+    if (opcoes?.storeType) {
+      // storeType nulo historicamente significa PRODUCTS (mesma leitura que o
+      // app faz com `s.storeType || 'PRODUCTS'`).
+      if (opcoes.storeType === 'PRODUCTS') {
+        qb.andWhere('(loja."storeType" = :tipo OR loja."storeType" IS NULL)', { tipo: 'PRODUCTS' });
+      } else {
+        qb.andWhere('loja."storeType" = :tipo', { tipo: opcoes.storeType });
+      }
+    }
+    if (opcoes?.onlyOpen) qb.andWhere('loja."isOpen" = true');
+    if (opcoes?.onlyFreeDelivery) qb.andWhere('loja."freeDelivery" = true');
+    if (busca) {
+      // Nome OU descricao, como o filtro do cliente fazia. Com unaccent, igual a
+      // busca de PRODUTOS (storeProducts): e o mesmo campo de busca na tela, e
+      // seria estranho "acougue" achar o produto e nao achar a loja. O filtro
+      // client-side que isto substitui era um includes() cru, sem acento — entao
+      // aqui a busca passa a achar mais, nunca menos.
+      qb.andWhere(
+        "(unaccent(loja.name) ILIKE unaccent(:busca) OR (loja.description IS NOT NULL AND unaccent(loja.description) ILIKE unaccent(:busca)))",
+        { busca: `%${busca}%` },
+      );
+    }
+
+    if (busca) {
+      // Desempate por id pelo mesmo motivo das promocoes: `name` sozinho nao e
+      // ordem total (duas lojas podem ter o mesmo nome) e, sem ordem total, as
+      // paginas podem repetir e perder registro.
+      qb.orderBy('loja.name', 'ASC').addOrderBy('loja.id', 'ASC');
+      if (limite !== undefined) qb.take(limite);
+      if (deslocamento) qb.skip(deslocamento);
+      return qb.getMany();
+    }
+
+    const stores = await qb.getMany();
+    const ordenadas = await this.sortByPriority(stores);
+    if (limite === undefined && !deslocamento) return ordenadas;
+    return ordenadas.slice(deslocamento, deslocamento + (limite ?? ordenadas.length));
   }
 
   async findById(id: string): Promise<Store> {
@@ -514,6 +612,32 @@ export class StoresService implements OnApplicationBootstrap {
     });
   }
 
+  /**
+   * KAN-82: as lojas que este usuario opera — as DELE e aquelas em que ele e
+   * membro ACEITO e nao revogado da equipe.
+   *
+   * Sem isto o funcionario convidado loga no painel e nao ve loja nenhuma: o
+   * painel inteiro e construido sobre `myStores`.
+   */
+  async findOperadasPor(userId: string): Promise<Store[]> {
+    const idsDeEquipe: { storeId: string }[] = await this.storesRepository.manager.query(
+      `SELECT DISTINCT "storeId" FROM vendor_team_members
+        WHERE "memberId" = $1 AND "acceptedAt" IS NOT NULL AND "revokedAt" IS NULL`,
+      [userId],
+    );
+    const proprias = await this.findByOwner(userId);
+    if (!idsDeEquipe.length) return proprias;
+
+    const comoMembro = await this.storesRepository.find({
+      where: idsDeEquipe.map((l) => ({ id: l.storeId })),
+      relations: ['owner', 'products', 'products.category', 'categories'],
+    });
+    // Sem duplicar caso alguem seja dono E tenha vinculo (nao deveria, mas
+    // dado antigo acontece).
+    const vistas = new Set(proprias.map((s) => s.id));
+    return [...proprias, ...comoMembro.filter((s) => !vistas.has(s.id))];
+  }
+
   async findNearby(
     lat: number,
     lng: number,
@@ -543,12 +667,83 @@ export class StoresService implements OnApplicationBootstrap {
     );
   }
 
+  /**
+   * KAN-13 — contraste minimo entre texto e fundo.
+   *
+   * Sem isto, a loja escolhe texto branco em fundo branco e a propria vitrine
+   * fica ILEGIVEL — e quem descobre e o cliente, na hora de comprar, sem ter
+   * como avisar. A conta e a luminancia relativa da WCAG; o piso de 3:1 e o
+   * minimo para texto grande, que e o caso aqui (titulo de produto e preco).
+   *
+   * 4.5:1 seria o ideal para texto corrido, mas recusar cor demais empurra o
+   * lojista a desistir da personalizacao inteira — o equilibrio e barrar o
+   * ilegivel, nao buscar a perfeicao.
+   */
+  private static luminancia(hex: string): number | null {
+    const limpo = hex.replace('#', '');
+    const cheio =
+      limpo.length === 3
+        ? limpo.split('').map((c) => c + c).join('')
+        : limpo.slice(0, 6);
+    if (!/^[0-9a-fA-F]{6}$/.test(cheio)) return null;
+    const canal = (v: number) => {
+      const x = v / 255;
+      return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    };
+    const r = canal(parseInt(cheio.slice(0, 2), 16));
+    const g = canal(parseInt(cheio.slice(2, 4), 16));
+    const b = canal(parseInt(cheio.slice(4, 6), 16));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+
+  private static contraste(a: string, b: string): number | null {
+    const la = StoresService.luminancia(a);
+    const lb = StoresService.luminancia(b);
+    if (la === null || lb === null) return null;
+    const claro = Math.max(la, lb);
+    const escuro = Math.min(la, lb);
+    return (claro + 0.05) / (escuro + 0.05);
+  }
+
   async update(input: UpdateStoreInput, owner: VendorUser): Promise<Store> {
-    const store = await this.storesRepository.findOne({
-      where: { id: input.id, owner: { id: owner.id } },
-    });
+    // KAN-82: a autorizacao era o PROPRIO filtro da consulta (owner: { id }).
+    // Isso e seguro, mas fecha a porta para o membro da equipe com SETTINGS —
+    // que e justamente o modulo "editar dados da loja". Agora carrega a loja e
+    // pergunta ao servico de equipe; a loja inexistente continua 404, e quem
+    // nao tem permissao recebe 403 (que e verdade, e nao "nao existe").
+    const store = await this.storesRepository.findOne({ where: { id: input.id } });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    await this.equipeService.exigirPermissao(
+      owner.id,
+      store.id,
+      ModuloDaLoja.SETTINGS,
+      'Voce nao tem permissao para editar esta loja.',
+    );
     const { id, ...updates } = input;
+
+    // KAN-13: cor vazia volta ao tema da plataforma; cor invalida nao passa
+    // (o DTO ja barra, mas regra de dado nao pode depender so do DTO — mutation
+    // direta existe). E o par texto/fundo precisa ser legivel.
+    for (const campo of ['primaryColor', 'backgroundColor', 'textColor'] as const) {
+      const valor = (updates as any)[campo];
+      if (valor === '') (updates as any)[campo] = null;
+      else if (valor != null && !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(valor)) {
+        throw new BadRequestException(`${campo} deve ser uma cor hexadecimal, como #FF6B35`);
+      }
+    }
+    if ((updates as any).productLayout === '') (updates as any).productLayout = null;
+
+    const fundoFinal = (updates as any).backgroundColor ?? store.backgroundColor;
+    const textoFinal = (updates as any).textColor ?? store.textColor;
+    if (fundoFinal && textoFinal) {
+      const razao = StoresService.contraste(fundoFinal, textoFinal);
+      if (razao !== null && razao < 3) {
+        throw new BadRequestException(
+          `Essas cores de texto e fundo quase nao se distinguem (contraste ${razao.toFixed(1)}:1). ` +
+            'Escolha um texto mais escuro ou um fundo mais claro — senao o cliente nao consegue ler sua vitrine.',
+        );
+      }
+    }
 
     // Detecta se o endereço mudou
     const addressFields = [
@@ -566,6 +761,7 @@ export class StoresService implements OnApplicationBootstrap {
     Object.entries(updates).forEach(([key, value]) => {
       if (value !== undefined) (store as any)[key] = value;
     });
+    StoresService.freteGratisSoComFrotaPropria(store);
 
     // Se coordenadas foram enviadas manualmente (do mapa), usar essas
     // Senão, recalcular via geocoding se o endereço mudou
@@ -596,10 +792,16 @@ export class StoresService implements OnApplicationBootstrap {
   }
 
   async toggleOpen(id: string, owner: VendorUser): Promise<Store> {
-    const store = await this.storesRepository.findOne({
-      where: { id, owner: { id: owner.id } },
-    });
+    // KAN-82: abrir e fechar a loja e operacao de BALCAO — quem esta no caixa
+    // precisa poder fechar quando acaba o expediente. Fica em SETTINGS.
+    const store = await this.storesRepository.findOne({ where: { id } });
     if (!store) throw new NotFoundException('Loja nao encontrada');
+    await this.equipeService.exigirPermissao(
+      owner.id,
+      store.id,
+      ModuloDaLoja.SETTINGS,
+      'Voce nao tem permissao para abrir ou fechar esta loja.',
+    );
     store.isOpen = !store.isOpen;
     const saved = await this.storesRepository.save(store);
     this.pubSub.publish('storeUpdated', { storeUpdated: saved });
@@ -692,6 +894,9 @@ export class StoresService implements OnApplicationBootstrap {
     );
     if (!passwordValid) throw new UnauthorizedException('Senha incorreta');
 
+    // KAN-82: APAGAR a loja continua sendo SO do dono — de propósito. Nem o
+    // gerente com SETTINGS faz isso: e irreversivel, leva o catalogo e o
+    // historico junto, e ja exige a senha do dono logo acima.
     const store = await this.storesRepository.findOne({
       where: { id: storeId, owner: { id: vendorId } },
     });

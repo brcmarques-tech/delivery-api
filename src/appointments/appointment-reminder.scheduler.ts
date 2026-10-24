@@ -1,5 +1,8 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { AppointmentsService } from './appointments.service';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { comTravaDistribuida } from '../common/utils/trava-distribuida';
 
 @Injectable()
 export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestroy {
@@ -7,7 +10,10 @@ export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestr
   private intervalId: ReturnType<typeof setInterval>;
   private isRunning = false;
 
-  constructor(private appointmentsService: AppointmentsService) {}
+  constructor(
+    private appointmentsService: AppointmentsService,
+    @InjectDataSource() private dataSource: DataSource,
+  ) {}
 
   onModuleInit() {
     // Check every 5 minutes
@@ -24,8 +30,14 @@ export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestr
     if (this.isRunning) return;
     this.isRunning = true;
     try {
-      await this.sendReminders();
-      await this.expireUnpaid();
+      // KAN-254: com duas instancias, as duas mandam o MESMO lembrete para o
+      // mesmo cliente no mesmo minuto. A trava e do banco, entao vale para a
+      // frota inteira.
+      await comTravaDistribuida(this.dataSource, 'tick:lembretes-de-agendamento', async () => {
+        await this.sendReminders();
+        await this.expireUnpaid();
+        await this.retryLiquidacoes();
+      });
     } finally {
       this.isRunning = false;
     }
@@ -33,6 +45,30 @@ export class AppointmentReminderScheduler implements OnModuleInit, OnModuleDestr
 
   onModuleDestroy() {
     if (this.intervalId) clearInterval(this.intervalId);
+  }
+
+  /**
+   * Re-tenta a liquidação de AGENDAMENTOS que falhou.
+   *
+   * O ciclo de pedido já tinha retry (retryFailedSettlements); o de agendamento
+   * não tinha nenhum. Quando a liquidação falhava — provedor fora do ar,
+   * recebedor sem conta, pré-autorização expirada — o dinheiro simplesmente
+   * ficava parado na plataforma, sem ninguém re-tentar e sem alarme: o
+   * agendamento aparecia como concluído e o prestador nunca recebia.
+   *
+   * O `try/catch` aqui é obrigatório, não zelo: este método roda dentro do tick
+   * do scheduler, e uma exceção escapando daqui mataria os outros jobs da
+   * rodada.
+   */
+  private async retryLiquidacoes() {
+    try {
+      const n = await this.appointmentsService.retryFailedAppointmentSettlements();
+      if (n > 0) {
+        this.logger.log(`Liquidacao de ${n} agendamento(s) re-tentada com sucesso`);
+      }
+    } catch (err) {
+      this.logger.error('Falha ao re-tentar liquidacao de agendamentos:', err);
+    }
   }
 
   private async expireUnpaid() {

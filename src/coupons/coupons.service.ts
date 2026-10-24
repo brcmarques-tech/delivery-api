@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, In, EntityManager } from 'typeorm';
+import { claimGanho } from '../common/utils/db-claim';
 import { OrderStatus } from '../common/enums';
 import { Coupon } from './entities/coupon.entity';
 import { CreateCouponInput } from './dto/create-coupon.input';
@@ -8,6 +9,10 @@ import { UpdateCouponInput } from './dto/update-coupon.input';
 import { Store } from '../stores/entities/store.entity';
 import { Order } from '../orders/entities/order.entity';
 import { PlatformConfigService } from '../config/platform-config.service';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
+import { percentualEmReais } from '../common/dinheiro';
 
 @Injectable()
 export class CouponsService {
@@ -17,6 +22,10 @@ export class CouponsService {
     @InjectRepository(Store)
     private storesRepository: Repository<Store>,
     private platformConfigService: PlatformConfigService,
+    private fidelidadeService: FidelidadeService,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
   ) {}
 
   async create(input: CreateCouponInput, userId: string): Promise<Coupon> {
@@ -25,9 +34,12 @@ export class CouponsService {
       relations: ['owner'],
     });
     if (!store) throw new NotFoundException('Loja nao encontrada');
-    if (store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      store.id,
+      ModuloDaLoja.COUPONS,
+      'Voce nao e dono desta loja',
+    );
 
     // Check plan allows coupons
     const plan = store.owner.vendorPlan || 'FREE';
@@ -64,7 +76,25 @@ export class CouponsService {
       store,
     });
 
-    return this.couponsRepository.save(coupon);
+    const salvo = await this.couponsRepository.save(coupon);
+
+    // KAN-12: cupom novo da loja e motivo para chamar quem ja compra ali.
+    // So vale para cupom ABERTO: premio de fidelidade (nominal) nao se anuncia
+    // para a base — ele e de uma pessoa so.
+    if (!salvo.appUserId && salvo.isActive) {
+      this.fidelidadeService
+        .avisarClientesFieis(
+          store.id,
+          `Cupom novo em ${store.name}`,
+          salvo.discountType === 'PERCENT'
+            ? `${salvo.discountValue}% de desconto com o codigo ${salvo.code}`
+            : `R$ ${Number(salvo.discountValue).toFixed(2)} de desconto com o codigo ${salvo.code}`,
+          { couponCode: salvo.code },
+        )
+        .catch(() => {});
+    }
+
+    return salvo;
   }
 
   async update(input: UpdateCouponInput, userId: string): Promise<Coupon> {
@@ -73,9 +103,12 @@ export class CouponsService {
       relations: ['store', 'store.owner'],
     });
     if (!coupon) throw new NotFoundException('Cupom nao encontrado');
-    if (coupon.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      coupon.store?.id,
+      ModuloDaLoja.COUPONS,
+      'Voce nao e dono desta loja',
+    );
 
     if (input.code) coupon.code = input.code.trim().toUpperCase();
     if (input.discountType) coupon.discountType = input.discountType;
@@ -101,9 +134,12 @@ export class CouponsService {
       relations: ['store', 'store.owner'],
     });
     if (!coupon) throw new NotFoundException('Cupom nao encontrado');
-    if (coupon.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      coupon.store?.id,
+      ModuloDaLoja.COUPONS,
+      'Voce nao e dono desta loja',
+    );
     coupon.isActive = !coupon.isActive;
     return this.couponsRepository.save(coupon);
   }
@@ -114,9 +150,12 @@ export class CouponsService {
       relations: ['store', 'store.owner'],
     });
     if (!coupon) throw new NotFoundException('Cupom nao encontrado');
-    if (coupon.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e dono desta loja');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      coupon.store?.id,
+      ModuloDaLoja.COUPONS,
+      'Voce nao e dono desta loja',
+    );
     await this.couponsRepository.remove(coupon);
     return true;
   }
@@ -131,9 +170,13 @@ export class CouponsService {
         where: { id: storeId },
         relations: ['owner'],
       });
-      if (!store || store.owner?.id !== userId) {
-        throw new BadRequestException('Voce nao e dono desta loja');
-      }
+      if (!store) throw new BadRequestException('Voce nao e dono desta loja');
+      await this.equipeService.exigirPermissao(
+        userId,
+        store.id,
+        ModuloDaLoja.COUPONS,
+        'Voce nao e dono desta loja',
+      );
     }
     return this.couponsRepository.find({
       where: { store: { id: storeId } },
@@ -192,6 +235,16 @@ export class CouponsService {
       throw new BadRequestException('Este cupom expirou');
     }
 
+    // KAN-12: cupom NOMINAL (premio de fidelidade) so vale para quem ganhou.
+    // Sem esta checagem bastava o codigo circular num grupo de WhatsApp para a
+    // recompensa — que sai do bolso da loja — ir para quem nunca comprou.
+    //
+    // A mensagem NAO diz "este cupom e de outra pessoa": isso confirmaria a
+    // existencia do codigo para quem esta testando codigos alheios.
+    if (coupon.appUserId && coupon.appUserId !== customerId) {
+      throw new BadRequestException('Cupom nao encontrado');
+    }
+
     if (coupon.maxUses > 0 && coupon.usesCount >= coupon.maxUses) {
       throw new BadRequestException('Este cupom ja atingiu o limite de usos');
     }
@@ -227,7 +280,7 @@ export class CouponsService {
 
     let discount: number;
     if (coupon.discountType === 'PERCENT') {
-      discount = Math.round((subtotal * Number(coupon.discountValue)) / 100 * 100) / 100;
+      discount = percentualEmReais(subtotal, Number(coupon.discountValue));
       if (coupon.maxDiscount && discount > Number(coupon.maxDiscount)) {
         discount = Number(coupon.maxDiscount);
       }
@@ -272,11 +325,29 @@ export class CouponsService {
    */
   async incrementUsage(couponId: string, manager?: EntityManager): Promise<boolean> {
     const runner = manager ?? this.couponsRepository.manager;
-    const rows = await runner.query(
+    const claim = await runner.query(
       `UPDATE coupons SET "usesCount" = "usesCount" + 1 WHERE id = $1 AND ("maxUses" = 0 OR "usesCount" < "maxUses") RETURNING id`,
       [couponId],
     );
-    return Array.isArray(rows) && rows.length > 0;
+    // ESTE CLAIM ESTAVA INERTE (achado na auditoria de 15/10/2026).
+    //
+    // A decisao era `Array.isArray(rows) && rows.length > 0`. Com o driver do
+    // TypeORM, UPDATE com RETURNING devolve `[linhas, contagem]` — array de
+    // comprimento 2 SEMPRE, inclusive quando a condicao do WHERE nao casou e
+    // nenhuma linha foi afetada. Ou seja: a funcao respondia "reservei" mesmo
+    // com o cupom esgotado, e o `if (!reservado) throw` em createOrder nunca
+    // disparava.
+    //
+    // Na pratica o limite seguia valendo por causa do pre-check nao-atomico do
+    // `validateAndCalculate` — e e exatamente esse pre-check que o comentario
+    // acima descreve como insuficiente: entre a validacao e a reserva existe uma
+    // janela em que N clientes leem `usesCount` igual. A rede de seguranca
+    // contra essa janela e este claim, e ela estava desligada.
+    //
+    // Mesma classe dos 23 claims corrigidos em delivery-api@44ca510; este
+    // arquivo ficou fora daquela varredura, que cobriu orders, payments e
+    // verification.
+    return claimGanho(claim);
   }
 
   /** H2: Decrement usage count when order is cancelled/rejected/expired */

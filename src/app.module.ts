@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
-import { SentryGlobalFilter } from '@sentry/nestjs/setup';
+import { SentryGlobalFilter, SentryModule } from '@sentry/nestjs/setup';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -40,6 +40,11 @@ import { SiteConfigModule } from './site-config/site-config.module';
 // qual agente esta ativo. O agente em uso e o N8nAgentModule abaixo.
 import { N8nAgentModule } from './n8n-agent/n8n-agent.module';
 import { buildPostgresSsl } from './config/db-ssl.config';
+import { HttpThrottlerGuard } from './common/guards/http-throttler.guard';
+import { GeoModule } from './common/geo/geo.module';
+import { SentryContextoInterceptor } from './common/sentry/sentry-contexto.interceptor';
+import { FidelidadeModule } from './loyalty/fidelidade.module';
+import { EquipeModule } from './team/equipe.module';
 
 @Module({
   providers: [
@@ -47,8 +52,27 @@ import { buildPostgresSsl } from './config/db-ssl.config';
       provide: APP_FILTER,
       useClass: SentryGlobalFilter,
     },
+    {
+      // KAN-202: carimba usuario e operacao GraphQL no evento. Sem isso todo
+      // erro chega como "/graphql", e duas falhas diferentes viram o mesmo
+      // cartao — porque o sistema inteiro entra pelo mesmo endereco.
+      provide: APP_INTERCEPTOR,
+      useClass: SentryContextoInterceptor,
+    },
+    {
+      // Teto global para os controllers REST — ver HttpThrottlerGuard.
+      provide: APP_GUARD,
+      useClass: HttpThrottlerGuard,
+    },
   ],
   imports: [
+    // KAN-202: isolamento de escopo por requisicao. Sem ele, o usuario que o
+    // interceptor carimba pode vazar para o evento de OUTRA requisicao
+    // concorrente — e aí o relatorio aponta a pessoa errada.
+    SentryModule.forRoot(),
+    GeoModule,
+    FidelidadeModule,
+    EquipeModule,
     ConfigModule.forRoot({ isGlobal: true }),
 
     // Input#1 / A#4: base do rate limiting. O guard só é aplicado (escopado) nas

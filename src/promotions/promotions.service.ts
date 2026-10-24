@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit, Inject } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThanOrEqual, MoreThanOrEqual, LessThan, MoreThan } from 'typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { Repository, LessThanOrEqual, MoreThanOrEqual, LessThan, MoreThan, DataSource } from 'typeorm';
+import { comTravaDistribuida } from '../common/utils/trava-distribuida';
 import { PubSub } from 'graphql-subscriptions';
 import { Promotion } from './entities/promotion.entity';
 import { CreatePromotionInput } from './dto/create-promotion.input';
@@ -10,6 +11,9 @@ import { Product } from '../products/entities/product.entity';
 import { VendorUser } from '../users/entities/vendor-user.entity';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { FidelidadeService } from '../loyalty/fidelidade.service';
+import { EquipeService } from '../team/equipe.service';
+import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
 @Injectable()
 export class PromotionsService implements OnModuleInit {
@@ -24,21 +28,31 @@ export class PromotionsService implements OnModuleInit {
     private platformConfigService: PlatformConfigService,
     private whatsAppService: WhatsAppService,
     @Inject(PUB_SUB) private pubSub: PubSub,
+    @InjectDataSource() private dataSource: DataSource,
+    private fidelidadeService: FidelidadeService,
+    // KAN-82: autorizacao de loja passou a ser "dono OU membro da equipe
+    // com o modulo", em vez de so "e o dono?".
+    private equipeService: EquipeService,
   ) {}
 
   onModuleInit() {
     // KAN-253: as duas chamadas descartavam a Promise. Se algo escapar do
     // try/catch interno vira unhandled rejection — e a primeira roda no boot,
     // onde uma falha nao tratada e ainda mais sensivel.
+    // KAN-254: as duas rotinas mexem em PRECO DE VENDA (promotionalPrice) —
+    // duas instancias rodando juntas disputam as mesmas linhas de produto. A
+    // trava do banco deixa so uma passar por rodada (ver trava-distribuida).
+    //
+    // Elas tambem passaram a rodar em SEQUENCIA dentro da trava: sao
+    // complementares (uma limpa o que venceu, a outra aplica o que comecou) e
+    // disparadas em paralelo podiam se cruzar na mesma linha.
     const run = () => {
-      this.clearExpiredPromotions().catch((err) =>
-        this.logger.error('clearExpiredPromotions falhou:', err),
-      );
-      // Contraparte da limpeza: aplica o desconto das promocoes pagas cuja
-      // janela ja comecou (ate agora nada fazia isso — ver activateDuePromotions).
-      this.activateDuePromotions().catch((err) =>
-        this.logger.error('activateDuePromotions falhou:', err),
-      );
+      comTravaDistribuida(this.dataSource, 'tick:promocoes', async () => {
+        await this.clearExpiredPromotions();
+        // Contraparte da limpeza: aplica o desconto das promocoes pagas cuja
+        // janela ja comecou (ate agora nada fazia isso — ver activateDuePromotions).
+        await this.activateDuePromotions();
+      }).catch((err) => this.logger.error('tick de promocoes falhou:', err));
     };
     run();
     setInterval(run, 5 * 60 * 1000);
@@ -62,39 +76,114 @@ export class PromotionsService implements OnModuleInit {
   // campanha para segunda-feira, o webhook aplicava o desconto so se `now` ja
   // estivesse dentro da janela (nao estava), e na segunda ninguem reaplicava:
   // o produto seguia com preco cheio e a campanha paga simplesmente nao rodava.
+  /**
+   * A CAMPANHA VIGENTE de um produto.
+   *
+   * Esta condição é a definição única de "está valendo agora", e os dois
+   * schedulers abaixo passaram a ser complementares em cima dela: um aplica o
+   * preço de quem está vigente, o outro limpa o preço de quem não tem ninguém
+   * vigente. Juntos determinam inteiramente o `promotionalPrice` do produto.
+   *
+   * Isso importa porque `product.promotionalPrice` É O PREÇO DE VENDA —
+   * `orders.service` calcula o subtotal com `promotionalPrice || price`, e
+   * desse subtotal saem a comissão e a fatia de cada um no split.
+   *
+   * O campo pertence exclusivamente a este módulo: além destes schedulers, só
+   * `markAsPaid`, `toggleActive`, `swapProduct` e `delete` o escrevem, e os
+   * quatro já conferem esta mesma janela. É isso que permite tratar os dois
+   * schedulers como a autoridade sobre ele.
+   */
+  private static readonly CAMPANHA_VIGENTE = `
+               pr."isPaid" = true
+           AND pr."isActive" = true
+           AND pr."startDate" <= NOW()
+           AND pr."endDate" >= NOW()
+           AND pr."promotionalPrice" IS NOT NULL`;
+
+  /**
+   * Aplica o preço da campanha vigente.
+   *
+   * BUGFIX (16/10/2026): O PREÇO OSCILAVA ENTRE RODADAS DO SCHEDULER.
+   *
+   * O `UPDATE ... FROM promotions` casava TODAS as campanhas vigentes do
+   * produto. Com duas pagas e ativas no mesmo produto — o `create` só limita a
+   * QUANTIDADE por semana pela cota do plano, nada impede duas no mesmo
+   * produto — o Postgres escolhia uma arbitrariamente, e a condição
+   * `IS DISTINCT FROM` fazia a query achar a OUTRA na rodada seguinte e trocar
+   * o preço de novo.
+   *
+   * Medido em banco descartável (scripts/provas/prova-promocoes-preco.mjs),
+   * produto de R$ 100 com campanhas de R$ 80 e de R$ 60:
+   *
+   *     1a rodada: R$ 60,00
+   *     2a rodada: R$ 80,00
+   *     3a rodada: R$ 60,00
+   *
+   * O scheduler roda a cada minuto. O cliente pagava um preço diferente
+   * conforme o minuto em que abrisse a tela, e a comissão saía desse valor.
+   *
+   * O conserto é o `DISTINCT ON`: uma campanha por produto, escolhida por
+   * regra explícita — a de início mais RECENTE, e em empate a criada mais
+   * recentemente. É o que corresponde à intuição de quem anuncia: a última
+   * campanha que eu lancei é a que está no ar.
+   */
   private async activateDuePromotions() {
     try {
       await this.productsRepository.manager.query(`
         UPDATE products p
-        SET "promotionalPrice" = pr."promotionalPrice"
-        FROM promotions pr
-        WHERE pr."productId" = p.id
-          AND pr."isPaid" = true
-          AND pr."isActive" = true
-          AND pr."startDate" <= NOW()
-          AND pr."endDate" >= NOW()
-          AND pr."promotionalPrice" IS NOT NULL
-          AND (p."promotionalPrice" IS DISTINCT FROM pr."promotionalPrice")
+        SET "promotionalPrice" = vigente."promotionalPrice"
+        FROM (
+          SELECT DISTINCT ON (pr."productId")
+                 pr."productId",
+                 pr."promotionalPrice"
+            FROM promotions pr
+           WHERE ${PromotionsService.CAMPANHA_VIGENTE}
+           ORDER BY pr."productId", pr."startDate" DESC, pr."createdAt" DESC
+        ) vigente
+        WHERE vigente."productId" = p.id
+          AND p."promotionalPrice" IS DISTINCT FROM vigente."promotionalPrice"
       `);
     } catch (err) {
       this.logger.error('Error activating due promotions', err);
     }
   }
 
+  /**
+   * Limpa o preço promocional de quem não tem campanha vigente.
+   *
+   * BUGFIX (16/10/2026): O PREÇO DE UMA CAMPANHA VENCIDA FICAVA PARA SEMPRE.
+   *
+   * O guarda do `NOT EXISTS` conferia `isPaid` mas NÃO `isActive`. Então uma
+   * campanha paga que o lojista DESLIGOU, com janela futura, bloqueava a
+   * limpeza — e nunca ia aplicar o preço dela, porque o ativador exige
+   * `isActive`. Resultado: o produto ficava preso no preço de uma campanha
+   * vencida, vendendo mais barato indefinidamente.
+   *
+   * Medido na mesma prova: produto de R$ 200 com campanha vencida de R$ 150 e
+   * uma paga-mas-desligada para a semana seguinte ficou em R$ 150,00 depois da
+   * limpeza.
+   *
+   * Havia um segundo caso pelo mesmo motivo: campanha paga e ativa com janela
+   * FUTURA também bloqueava a limpeza, então o preço da vencida continuava
+   * valendo no intervalo entre as duas, em vez de o produto voltar ao preço
+   * cheio.
+   *
+   * O conserto é o complemento exato do ativador: limpa quando NINGUÉM está
+   * vigente. Também deixei de exigir o join com uma campanha vencida — assim a
+   * limpeza alcança o preço órfão de uma campanha apagada (promoção não tem
+   * soft-delete), que antes ficava para sempre.
+   */
   private async clearExpiredPromotions() {
     try {
       await this.productsRepository.manager.query(`
         UPDATE products p
         SET "promotionalPrice" = NULL
-        FROM promotions pr
-        WHERE pr."productId" = p.id
-          AND pr."endDate" < NOW()
-          AND p."promotionalPrice" IS NOT NULL
+        WHERE p."promotionalPrice" IS NOT NULL
           AND NOT EXISTS (
-            SELECT 1 FROM promotions pr2
-            WHERE pr2."productId" = p.id
-              AND pr2."endDate" >= NOW()
-              AND pr2."isPaid" = true
+            SELECT 1
+              FROM promotions pr
+             WHERE pr."productId" = p.id
+               AND ${PromotionsService.CAMPANHA_VIGENTE}
           )
       `);
     } catch (err) {
@@ -104,9 +193,12 @@ export class PromotionsService implements OnModuleInit {
 
   async create(input: CreatePromotionInput, user: VendorUser): Promise<Promotion> {
     const store = await this.storesService.findById(input.storeId);
-    if (store.owner.id !== user.id) {
-      throw new BadRequestException('Voce nao e o dono dessa loja.');
-    }
+    await this.equipeService.exigirPermissao(
+      user.id,
+      store.id,
+      ModuloDaLoja.PROMOTIONS,
+      'Voce nao e o dono dessa loja.',
+    );
 
     const hasBadgeCredit = store.freePromoDaysCredit > 0;
     const planConfig = await this.platformConfigService.getPlanConfig(user.vendorPlan || 'FREE');
@@ -223,17 +315,60 @@ export class PromotionsService implements OnModuleInit {
     await this.promotionsRepository.update(id, { checkoutUrl });
   }
 
-  async findActive(): Promise<Promotion[]> {
+  /** Predicado de "promocao visivel ao publico" — um lugar so. */
+  private static vitrineWhere(now: Date) {
+    return {
+      isActive: true,
+      isPaid: true,
+      startDate: LessThanOrEqual(now),
+      endDate: MoreThanOrEqual(now),
+    };
+  }
+
+  // Perf (F6): era sempre a lista completa de promocoes ativas. Os tres
+  // consumidores no app mostravam no maximo algumas (a home num carrossel, a
+  // busca cortando em 6) e a tela de DETALHE baixava a lista inteira so para
+  // achar uma por id. Agora aceita limit/offset; sem eles, o retorno e o mesmo.
+  async findActive(opcoes?: { limit?: number; offset?: number }): Promise<Promotion[]> {
     const now = new Date();
+    const take = Math.min(Math.max(Number(opcoes?.limit) || 0, 0), 100) || undefined;
+    const skip = Math.max(Number(opcoes?.offset) || 0, 0) || undefined;
     return this.promotionsRepository.find({
-      where: {
-        isActive: true,
-        isPaid: true,
-        startDate: LessThanOrEqual(now),
-        endDate: MoreThanOrEqual(now),
-      },
+      where: PromotionsService.vitrineWhere(now),
       relations: ['store', 'product'],
-      order: { createdAt: 'DESC' },
+      // DESEMPATE OBRIGATORIO. Era so `createdAt DESC`, e isso basta enquanto
+      // ninguem pagina: com empate de data o Postgres nao garante ordem nenhuma,
+      // e a ordem pode mudar DE UMA REQUISICAO PARA OUTRA. No momento em que
+      // esta lista passou a ser paginada isso virou perda e duplicacao de item
+      // entre paginas — a pagina 2 podia repetir algo da 1 e esconder outro para
+      // sempre. E empate aqui nao e hipotetico: promocoes criadas no mesmo lote
+      // (ou em segundos) compartilham o `createdAt`. O `id` e unico, entao a
+      // ordem fica total e estavel.
+      order: { createdAt: 'DESC', id: 'ASC' },
+      ...(take !== undefined ? { take } : {}),
+      ...(skip !== undefined ? { skip } : {}),
+    });
+  }
+
+  /**
+   * UMA promocao da vitrine, por id.
+   *
+   * Existe porque a tela de detalhe do app (promotion/[id].tsx) resolvia isso
+   * baixando TODAS as promocoes ativas e fazendo `.find(p => p.id === id)` no
+   * cliente. Alem do desperdicio, isso travava a paginacao desta lista: assim que
+   * `activePromotions` ganhasse limite, a tela de detalhe pararia de achar as
+   * promocoes fora da primeira pagina.
+   *
+   * O mesmo predicado da vitrine e aplicado aqui de proposito: promocao expirada
+   * ou nao paga continua invisivel, exatamente como antes (o `.find` no cliente
+   * tambem nao a encontraria). Devolve null em vez de lancar — a tela ja tem o
+   * seu proprio estado de "promocao nao encontrada".
+   */
+  async findActiveById(id: string): Promise<Promotion | null> {
+    const now = new Date();
+    return this.promotionsRepository.findOne({
+      where: { id, ...PromotionsService.vitrineWhere(now) },
+      relations: ['store', 'product'],
     });
   }
 
@@ -306,6 +441,25 @@ export class PromotionsService implements OnModuleInit {
       this.whatsAppService.notifyPromotionPaid(promotion.store.owner.phone, promotion.title).catch(() => {});
     }
 
+    // KAN-12: os clientes FIÉIS da loja sao avisados da campanha.
+    //
+    // Aqui e nao no createPromotion de propósito: campanha nao paga pode nunca
+    // entrar no ar, e avisar sobre oferta que nao existe queima o canal — o
+    // cliente aprende a ignorar as notificacoes da loja, e aí nem a oferta boa
+    // chega. O service tem teto de destinatarios pelo mesmo motivo.
+    if (promotion.store?.id) {
+      this.fidelidadeService
+        .avisarClientesFieis(
+          promotion.store.id,
+          `Oferta em ${promotion.store.name || 'uma loja que voce curte'}`,
+          promotion.promotionalPrice
+            ? `${promotion.title} — agora por R$ ${Number(promotion.promotionalPrice).toFixed(2)}`
+            : promotion.title,
+          { promotionId: promotion.id },
+        )
+        .catch(() => {});
+    }
+
     if (promotion.product && promotion.promotionalPrice) {
       const now = new Date();
       const start = new Date(promotion.startDate);
@@ -333,9 +487,12 @@ export class PromotionsService implements OnModuleInit {
       relations: ['store', 'store.owner', 'product'],
     });
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
-    if (promotion.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e o dono dessa promocao.');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      promotion.store?.id,
+      ModuloDaLoja.PROMOTIONS,
+      'Voce nao e o dono dessa promocao.',
+    );
     if (promotion.product && promotion.isPaid) {
       await this.productsRepository.update(promotion.product.id, { promotionalPrice: null as any });
     }
@@ -380,9 +537,12 @@ export class PromotionsService implements OnModuleInit {
       relations: ['store', 'store.owner', 'product'],
     });
     if (!promotion) throw new NotFoundException('Promocao nao encontrada');
-    if (promotion.store.owner.id !== userId) {
-      throw new BadRequestException('Voce nao e o dono dessa promocao.');
-    }
+    await this.equipeService.exigirPermissao(
+      userId,
+      promotion.store?.id,
+      ModuloDaLoja.PROMOTIONS,
+      'Voce nao e o dono dessa promocao.',
+    );
     if (promotion.product && promotion.isPaid) {
       await this.productsRepository.update(promotion.product.id, { promotionalPrice: null as any });
     }

@@ -1,4 +1,4 @@
-import { ObjectType, Field, ID, Float } from '@nestjs/graphql';
+import { ObjectType, Field, ID, Float, Int } from '@nestjs/graphql';
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -120,6 +120,26 @@ export class Appointment {
 
   @Column({ default: false })
   isSettled: boolean;
+
+  // Repasse de LOJISTA retido na plataforma, igual ao de `orders`.
+  //
+  // Mesma origem: bloqueio de origem do Pagar.me (allowlist de IP, KAN-299).
+  // A transferência FOI tentada e o provedor recusou por configuração NOSSA,
+  // então re-tentar não resolve. Sem isto, o retry de 48h gastava as 48h
+  // contra um 401 que nunca muda, avisava o lojista a cada rodada sobre um
+  // problema que não é dele, e no fim o dinheiro ficava com a plataforma sem
+  // registro nenhum.
+  //
+  // `isSettled` continua FALSE nesses casos: o lojista não recebeu, e marcar
+  // como liquidado esconderia a dívida. O que muda é o valor passar a ter onde
+  // ser somado e baixado.
+  @Field(() => Int, { nullable: true })
+  @Column({ type: 'int', nullable: true })
+  vendorPayableCents: number;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  vendorPayablePaidAt: Date;
 
   @Field(() => Float, { nullable: true })
   @Column('decimal', { precision: 10, scale: 2, nullable: true })

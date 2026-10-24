@@ -1,4 +1,4 @@
-import { ObjectType, Field, ID, Float } from '@nestjs/graphql';
+import { ObjectType, Field, ID, Float, Int } from '@nestjs/graphql';
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -57,10 +57,13 @@ export class Order {
   @Column({ nullable: true })
   checkoutUrl: string;
 
-  // TODO: Rename mpPreferenceId to pagarmeOrderId in a future migration (legacy MP naming)
+  // KAN-254: era `mpPreferenceId`. O nome mentia: guarda o id do pedido no
+  // Pagar.me (`or_...`), e "preference" e vocabulario do Mercado Pago, que
+  // nao e usado ha tempos. Renomeado na migration 1786800000000, enquanto
+  // ainda nao existe banco de producao para migrar.
   @Field({ nullable: true })
   @Column({ nullable: true })
-  mpPreferenceId: string;
+  pagarmeOrderId: string;
 
   @Field({ nullable: true })
   @Column({ nullable: true })
@@ -212,6 +215,45 @@ export class Order {
   @Column({ type: 'timestamp', nullable: true })
   delivererSettledAt: Date;
 
+  // Repasse de entregador RETIDO na plataforma.
+  //
+  // No PIX com split-on-charge o entregador não entra na divisão da cobrança (só
+  // é conhecido no READY, depois do pagamento já dividido), então o frete dele
+  // fica com a plataforma e precisa de repasse manual. Antes isso existia apenas
+  // como texto em `notes` — impossível somar, filtrar ou dar baixa. Agora é um
+  // passivo de primeira classe.
+  @Field(() => Int, { nullable: true })
+  @Column({ type: 'int', nullable: true })
+  delivererPayableCents: number;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  delivererPayablePaidAt: Date;
+
+  /** Pagamento semanal (repasses_entregador) em que este frete foi pago. */
+  @Column({ type: 'uuid', nullable: true })
+  delivererPayoutId: string | null;
+
+  // Repasse de LOJISTA retido na plataforma.
+  //
+  // Nasceu do bloqueio de origem do Pagar.me (allowlist de IP, KAN-299): quando
+  // a transferência é recusada por configuração NOSSA, o valor vira passivo em
+  // vez de ficar 48h em retry contra um 401 que nunca muda — e em vez de o
+  // lojista receber, a cada rodada, um aviso de falha que não é problema dele.
+  //
+  // ASSIMETRIA DELIBERADA com o entregador: ali `delivererSettledAt` É marcado,
+  // porque naquele caminho o repasse nunca chegou a ser tentado (o split já
+  // tinha acontecido sem ele). Aqui `vendorSettledAt` NÃO é marcado: o lojista
+  // deveria ter recebido e não recebeu, e marcar como liquidado esconderia a
+  // dívida.
+  @Field(() => Int, { nullable: true })
+  @Column({ type: 'int', nullable: true })
+  vendorPayableCents: number;
+
+  @Field(() => Date, { nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
+  vendorPayablePaidAt: Date;
+
   // Foto do valor que o cliente JA pagou/autorizou online, tirada no PRIMEIRO
   // ajuste de peso (adjustItemWeight e o unico lugar que muda `total` depois da
   // criacao — depois do primeiro ajuste o `total` deixa de dizer quanto foi
@@ -228,6 +270,126 @@ export class Order {
 
   @Column({ default: false })
   couponCredited: boolean;
+
+  // Guarda de idempotência da RESTAURAÇÃO de estoque+cupom no cancelamento.
+  // (auditoria 2026-08-23) Antes, dois fluxos concorrentes de cancelamento
+  // (ex.: cliente cancela + expirePendingOrders varre o mesmo pedido) liam ambos
+  // o status já terminal e chamavam restoreStockAndCoupon os DOIS: estoque
+  // devolvido 2x (fantasma -> oversell) e decrementUsage do cupom 2x. Este
+  // timestamp é fincado por claim atômico — só o primeiro fluxo restaura.
+  @Column({ type: 'timestamp', nullable: true })
+  stockRestoredAt: Date | null;
+
+  // ─── Garantia de entrega por CÓDIGOS ──────────────────────────────────
+  //
+  // ATENÇÃO — NENHUM DESTES CAMPOS TEM @Field(), E ISSO É DELIBERADO.
+  //
+  // Se um código virar campo do tipo `Order` no GraphQL, qualquer query que
+  // retorne o pedido o entrega junto — e a query do ENTREGADOR passaria a
+  // trazer o código do CLIENTE, que é exatamente o segredo que ele tem de
+  // receber da pessoa. Isso destruiria o esquema inteiro, e não é hipótese
+  // remota: este projeto já vazou dado sensível desse jeito três vezes (PII em
+  // `serviceRatings`, endereço do cliente em broadcast para todo socket
+  // conectado, e permissões de superadmin que só existiam na UI).
+  //
+  // Cada parte lê o SEU código por uma query dedicada, que valida posse e
+  // devolve só aquele valor. Ver DeliveryCodesService.
+  //
+  // Só pedidos com entrega por entregador do app recebem códigos; a presença
+  // deles é o que chaveia entre o fluxo novo e o antigo.
+
+  /** Visível só ao LOJISTA. O ENTREGADOR digita na coleta. */
+  @Column({ type: 'varchar', length: 6, nullable: true })
+  codigoVendedor: string | null;
+
+  /** Visível só ao ENTREGADOR. O LOJISTA digita na coleta. */
+  @Column({ type: 'varchar', length: 6, nullable: true })
+  codigoEntregador: string | null;
+
+  /** Visível só ao CLIENTE. O ENTREGADOR digita na porta — é o que LIBERA o dinheiro. */
+  @Column({ type: 'varchar', length: 6, nullable: true })
+  codigoCliente: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  codigoVendedorUsadoEm: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  codigoEntregadorUsadoEm: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  codigoClienteUsadoEm: Date | null;
+
+  // Onde o entregador estava em cada registro. É a evidência que sustenta a
+  // contestação de chargeback (KAN-303: recuperar repasse é impossível, então a
+  // defesa é a prova de entrega).
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  codigoVendedorLat: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  codigoVendedorLng: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  codigoClienteLat: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  codigoClienteLng: number | null;
+
+  /** Tentativas erradas acumuladas NESTE pedido (contador compartilhado). */
+  @Column({ type: 'int', default: 0 })
+  codigoTentativas: number;
+
+  @Column({ type: 'timestamp', nullable: true })
+  codigoBloqueadoAte: Date | null;
+
+  /**
+   * Entrega registrada SEM o código do cliente (ausente, dormindo, ou que se
+   * recusa a informar).
+   *
+   * Existe para o pagamento do entregador não ficar preso à boa vontade do
+   * cliente — isso derrubaria retenção de entregador rápido. Abre janela de
+   * contestação: sem contestação do cliente, libera; com contestação, a
+   * plataforma decide com a foto, o GPS e o horário.
+   */
+  @Column({ type: 'timestamp', nullable: true })
+  entregaSemCodigoEm: Date | null;
+
+  @Column({ type: 'varchar', length: 300, nullable: true })
+  entregaSemCodigoMotivo: string | null;
+
+  // ─── Metadados dos códigos: o FATO, nunca o VALOR ─────────────────────
+  //
+  // Estes dois TÊM @Field(), e isso não contradiz a regra acima. O que não pode
+  // vazar é o valor de um código; saber que o pedido usa códigos, ou que a
+  // coleta já foi registrada, não entrega segredo nenhum — e sem isso os apps
+  // não conseguem escolher entre o fluxo de códigos e o antigo, nem dizer ao
+  // entregador o que falta fazer.
+  //
+  // São getters, não colunas: nada a migrar, e nenhum lugar novo onde um valor
+  // possa ser gravado por engano.
+  //
+  // O limite que separa um do outro: BOOLEANO sim, string nunca. O E2E
+  // `scripts/provas/e2e-entrega-sem-codigo.mjs` e o
+  // `e2e-codigos-entrega.mjs` cobram isso — eles varrem o tipo Order por
+  // campos com "codigo" no nome e exigem que todos sejam Boolean.
+
+  /** Este pedido é confirmado por códigos? Decide qual fluxo o app mostra. */
+  @Field(() => Boolean)
+  get usaCodigoDeEntrega(): boolean {
+    return !!this.codigoVendedor;
+  }
+
+  /**
+   * O entregador já digitou o código da loja?
+   *
+   * Serve para o app dele distinguir "ainda preciso coletar" de "coletei, falta
+   * a loja confirmar o meu código" — dois estados que, sem isto, ficam ambos
+   * parecendo READY e deixam o entregador sem saber o que fazer na porta da
+   * loja.
+   */
+  @Field(() => Boolean)
+  get codigoDaLojaJaRegistrado(): boolean {
+    return !!this.codigoVendedorUsadoEm;
+  }
 
   @Field()
   @CreateDateColumn()

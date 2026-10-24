@@ -38,6 +38,7 @@ import {
   ROAD_FACTOR,
 } from '../common/delivery-constants';
 import { PUB_SUB } from '../pubsub/pubsub.module';
+import { DistanciaService } from '../common/geo/distancia.service';
 
 @Resolver(() => Store)
 export class StoresResolver {
@@ -47,6 +48,7 @@ export class StoresResolver {
     private platformConfigService: PlatformConfigService,
     private mailService: MailService,
     private delivererTracker: DelivererTrackerService,
+    private distanciaService: DistanciaService,
     @Inject(PUB_SUB) private pubSub: PubSub,
   ) {}
 
@@ -70,9 +72,27 @@ export class StoresResolver {
     return this.storesService.update(input, user);
   }
 
+  // Perf (F6): argumentos todos opcionais — sem nenhum, o retorno e o mesmo de
+  // antes. Os filtros existem para a aba de busca do app parar de baixar a
+  // tabela de lojas inteira e filtrar no cliente.
   @Query(() => [Store])
-  stores(): Promise<Store[]> {
-    return this.storesService.findAll();
+  stores(
+    @Args('limit', { type: () => Int, nullable: true }) limit?: number,
+    @Args('offset', { type: () => Int, nullable: true }) offset?: number,
+    @Args('search', { type: () => String, nullable: true }) search?: string,
+    @Args('storeType', { type: () => String, nullable: true }) storeType?: string,
+    @Args('onlyOpen', { type: () => Boolean, nullable: true }) onlyOpen?: boolean,
+    @Args('onlyFreeDelivery', { type: () => Boolean, nullable: true })
+    onlyFreeDelivery?: boolean,
+  ): Promise<Store[]> {
+    return this.storesService.findAll({
+      limit,
+      offset,
+      search,
+      storeType,
+      onlyOpen,
+      onlyFreeDelivery,
+    });
   }
 
   @Query(() => Store)
@@ -123,7 +143,10 @@ export class StoresResolver {
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   myStores(@CurrentUser() user: VendorUser): Promise<Store[]> {
-    return this.storesService.findByOwner(user.id);
+    // KAN-82: inclui as lojas em que o usuario e membro da equipe. O painel
+    // inteiro e construido sobre esta query — sem isso o funcionario convidado
+    // entra e nao ve loja nenhuma.
+    return this.storesService.findOperadasPor(user.id);
   }
 
   @Mutation(() => Store)
@@ -169,19 +192,17 @@ export class StoresResolver {
     const pricePerKm = await this.platformConfigService.getDeliveryPricePerKm();
     const basePrice = await this.platformConfigService.getDeliveryBasePrice();
 
-    const R = 6371;
-    const dLat = ((customerLat - Number(store.latitude)) * Math.PI) / 180;
-    const dLng = ((customerLng - Number(store.longitude)) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((Number(store.latitude) * Math.PI) / 180) *
-        Math.cos((customerLat * Math.PI) / 180) *
-        Math.sin(dLng / 2) *
-        Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    const distanceKm = R * c;
+    // KAN-29: MESMA conta do createOrder (DistanciaService) — este numero e o
+    // que o cliente ve antes de confirmar. Se divergisse do cobrado, o cliente
+    // veria um preco e pagaria outro.
+    const distancia = await this.distanciaService.entre(
+      Number(store.latitude),
+      Number(store.longitude),
+      customerLat,
+      customerLng,
+    );
 
-    const fee = basePrice + distanceKm * pricePerKm;
+    const fee = basePrice + distancia.km * pricePerKm;
     return Math.round(fee * 100) / 100;
   }
 
@@ -201,17 +222,16 @@ export class StoresResolver {
     const storeLat = Number(store.latitude);
     const storeLng = Number(store.longitude);
 
-    const R = 6371;
-    const dLat1 = ((customerLat - storeLat) * Math.PI) / 180;
-    const dLng1 = ((customerLng - storeLng) * Math.PI) / 180;
-    const a1 =
-      Math.sin(dLat1 / 2) * Math.sin(dLat1 / 2) +
-      Math.cos((storeLat * Math.PI) / 180) *
-        Math.cos((customerLat * Math.PI) / 180) *
-        Math.sin(dLng1 / 2) *
-        Math.sin(dLng1 / 2);
-    const storeToCustomerKm =
-      R * 2 * Math.atan2(Math.sqrt(a1), Math.sqrt(1 - a1));
+    // KAN-29: a perna LOJA->CLIENTE vem da rota de verdade. O ROAD_FACTOR
+    // (que existia justamente porque a linha reta subestima) deixa de ser
+    // aplicado nela quando a distancia veio roteada — seria corrigir duas
+    // vezes a mesma coisa e empurrar a estimativa para cima.
+    const trecho = await this.distanciaService.entre(
+      storeLat,
+      storeLng,
+      customerLat,
+      customerLng,
+    );
 
     const nearest = this.delivererTracker.getNearestDelivererInfo(
       storeLat,
@@ -221,10 +241,16 @@ export class StoresResolver {
     const vehicleType = nearest ? nearest.vehicleType : 'MOTO';
     const speed = VEHICLE_AVG_SPEEDS_KMH[vehicleType] || DEFAULT_AVG_SPEED_KMH;
 
-    const totalDistanceKm =
-      (delivererToStoreKm + storeToCustomerKm) * ROAD_FACTOR;
-    const travelMinutes = (totalDistanceKm / speed) * 60;
-    const totalMinutes = travelMinutes + PREPARATION_TIME_MINUTES;
+    // A perna ENTREGADOR->LOJA continua em linha reta (vem do rastreador, e
+    // nao vale uma chamada de roteamento a cada abertura de tela), entao ela
+    // mantem o fator de via.
+    const minutosAteALoja = ((delivererToStoreKm * ROAD_FACTOR) / speed) * 60;
+    const minutosAteOCliente =
+      trecho.fonte === 'rota'
+        ? trecho.minutos
+        : ((trecho.km * ROAD_FACTOR) / speed) * 60;
+    const totalMinutes =
+      minutosAteALoja + minutosAteOCliente + PREPARATION_TIME_MINUTES;
 
     return Math.ceil(totalMinutes);
   }

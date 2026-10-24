@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
+import { linhasAfetadas } from '../common/utils/db-claim';
 import { HttpService } from '@nestjs/axios';
 import { PubSub } from 'graphql-subscriptions';
 import { firstValueFrom } from 'rxjs';
@@ -116,6 +117,26 @@ export class ProductsService {
 
   // Igual ao findById, mas inclui produtos soft-deleted (usado na verificacao
   // de ownership do restore, que por definicao age sobre um produto deletado).
+  /**
+   * Mesmo contrato do findById (MESMAS relations), mas em UMA query para varios
+   * ids. Devolve um mapa id -> produto; id inexistente simplesmente nao aparece,
+   * e quem chama decide o que fazer (o findById lancaria NotFoundException).
+   *
+   * Perf (KAN-254): `createOrder` fazia um SELECT por item do carrinho, cada um
+   * com join de store e category — e depois a verificacao de idade fazia a
+   * MESMA rodada outra vez, totalizando 2N queries no caminho mais quente de
+   * escrita do sistema. Carrinho de 10 itens = 20 queries para ler 10 produtos.
+   */
+  async findManyByIds(ids: string[]): Promise<Map<string, Product>> {
+    const unicos = [...new Set(ids)];
+    if (unicos.length === 0) return new Map();
+    const produtos = await this.productsRepository.find({
+      where: { id: In(unicos) },
+      relations: ['store', 'category'],
+    });
+    return new Map(produtos.map((p) => [p.id, p]));
+  }
+
   async findByIdAnyState(id: string): Promise<Product> {
     const product = await this.productsRepository.findOne({
       where: { id },
@@ -185,7 +206,7 @@ export class ProductsService {
    * pedido (orders.service) e nos estornos (payments.service).
    */
   async decrementStock(id: string, quantity: number): Promise<void> {
-    const rows = await this.productsRepository.query(
+    const claim = await this.productsRepository.query(
       `UPDATE products
           SET stock = stock - $1,
               "isAvailable" = CASE WHEN stock - $1 <= 0 THEN false ELSE "isAvailable" END
@@ -194,7 +215,17 @@ export class ProductsService {
       [quantity, id],
     );
 
-    if (!rows.length) {
+    // `!rows.length` estava inerte (auditoria de 15/10/2026): escrita com
+    // RETURNING devolve [linhas, contagem], comprimento 2 SEMPRE, entao a
+    // excecao de estoque insuficiente NUNCA era lancada — a falta de estoque
+    // passava em silencio.
+    //
+    // Hoje este metodo nao tem chamador (a criacao do pedido usa o decremento
+    // proprio dela, em orders.service, que ja decide por linhasAfetadas). Entao
+    // nao havia consequencia em producao — mas um metodo publico com a guarda
+    // desligada e mina para quem for usa-lo depois, e e justamente o tipo de
+    // coisa que se descobre com dinheiro na mesa.
+    if (linhasAfetadas(claim) === 0) {
       // Nao afetou nenhuma linha: ou o produto sumiu, ou o estoque acabou
       // entre a leitura do cliente e este UPDATE.
       const product = await this.findById(id);
@@ -215,7 +246,7 @@ export class ProductsService {
    * dos incrementos sumia, deixando o lojista com menos estoque do que tem.
    */
   async restoreStock(id: string, quantity: number): Promise<void> {
-    const rows = await this.productsRepository.query(
+    const claim = await this.productsRepository.query(
       `UPDATE products
           SET stock = stock + $1,
               "isAvailable" = CASE WHEN stock + $1 > 0 THEN true ELSE "isAvailable" END
@@ -223,7 +254,9 @@ export class ProductsService {
         RETURNING id`,
       [quantity, id],
     );
-    if (!rows.length) return; // produto nao existe mais — mesmo comportamento de antes
+    // Mesma correcao do decrementStock. Aqui a consequencia era menor (seguia
+    // para um findOne que nao acha nada), mas a guarda tambem estava desligada.
+    if (linhasAfetadas(claim) === 0) return; // produto nao existe mais
 
     const updated = await this.productsRepository.findOne({ where: { id } });
     if (updated) {
