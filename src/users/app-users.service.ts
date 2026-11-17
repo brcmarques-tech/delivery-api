@@ -424,6 +424,9 @@ export class AppUsersService {
     if (!user.isActive) {
       user.sessionToken = crypto.randomBytes(32).toString('hex');
       user.sessionActive = false; // KAN-280
+      // Derruba também a sessão da loja web.
+      user.webSessionToken = crypto.randomBytes(32).toString('hex');
+      user.webSessionActive = false;
     }
     return this.appUsersRepository.save(user);
   }
@@ -667,6 +670,9 @@ export class AppUsersService {
     // KAN-280: e marca que NAO ha sessao — sem isto o proximo login do proprio
     // dono, logo apos o reset, levava ACTIVE_SESSION de um aparelho inexistente.
     user.sessionActive = false;
+    // Idem para a sessão da loja web.
+    user.webSessionToken = crypto.randomBytes(32).toString('hex');
+    user.webSessionActive = false;
     await this.appUsersRepository.save(user);
     return true;
   }

@@ -44,6 +44,7 @@ export class AuthService {
     role: string,
     userType: 'app' | 'vendor',
     marcarPresenca = true,
+    canal: 'app' | 'web' = 'app',
   ): Promise<string> {
     const sessionToken = this.generateSessionToken();
     // KAN-280: sessionActive marca PRESENCA. O sessionToken rotaciona e nunca
@@ -52,6 +53,10 @@ export class AuthService {
     const sessionActive = marcarPresenca;
     if (userType === 'vendor') {
       await this.vendorUserRepo.update(userId, { sessionToken, sessionActive });
+    } else if (canal === 'web') {
+      // Loja web: sessão própria — não mexe na do app.
+      await this.appUserRepo.update(userId, { webSessionToken: sessionToken, webSessionActive: sessionActive });
+      return this.jwtService.sign({ sub: userId, role, userType, sessionToken, canal: 'web' });
     } else {
       await this.appUserRepo.update(userId, { sessionToken, sessionActive });
     }
@@ -99,7 +104,7 @@ export class AuthService {
    * muda o fluxo de cadastro e precisa ser feito junto com o app mobile, senao
    * quebra o registro de quem ja esta em produção.
    */
-  async registerApp(input: RegisterAppInput): Promise<AppAuthResponse> {
+  async registerApp(input: RegisterAppInput, canal: 'app' | 'web' = 'app'): Promise<AppAuthResponse> {
     const phoneVerified = await this.otpService.consumePhoneVerification(input.phone);
     // KAN-280: quando o WhatsApp esta fora, o OTP cai para o e-mail e verifica o
     // E-MAIL (nunca o telefone — ver otp.service). Entao a prova de contato pode
@@ -121,11 +126,16 @@ export class AuthService {
       // emailVerified=false e o app pedia para verificar o e-mail recem-verificado.
       user.emailVerified = true;
     }
-    const accessToken = await this.signWithSession(user.id, user.role, 'app');
+    const accessToken = await this.signWithSession(user.id, user.role, 'app', true, canal);
     return { accessToken, user };
   }
 
-  async loginApp(email: string, password: string, forceLogin: boolean = false): Promise<AppAuthResponse> {
+  async loginApp(
+    email: string,
+    password: string,
+    forceLogin: boolean = false,
+    canal: 'app' | 'web' = 'app',
+  ): Promise<AppAuthResponse> {
     const user = await this.appUsersService.findByEmail(email);
     if (!user) {
       throw new UnauthorizedException('Email nao encontrado');
@@ -146,16 +156,23 @@ export class AuthService {
     // isso, reset de senha ou logout limpo seguido de login legitimo devolvia
     // ACTIVE_SESSION de um aparelho inexistente (e o "desconectar" disparava um
     // sessionKicked fantasma).
-    const temSessaoAtiva = !!user.sessionToken && user.sessionActive === true;
+    // Cada canal (app e loja web) tem a sua sessão: entrar pelo site só
+    // conflita com outra sessão do SITE, nunca derruba o app.
+    const temSessaoAtiva =
+      canal === 'web'
+        ? !!user.webSessionToken && user.webSessionActive === true
+        : !!user.sessionToken && user.sessionActive === true;
     if (temSessaoAtiva && !forceLogin) {
       throw new BadRequestException('ACTIVE_SESSION');
     }
 
-    if (temSessaoAtiva && forceLogin) {
+    // O aviso em tempo real "sua conta entrou em outro aparelho" é do app; a
+    // loja web não assina o evento (descobre na próxima chamada, SESSION_EXPIRED).
+    if (temSessaoAtiva && forceLogin && canal === 'app') {
       this.pubSub.publish('sessionKicked', { sessionKicked: { userId: user.id, userType: 'app' } });
     }
 
-    const accessToken = await this.signWithSession(user.id, user.role, 'app');
+    const accessToken = await this.signWithSession(user.id, user.role, 'app', true, canal);
     return { accessToken, user };
   }
 
@@ -226,9 +243,14 @@ export class AuthService {
   // 7 dias). Agora rotacionamos para um novo valor aleatório: nenhum JWT emitido
   // antes casa mais, então todos são invalidados de fato. Um novo login gera um
   // novo sessionToken e um JWT que casa.
-  async logoutApp(userId: string): Promise<void> {
+  async logoutApp(userId: string, canal: 'app' | 'web' = 'app'): Promise<void> {
     // KAN-280: alem de rotacionar (invalida JWTs), marca a AUSENCIA de sessao —
     // senao o proximo login legitimo levava ACTIVE_SESSION.
+    // Sair pelo site encerra só a sessão do site (e vice-versa).
+    if (canal === 'web') {
+      await this.appUserRepo.update(userId, { webSessionToken: this.generateSessionToken(), webSessionActive: false });
+      return;
+    }
     await this.appUserRepo.update(userId, { sessionToken: this.generateSessionToken(), sessionActive: false });
   }
 

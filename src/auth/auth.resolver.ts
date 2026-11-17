@@ -100,8 +100,12 @@ export class AuthResolver {
   // ---- Registro e Login ----
 
   @Mutation(() => AppAuthResponse)
-  async registerApp(@Args('input') input: RegisterAppInput): Promise<AppAuthResponse> {
-    return this.authService.registerApp(input);
+  async registerApp(
+    @Args('input') input: RegisterAppInput,
+    // 'web' = loja web (sessão própria, não derruba o app). Padrão: app.
+    @Args('canal', { nullable: true }) canal?: string,
+  ): Promise<AppAuthResponse> {
+    return this.authService.registerApp(input, canal === 'web' ? 'web' : 'app');
   }
 
   @Mutation(() => AppAuthResponse)
@@ -109,8 +113,10 @@ export class AuthResolver {
   async loginApp(
     @Args('input') input: LoginInput,
     @Args('forceLogin', { nullable: true, defaultValue: false }) forceLogin: boolean,
+    // 'web' = loja web (sessão própria, não derruba o app). Padrão: app.
+    @Args('canal', { nullable: true }) canal?: string,
   ): Promise<AppAuthResponse> {
-    return this.authService.loginApp(input.email, input.password, forceLogin);
+    return this.authService.loginApp(input.email, input.password, forceLogin, canal === 'web' ? 'web' : 'app');
   }
 
   @Mutation(() => VendorAuthResponse)
@@ -133,7 +139,7 @@ export class AuthResolver {
     if (user.userType === 'vendor') {
       await this.authService.logoutVendor(user.id);
     } else {
-      await this.authService.logoutApp(user.id);
+      await this.authService.logoutApp(user.id, user.canal === 'web' ? 'web' : 'app');
     }
     return true;
   }

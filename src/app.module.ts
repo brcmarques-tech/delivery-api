@@ -201,15 +201,21 @@ import { EquipeModule } from './team/equipe.module';
                 user.userType === 'vendor' ? 'vendor_users' : 'app_users';
               try {
                 const linhas = await dataSource.query(
-                  `SELECT "isActive", "sessionToken", role FROM ${tabela} WHERE id = $1`,
+                  user.userType === 'vendor'
+                    ? `SELECT "isActive", "sessionToken", role FROM ${tabela} WHERE id = $1`
+                    : `SELECT "isActive", "sessionToken", "webSessionToken", role FROM ${tabela} WHERE id = $1`,
                   [user.sub],
                 );
                 const conta = linhas?.[0];
+                // Token da loja web confere com a sessão do site.
+                const esperado =
+                  user.canal === 'web' ? conta?.webSessionToken : conta?.sessionToken;
                 const revogado =
                   !conta ||
                   conta.isActive === false ||
-                  (conta.sessionToken &&
-                    user.sessionToken !== conta.sessionToken);
+                  (user.canal === 'web'
+                    ? !esperado || user.sessionToken !== esperado
+                    : esperado && user.sessionToken !== esperado);
                 if (revogado) {
                   throw new Error('Unauthorized: sessao revogada');
                 }

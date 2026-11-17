@@ -25,7 +25,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: { sub: string; userType?: string; sessionToken?: string }) {
+  async validate(payload: { sub: string; userType?: string; sessionToken?: string; canal?: string }) {
     const userType = payload.userType || 'app';
 
     if (userType === 'vendor') {
@@ -55,9 +55,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (user.isActive === false) {
       throw new UnauthorizedException('ACCOUNT_DISABLED');
     }
+    // Loja web: confere contra a sessão do site (separada da do app).
+    if (payload.canal === 'web') {
+      if (!user.webSessionToken || payload.sessionToken !== user.webSessionToken) {
+        throw new UnauthorizedException('SESSION_EXPIRED');
+      }
+      return { ...user, userType: 'app', canal: 'web' };
+    }
     if (user.sessionToken && payload.sessionToken !== user.sessionToken) {
       throw new UnauthorizedException('SESSION_EXPIRED');
     }
-    return { ...user, userType: 'app' };
+    return { ...user, userType: 'app', canal: 'app' };
   }
 }

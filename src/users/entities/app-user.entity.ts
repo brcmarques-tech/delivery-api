@@ -136,6 +136,14 @@ export class AppUser {
   @Column({ default: false })
   sessionActive: boolean;
 
+  // Sessão da LOJA WEB, separada da do app: entrar pelo site não derruba o app
+  // (e vice-versa). Mesma lógica do par sessionToken/sessionActive, por canal.
+  @Column({ nullable: true })
+  webSessionToken: string;
+
+  @Column({ default: false })
+  webSessionActive: boolean;
+
   // Push notifications
   @Column({ nullable: true })
   expoPushToken: string;

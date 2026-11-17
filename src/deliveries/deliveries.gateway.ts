@@ -120,6 +120,8 @@ export class DeliveriesGateway
         const revogado =
           !user ||
           user.isActive === false ||
+          // Canal do entregador é o app: token da loja web não abre este socket.
+          payload?.canal === 'web' ||
           (user.sessionToken && payload?.sessionToken !== user.sessionToken);
         if (revogado) {
           client.disconnect(true);
