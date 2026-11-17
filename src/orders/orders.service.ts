@@ -490,9 +490,9 @@ export class OrdersService {
         for (const item of items) {
           const result = await manager.query(
             `UPDATE products
-                SET stock = stock - $1,
-                    "isAvailable" = CASE WHEN stock - $1 <= 0 THEN false ELSE "isAvailable" END
-              WHERE id = $2 AND stock >= $1
+                SET stock = CASE WHEN "estoqueIlimitado" THEN stock ELSE stock - $1 END,
+                    "isAvailable" = CASE WHEN NOT "estoqueIlimitado" AND stock - $1 <= 0 THEN false ELSE "isAvailable" END
+              WHERE id = $2 AND ("estoqueIlimitado" OR stock >= $1)
               RETURNING stock`,
             [item.quantity, item.product.id],
           );

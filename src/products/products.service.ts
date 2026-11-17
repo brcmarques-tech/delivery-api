@@ -78,6 +78,7 @@ export class ProductsService {
       imageUrl: input.imageUrl,
       unit,
       stock: input.stock ?? 0,
+      estoqueIlimitado: (input.stock ?? 0) === 0,
       barcode: input.barcode,
       isVariableWeight,
       store: { id: input.storeId } as any,
@@ -174,7 +175,12 @@ export class ProductsService {
       );
       product.category = input.categoryId ? ({ id: input.categoryId } as any) : null;
     }
-    if (input.stock !== undefined) product.stock = input.stock;
+    if (input.stock !== undefined && input.stock !== null) {
+      product.stock = input.stock;
+      // 0 = ilimitado (como o painel orienta); número > 0 volta a controlar.
+      product.estoqueIlimitado = input.stock === 0;
+      if (product.estoqueIlimitado || input.stock > 0) product.isAvailable = product.isAvailable || input.stock > 0;
+    }
     if (input.barcode !== undefined) product.barcode = input.barcode;
     if (input.isVariableWeight !== undefined) product.isVariableWeight = input.isVariableWeight;
     const saved = await this.productsRepository.save(product);
@@ -221,9 +227,9 @@ export class ProductsService {
   async decrementStock(id: string, quantity: number): Promise<void> {
     const claim = await this.productsRepository.query(
       `UPDATE products
-          SET stock = stock - $1,
-              "isAvailable" = CASE WHEN stock - $1 <= 0 THEN false ELSE "isAvailable" END
-        WHERE id = $2 AND stock >= $1
+          SET stock = CASE WHEN "estoqueIlimitado" THEN stock ELSE stock - $1 END,
+              "isAvailable" = CASE WHEN NOT "estoqueIlimitado" AND stock - $1 <= 0 THEN false ELSE "isAvailable" END
+        WHERE id = $2 AND ("estoqueIlimitado" OR stock >= $1)
         RETURNING id`,
       [quantity, id],
     );
@@ -261,8 +267,8 @@ export class ProductsService {
   async restoreStock(id: string, quantity: number): Promise<void> {
     const claim = await this.productsRepository.query(
       `UPDATE products
-          SET stock = stock + $1,
-              "isAvailable" = CASE WHEN stock + $1 > 0 THEN true ELSE "isAvailable" END
+          SET stock = CASE WHEN "estoqueIlimitado" THEN stock ELSE stock + $1 END,
+              "isAvailable" = CASE WHEN NOT "estoqueIlimitado" AND stock + $1 > 0 THEN true ELSE "isAvailable" END
         WHERE id = $2
         RETURNING id`,
       [quantity, id],
@@ -445,6 +451,7 @@ export class ProductsService {
           imageUrl: item.imageUrl,
           unit: itemUnit,
           stock: item.stock ?? 0,
+          estoqueIlimitado: (item.stock ?? 0) === 0,
           barcode: item.barcode,
           isVariableWeight: itemIsVariableWeight,
           store: { id: input.storeId } as any,

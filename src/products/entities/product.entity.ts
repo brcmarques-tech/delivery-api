@@ -51,6 +51,15 @@ export class Product {
   @Column({ default: 0 })
   stock: number;
 
+  // Produto SEM controle de estoque (prato feito na hora, serviço, etc.). O
+  // painel do lojista cadastra "estoque 0 = ilimitado"; a auditoria de oversell
+  // (1090644) passou a barrar estoque 0 e esses produtos ficaram invendáveis
+  // (E2E 17/11/2026). Agora "ilimitado" é uma marcação própria e "esgotado"
+  // continua sendo estoque controlado que chegou a 0 (isAvailable=false).
+  @Field()
+  @Column({ default: false })
+  estoqueIlimitado: boolean;
+
   @Field({ nullable: true })
   @Column({ nullable: true })
   unit: string; // kg, un, lt, etc.
