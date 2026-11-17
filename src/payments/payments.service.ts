@@ -24,7 +24,7 @@ import { VendorPlan, OrderStatus } from '../common/enums';
 import { PLAN_CONFIGS } from '../common/plan-config';
 import { PubSub } from 'graphql-subscriptions';
 import { PUB_SUB } from '../pubsub/pubsub.module';
-import { linhasAfetadas } from '../common/utils/db-claim';
+import { linhasAfetadas, linhasRetornadas } from '../common/utils/db-claim';
 // Perf/fuso: a data de antecipacao tem de ser decidida no fuso do NEGOCIO, nao
 // em UTC — ver dataDeAntecipacao.
 import { businessMinutes, businessToday } from '../common/utils/business-time';
@@ -363,7 +363,7 @@ export class PaymentsService implements OnModuleDestroy {
   private async estornarCobranca(
     chargeId: string,
     opts?: { amountCents?: number; idempotencyKey?: string },
-  ): Promise<void> {
+  ): Promise<{ valorDevolvidoCents?: number }> {
     const parcial = opts?.amountCents !== undefined && opts.amountCents !== null;
     // Total: sem corpo (forma validada no sandbox). Parcial: `{ amount }`.
     const corpo = parcial ? { amount: opts!.amountCents } : undefined;
@@ -409,7 +409,19 @@ export class PaymentsService implements OnModuleDestroy {
     // 200-mascarando-falha: ele e do ESTORNO DE COBRANCA PAGA, nao de toda
     // operacao de cobranca.
 
-    if (estornou) return;
+    if (estornou) {
+      // E2E 17/11/2026: no sandbox, DELETE parcial de PIX ({amount}) devolve a
+      // cobrança INTEIRA (pending_refund com o valor total). Não dá para provar
+      // daqui como produção se comporta; então o valor que o provedor diz que
+      // vai devolver é conferido e a divergência fica registrada para o suporte.
+      const valorDevolvidoCents = Number(resultado?.last_transaction?.amount) || undefined;
+      if (parcial && valorDevolvidoCents && valorDevolvidoCents !== opts!.amountCents) {
+        this.logger.error(
+          `[ESTORNO_PARCIAL_DIVERGENTE] charge ${chargeId} | pedido ${opts!.amountCents} centavos, provedor devolvendo ${valorDevolvidoCents}`,
+        );
+      }
+      return { valorDevolvidoCents };
+    }
 
     const motivo =
       resultado?.last_transaction?.gateway_response?.errors?.[0]?.message ||
@@ -1761,6 +1773,9 @@ export class PaymentsService implements OnModuleDestroy {
 
     // Credit card with pre-auth still pending: capture with split (Pagar.me distributes automatically)
     // If capturedAt is already set (e.g. antifraud auto-capture), skip to manual transfers below
+    // Cartão capturado AQUI pelo total final (já limitado pelo ajuste de peso):
+    // não houve cobrança a mais, então não há devolução de peso a fazer.
+    let capturadoNoValorFinal = false;
     if (order.paymentMethod === 'CREDIT_CARD' && order.preAuthChargeId && !order.capturedAt && order.settledViaSplit) {
       // KAN-325/E2E 17/11: o split foi definido na pré-autorização; a captura vai
       // sem regras. Depois o fluxo continua como o do PIX com split.
@@ -1768,6 +1783,7 @@ export class PaymentsService implements OnModuleDestroy {
         await this.capturePreAuth(order);
         await orderRepo.update(order.id, { capturedAt: new Date() } as any);
         order.capturedAt = new Date();
+        capturadoNoValorFinal = true;
       } catch (err: any) {
         this.logger.error(`Settlement failed for order #${order.orderNumber}: ${err.message}`);
         await orderRepo.update(order.id, { isSettled: false } as any);
@@ -1781,6 +1797,7 @@ export class PaymentsService implements OnModuleDestroy {
         await this.capturePreAuth(order);
         await orderRepo.update(order.id, { capturedAt: new Date() } as any);
         order.capturedAt = new Date();
+        capturadoNoValorFinal = true;
       } catch (err: any) {
         this.logger.error(`Settlement failed for order #${order.orderNumber}: ${err.message}`);
         await orderRepo.update(order.id, { isSettled: false } as any);
@@ -1983,7 +2000,7 @@ export class PaymentsService implements OnModuleDestroy {
     // sozinho pelo Pagar.me.
     const pagoCents = Math.round(Number(order.onlinePaidTotal ?? 0) * 100);
     const sobraCents = pagoCents - totalCents;
-    if (order.onlinePaidTotal != null && sobraCents > 0 && !order.overpaidRefundedAt) {
+    if (order.onlinePaidTotal != null && sobraCents > 0 && !order.overpaidRefundedAt && !capturadoNoValorFinal) {
       // Mesma guarda atomica dos repasses: claim antes da chamada externa, solta
       // no erro. A Idempotency-Key cobre a janela entre o POST ter efeito no
       // Pagar.me e a resposta se perder.
@@ -2003,10 +2020,17 @@ export class PaymentsService implements OnModuleDestroy {
           }
           if (!chargeId) throw new Error('cobranca nao localizada no Pagar.me');
 
-          await this.estornarCobranca(chargeId, {
+          const { valorDevolvidoCents } = await this.estornarCobranca(chargeId, {
             amountCents: sobraCents,
             idempotencyKey: `weight-refund-${order.id}`,
           });
+          if (valorDevolvidoCents && valorDevolvidoCents !== sobraCents) {
+            // O provedor está devolvendo mais do que a diferença do peso: fica
+            // registrado no pedido para o suporte acertar com o cliente/loja.
+            await orderRepo.update(order.id, {
+              notes: `${order.notes || ''}\n[ESTORNO_PARCIAL_DIVERGENTE] pedido R$ ${(sobraCents / 100).toFixed(2)}, provedor devolvendo R$ ${(valorDevolvidoCents / 100).toFixed(2)}. Conferir no Pagar.me.`.trim(),
+            } as any);
+          }
           this.logger.log(
             `Partial weight refund for order #${order.orderNumber} | paid: ${pagoCents} | final: ${totalCents} | refunded: ${sobraCents} cents`,
           );
@@ -3592,20 +3616,31 @@ export class PaymentsService implements OnModuleDestroy {
       // atomico com a lista COMPLETA de terminais (igual aos outros handlers),
       // capturando o status anterior no mesmo comando para decidir wasCompleted e
       // se havia repasse a reverter. 0 linhas = outro fluxo ja encerrou -> no-op.
-      const [claim] = await orderRepo.manager.query(
+      const [claim] = linhasRetornadas(await orderRepo.manager.query(
         `WITH prev AS (SELECT status, "isSettled" FROM orders WHERE id = $1 FOR UPDATE)
          UPDATE orders o SET status = 'CANCELLED', "updatedAt" = NOW()
          FROM prev
          WHERE o.id = $1 AND prev.status NOT IN ('CANCELLED','REJECTED','EXPIRED')
          RETURNING prev.status AS old_status, prev."isSettled" AS was_settled`,
         [order.id],
-      );
+      ));
       if (!claim) {
         this.logger.log(`Estorno de #${order.orderNumber} ignorado — pedido ja terminal (sem re-devolver estoque)`);
         return;
       }
       const wasCompleted = claim.old_status === OrderStatus.COMPLETED;
       order.status = OrderStatus.CANCELLED;
+      if (wasCompleted || claim.old_status === OrderStatus.DELIVERED) {
+        // E2E 17/11/2026: pedido ENTREGUE com a cobrança devolvida inteira. Causa
+        // conhecida: devolução PARCIAL de peso (PIX) que o provedor executou pelo
+        // valor total. Fica escrito no pedido, onde o suporte olha.
+        const parcialPedido = order.overpaidRefundedAt ? ' Havia devolução parcial de peso pedida — o provedor devolveu o total.' : '';
+        await orderRepo.manager.query(
+          `UPDATE orders SET notes = TRIM(COALESCE(notes, '') || $2) WHERE id = $1`,
+          [order.id, `
+[ESTORNO_TOTAL_EM_PEDIDO_ENTREGUE ${new Date().toISOString()}] charge=${data.id}: a cobrança foi devolvida INTEIRA ao cliente com o pedido já entregue.${parcialPedido} Conferir com a loja e o Pagar.me.`],
+        );
+      }
       this.logger.log(`Pedido #${order.orderNumber} cancelado por estorno | wasCompleted: ${wasCompleted}`);
 
       // Se o pedido ja estava COMPLETED e liquidado, reverter os repasses ao

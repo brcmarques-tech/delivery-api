@@ -8,7 +8,7 @@ import { VerificationLevel } from '../common/enums/verification-level.enum';
 import { VendorPlan } from '../common/enums/vendor-plan.enum';
 import { PlatformConfigService } from '../config/platform-config.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
-import { linhasAfetadas } from '../common/utils/db-claim';
+import { linhasAfetadas, linhasRetornadas } from '../common/utils/db-claim';
 import { EquipeService } from '../team/equipe.service';
 import { ModuloDaLoja } from '../team/entities/vendor-team-member.entity';
 
@@ -203,7 +203,7 @@ export class VerificationService {
     if (linhasAfetadas(claim) === 0) {
       throw new BadRequestException('Recompensa já resgatada ou pontos insuficientes.');
     }
-    const isFirstEver = Number(claim[0].badgeClaimCount) === 1;
+    const isFirstEver = Number(linhasRetornadas<any>(claim)[0]?.badgeClaimCount) === 1;
 
     const rewards = await this.configService.getBadgeRewards(level);
 

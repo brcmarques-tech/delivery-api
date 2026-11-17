@@ -37,3 +37,17 @@ export function linhasAfetadas(resultado: unknown): number {
 export function claimGanho(resultado: unknown): boolean {
   return linhasAfetadas(resultado) > 0;
 }
+
+/**
+ * As LINHAS devolvidas por um `UPDATE/DELETE ... RETURNING` (o driver devolve
+ * `[linhas, quantidade]`; `const [x] = ...` pegava o array de linhas inteiro e
+ * os campos vinham undefined — achado no E2E de 17/11/2026: estorno total de
+ * pedido concluído nunca desfazia os repasses).
+ */
+export function linhasRetornadas<T = any>(resultado: unknown): T[] {
+  if (!Array.isArray(resultado)) return [];
+  if (resultado.length === 2 && Array.isArray(resultado[0]) && typeof resultado[1] === 'number') {
+    return resultado[0] as T[];
+  }
+  return resultado as T[];
+}

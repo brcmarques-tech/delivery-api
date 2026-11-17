@@ -1116,7 +1116,7 @@ describe('PaymentsService', () => {
       httpService.axiosRef.delete.mockResolvedValue({
         data: { status: 'paid', last_transaction: { status: 'partial_refunded', amount: 70 } },
       });
-      await expect(estornar('ch_3', { amountCents: 70 })).resolves.toBeUndefined();
+      await expect(estornar('ch_3', { amountCents: 70 })).resolves.toEqual(expect.any(Object));
     });
 
     it('LANCA quando o provedor devolve 200 mas last_transaction falhou', async () => {
@@ -1143,7 +1143,7 @@ describe('PaymentsService', () => {
 
     it('sem last_transaction, o status da cobranca resolve o caso total', async () => {
       httpService.axiosRef.delete.mockResolvedValue({ data: { status: 'canceled' } });
-      await expect(estornar('ch_6')).resolves.toBeUndefined();
+      await expect(estornar('ch_6')).resolves.toEqual(expect.any(Object));
     });
 
     it('repassa a Idempotency-Key', async () => {
@@ -1165,7 +1165,7 @@ describe('PaymentsService', () => {
       httpService.axiosRef.delete.mockResolvedValue({
         data: { status: 'canceled', last_transaction: { status: 'refunded', amount: 200 } },
       });
-      await expect(estornar('ch_preauth')).resolves.toBeUndefined();
+      await expect(estornar('ch_preauth')).resolves.toEqual(expect.any(Object));
     });
   });
 
