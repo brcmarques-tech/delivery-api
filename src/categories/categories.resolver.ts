@@ -47,4 +47,19 @@ export class CategoriesResolver {
   deleteCategory(@Args('id') id: string, @CurrentUser() user: any): Promise<boolean> {
     return this.categoriesService.delete(id, user.id);
   }
+
+  // KAN-326: lixeira
+  @Query(() => [Category])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  deletedCategoriesByStore(@Args('storeId') storeId: string, @CurrentUser() user: any): Promise<Category[]> {
+    return this.categoriesService.findDeletedByStore(storeId, user.id);
+  }
+
+  @Mutation(() => Category)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  restoreCategory(@Args('id') id: string, @CurrentUser() user: any): Promise<Category> {
+    return this.categoriesService.restore(id, user.id);
+  }
 }

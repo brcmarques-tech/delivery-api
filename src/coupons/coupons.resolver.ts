@@ -116,4 +116,19 @@ export class CouponsResolver {
     const { coupon, discount } = await this.couponsService.validateAndCalculate(code, storeId, subtotal, user?.id);
     return { valid: true, discount, couponId: coupon.id, message: `Desconto de R$ ${discount.toFixed(2)} aplicado!` };
   }
+
+  // KAN-326: lixeira
+  @Query(() => [Coupon])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  deletedCouponsByStore(@Args('storeId') storeId: string, @CurrentUser() user: any): Promise<Coupon[]> {
+    return this.couponsService.findDeletedByStore(storeId, user.id);
+  }
+
+  @Mutation(() => Coupon)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  restoreCoupon(@Args('id') id: string, @CurrentUser() user: any): Promise<Coupon> {
+    return this.couponsService.restore(id, user.id);
+  }
 }

@@ -79,6 +79,7 @@ export class Service {
   updatedAt: Date;
 
   // KAN-326: soft delete — nada de negócio é apagado de vez; pode ser restaurado.
+  @Field({ nullable: true })
   @DeleteDateColumn({ nullable: true })
   deletedAt?: Date;
 }

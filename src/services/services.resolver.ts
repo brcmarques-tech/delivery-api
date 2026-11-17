@@ -71,4 +71,19 @@ export class ServicesResolver {
   ): Promise<Service[]> {
     return this.servicesService.searchPublic(query, limit);
   }
+
+  // KAN-326: lixeira
+  @Query(() => [Service])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  deletedServicesByStore(@Args('storeId') storeId: string, @CurrentUser() user: any): Promise<Service[]> {
+    return this.servicesService.findDeletedByStore(storeId, user.id);
+  }
+
+  @Mutation(() => Service)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  restoreService(@Args('id') id: string, @CurrentUser() user: any): Promise<Service> {
+    return this.servicesService.restore(id, user.id);
+  }
 }

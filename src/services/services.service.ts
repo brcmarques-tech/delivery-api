@@ -169,4 +169,29 @@ export class ServicesService {
 
     return qb.orderBy('service.name').limit(limit).getMany();
   }
+
+  // ---- KAN-326: lixeira ----
+
+  /** Serviços excluídos da loja (mais recentes primeiro). */
+  async findDeletedByStore(storeId: string, userId: string): Promise<Service[]> {
+    await this.equipeService.exigirPermissao(userId, storeId, ModuloDaLoja.PRODUCTS, 'Voce nao tem permissao sobre esta loja.');
+    return this.servicesRepository
+      .createQueryBuilder('x')
+      .withDeleted()
+      .where('x.storeId = :storeId', { storeId })
+      .andWhere('x.deletedAt IS NOT NULL')
+      .orderBy('x.deletedAt', 'DESC')
+      .getMany();
+  }
+
+  /** Restaura serviço excluído (só quem tem permissão na loja). */
+  async restore(id: string, userId: string): Promise<Service> {
+    const item = await this.servicesRepository.findOne({ where: { id }, withDeleted: true, relations: ['store'] });
+    if (!item || !item.deletedAt) throw new NotFoundException('Serviço nao encontrado na lixeira');
+    await this.equipeService.exigirPermissao(userId, item.store?.id, ModuloDaLoja.PRODUCTS, 'Voce nao tem permissao sobre esta loja.');
+    await this.servicesRepository.restore(id);
+    const restaurado = await this.servicesRepository.findOne({ where: { id }, relations: ['store'] });
+    if (!restaurado) throw new NotFoundException('Serviço nao encontrado');
+    return restaurado;
+  }
 }

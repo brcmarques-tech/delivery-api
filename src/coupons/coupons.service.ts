@@ -358,4 +358,37 @@ export class CouponsService {
       [couponId],
     );
   }
+
+  // ---- KAN-326: lixeira ----
+
+  /** Cupoms excluídos da loja (mais recentes primeiro). */
+  async findDeletedByStore(storeId: string, userId: string): Promise<Coupon[]> {
+    await this.equipeService.exigirPermissao(userId, storeId, ModuloDaLoja.COUPONS, 'Voce nao tem permissao sobre esta loja.');
+    return this.couponsRepository
+      .createQueryBuilder('x')
+      .withDeleted()
+      .where('x.storeId = :storeId', { storeId })
+      .andWhere('x.deletedAt IS NOT NULL')
+      .orderBy('x.deletedAt', 'DESC')
+      .getMany();
+  }
+
+  /** Restaura cupom excluído (só quem tem permissão na loja). */
+  async restore(id: string, userId: string): Promise<Coupon> {
+    const item = await this.couponsRepository.findOne({ where: { id }, withDeleted: true, relations: ['store'] });
+    if (!item || !item.deletedAt) throw new NotFoundException('Cupom nao encontrado na lixeira');
+    await this.equipeService.exigirPermissao(userId, item.store?.id, ModuloDaLoja.COUPONS, 'Voce nao tem permissao sobre esta loja.');
+    try {
+      await this.couponsRepository.restore(id);
+    } catch (err: any) {
+      // código igual a um cupom ativo criado depois da exclusão
+      if (err?.code === '23505') {
+        throw new BadRequestException('Já existe um cupom ativo com este código. Exclua ou renomeie o atual antes de restaurar.');
+      }
+      throw err;
+    }
+    const restaurado = await this.couponsRepository.findOne({ where: { id }, relations: ['store'] });
+    if (!restaurado) throw new NotFoundException('Cupom nao encontrado');
+    return restaurado;
+  }
 }

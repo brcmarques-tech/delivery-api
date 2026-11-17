@@ -556,4 +556,29 @@ export class PromotionsService implements OnModuleInit {
     await this.promotionsRepository.softRemove(promotion);
     return true;
   }
+
+  // ---- KAN-326: lixeira ----
+
+  /** Promoçãos excluídas da loja (mais recentes primeiro). */
+  async findDeletedByStore(storeId: string, userId: string): Promise<Promotion[]> {
+    await this.equipeService.exigirPermissao(userId, storeId, ModuloDaLoja.PROMOTIONS, 'Voce nao tem permissao sobre esta loja.');
+    return this.promotionsRepository
+      .createQueryBuilder('x')
+      .withDeleted()
+      .where('x.storeId = :storeId', { storeId })
+      .andWhere('x.deletedAt IS NOT NULL')
+      .orderBy('x.deletedAt', 'DESC')
+      .getMany();
+  }
+
+  /** Restaura promoção excluída (só quem tem permissão na loja). */
+  async restore(id: string, userId: string): Promise<Promotion> {
+    const item = await this.promotionsRepository.findOne({ where: { id }, withDeleted: true, relations: ['store'] });
+    if (!item || !item.deletedAt) throw new NotFoundException('Promoção nao encontrada na lixeira');
+    await this.equipeService.exigirPermissao(userId, item.store?.id, ModuloDaLoja.PROMOTIONS, 'Voce nao tem permissao sobre esta loja.');
+    await this.promotionsRepository.restore(id);
+    const restaurado = await this.promotionsRepository.findOne({ where: { id }, relations: ['store'] });
+    if (!restaurado) throw new NotFoundException('Promoção nao encontrada');
+    return restaurado;
+  }
 }

@@ -159,4 +159,19 @@ export class PromotionsResolver {
   promotionUpdated() {
     return this.pubSub.asyncIterableIterator('promotionUpdated');
   }
+
+  // KAN-326: lixeira
+  @Query(() => [Promotion])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  deletedPromotionsByStore(@Args('storeId') storeId: string, @CurrentUser() user: any): Promise<Promotion[]> {
+    return this.promotionsService.findDeletedByStore(storeId, user.id);
+  }
+
+  @Mutation(() => Promotion)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  restorePromotion(@Args('id') id: string, @CurrentUser() user: any): Promise<Promotion> {
+    return this.promotionsService.restore(id, user.id);
+  }
 }

@@ -105,4 +105,29 @@ export class CategoriesService {
     await this.categoriesRepository.softRemove(category);
     return true;
   }
+
+  // ---- KAN-326: lixeira ----
+
+  /** Categorias excluídas da loja (mais recentes primeiro). */
+  async findDeletedByStore(storeId: string, userId: string): Promise<Category[]> {
+    await this.equipeService.exigirPermissao(userId, storeId, ModuloDaLoja.PRODUCTS, 'Voce nao tem permissao sobre esta loja.');
+    return this.categoriesRepository
+      .createQueryBuilder('x')
+      .withDeleted()
+      .where('x.storeId = :storeId', { storeId })
+      .andWhere('x.deletedAt IS NOT NULL')
+      .orderBy('x.deletedAt', 'DESC')
+      .getMany();
+  }
+
+  /** Restaura categoria excluída (só quem tem permissão na loja). */
+  async restore(id: string, userId: string): Promise<Category> {
+    const item = await this.categoriesRepository.findOne({ where: { id }, withDeleted: true, relations: ['store'] });
+    if (!item || !item.deletedAt) throw new NotFoundException('Categoria nao encontrada na lixeira');
+    await this.equipeService.exigirPermissao(userId, item.store?.id, ModuloDaLoja.PRODUCTS, 'Voce nao tem permissao sobre esta loja.');
+    await this.categoriesRepository.restore(id);
+    const restaurado = await this.categoriesRepository.findOne({ where: { id }, relations: ['store'] });
+    if (!restaurado) throw new NotFoundException('Categoria nao encontrada');
+    return restaurado;
+  }
 }
