@@ -144,6 +144,10 @@ export class AppUser {
   @Column({ default: false })
   webSessionActive: boolean;
 
+  // KAN-326 / LGPD: quando o titular excluiu a conta (dados pessoais anonimizados).
+  @Column({ type: 'timestamp', nullable: true })
+  contaExcluidaEm: Date | null;
+
   // Push notifications
   @Column({ nullable: true })
   expoPushToken: string;

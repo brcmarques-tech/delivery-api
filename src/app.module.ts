@@ -45,6 +45,7 @@ import { GeoModule } from './common/geo/geo.module';
 import { SentryContextoInterceptor } from './common/sentry/sentry-contexto.interceptor';
 import { FidelidadeModule } from './loyalty/fidelidade.module';
 import { EquipeModule } from './team/equipe.module';
+import { ContaModule } from './conta/conta.module';
 
 @Module({
   providers: [
@@ -73,6 +74,7 @@ import { EquipeModule } from './team/equipe.module';
     GeoModule,
     FidelidadeModule,
     EquipeModule,
+    ContaModule,
     ConfigModule.forRoot({ isGlobal: true }),
 
     // Input#1 / A#4: base do rate limiting. O guard só é aplicado (escopado) nas
