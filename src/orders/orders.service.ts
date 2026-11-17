@@ -1300,7 +1300,10 @@ export class OrdersService {
       'Voce nao pode cancelar este pedido',
     );
 
-    if (order.delivery) {
+    // E2E 17/11/2026: depois que o entregador DESISTE (desistirDaEntrega), o
+    // registro da entrega fica com delivererId nulo. Olhar só o registro travava
+    // o cancelamento para sempre; o que importa é ter entregador agora.
+    if (order.delivery?.deliverer) {
       throw new BadRequestException(
         'Nao e possivel cancelar o pedido depois que um entregador aceitou',
       );
