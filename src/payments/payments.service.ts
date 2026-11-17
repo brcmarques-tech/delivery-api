@@ -2967,7 +2967,12 @@ export class PaymentsService implements OnModuleDestroy {
         if (promotion && !promotion.isPaid) {
           promotion.isPaid = true;
           await promoRepo.save(promotion);
-          if (promotion.product && promotion.promotionalPrice) {
+          if (
+            promotion.product &&
+            promotion.promotionalPrice &&
+            // preço do produto pode ter baixado entre criar e pagar a promoção
+            Number(promotion.promotionalPrice) < Number(promotion.product.price)
+          ) {
             const now = new Date();
             if (now >= new Date(promotion.startDate) && now <= new Date(promotion.endDate)) {
               await productRepo.update(promotion.product.id, {

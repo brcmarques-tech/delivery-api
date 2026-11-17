@@ -151,7 +151,20 @@ export class ProductsService {
     const product = await this.findById(input.id);
     if (input.name !== undefined) product.name = input.name;
     if (input.description !== undefined) product.description = input.description;
-    if (input.price !== undefined) product.price = input.price;
+    if (input.price !== undefined) {
+      // O preço promocional em vigor (de uma campanha paga) é o preço de venda.
+      // Se o lojista baixa o preço normal para igual ou abaixo dele, a
+      // "promoção" passa a cobrar MAIS caro que o normal. Encerrar ou trocar a
+      // promoção antes é o caminho certo.
+      const promo = Number(product.promotionalPrice) || 0;
+      if (promo > 0 && Number(input.price) <= promo) {
+        const reais = (v: number) => v.toFixed(2).replace('.', ',');
+        throw new BadRequestException(
+          `Este produto está em promoção por R$ ${reais(promo)}. O preço normal precisa ser maior que o promocional — encerre ou altere a promoção antes de baixar o preço para R$ ${reais(Number(input.price))}.`,
+        );
+      }
+      product.price = input.price;
+    }
     if (input.imageUrl !== undefined) product.imageUrl = input.imageUrl;
     if (input.unit !== undefined) product.unit = input.unit;
     if (input.categoryId !== undefined) {

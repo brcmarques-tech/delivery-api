@@ -142,6 +142,8 @@ export class PromotionsService implements OnModuleInit {
         ) vigente
         WHERE vigente."productId" = p.id
           AND p."promotionalPrice" IS DISTINCT FROM vigente."promotionalPrice"
+          -- promoção acima do preço atual (preço baixado depois) não é aplicada
+          AND vigente."promotionalPrice" < p.price
       `);
     } catch (err) {
       this.logger.error('Error activating due promotions', err);
@@ -179,11 +181,15 @@ export class PromotionsService implements OnModuleInit {
         UPDATE products p
         SET "promotionalPrice" = NULL
         WHERE p."promotionalPrice" IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1
-              FROM promotions pr
-             WHERE pr."productId" = p.id
-               AND ${PromotionsService.CAMPANHA_VIGENTE}
+          AND (
+            -- promocional igual ou acima do preço normal cobraria MAIS caro
+            p."promotionalPrice" >= p.price
+            OR NOT EXISTS (
+              SELECT 1
+                FROM promotions pr
+               WHERE pr."productId" = p.id
+                 AND ${PromotionsService.CAMPANHA_VIGENTE}
+            )
           )
       `);
     } catch (err) {

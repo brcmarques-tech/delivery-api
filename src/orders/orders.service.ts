@@ -189,7 +189,13 @@ export class OrdersService {
           `O produto "${product.name}" nao esta disponivel no momento.`,
         );
       }
-      const unitPrice = Number(product.promotionalPrice || product.price);
+      // Promocional só vale se for MENOR que o preço normal (defesa extra: a
+      // promoção e a edição de preço já impedem o contrário).
+      const promoProduto = Number(product.promotionalPrice) || 0;
+      const unitPrice =
+        promoProduto > 0 && promoProduto < Number(product.price)
+          ? promoProduto
+          : Number(product.price);
 
       let totalPrice: number;
       let quantity: number;
