@@ -33,12 +33,12 @@ export class CouponsService {
       where: { id: input.storeId },
       relations: ['owner'],
     });
-    if (!store) throw new NotFoundException('Loja nao encontrada');
+    if (!store) throw new NotFoundException('Loja não encontrada');
     await this.equipeService.exigirPermissao(
       userId,
       store.id,
       ModuloDaLoja.COUPONS,
-      'Voce nao e dono desta loja',
+      'Você não é dono desta loja',
     );
 
     // Check plan allows coupons
@@ -58,11 +58,11 @@ export class CouponsService {
       where: { code, store: { id: input.storeId } },
     });
     if (existing) {
-      throw new BadRequestException('Ja existe um cupom com este codigo nesta loja');
+      throw new BadRequestException('Já existe um cupom com este código nesta loja');
     }
 
     if (input.discountType === 'PERCENT' && input.discountValue > 100) {
-      throw new BadRequestException('Desconto percentual nao pode ser maior que 100%');
+      throw new BadRequestException('Desconto percentual não pode passar de 100%');
     }
 
     const coupon = this.couponsRepository.create({
@@ -102,12 +102,12 @@ export class CouponsService {
       where: { id: input.id },
       relations: ['store', 'store.owner'],
     });
-    if (!coupon) throw new NotFoundException('Cupom nao encontrado');
+    if (!coupon) throw new NotFoundException('Cupom não encontrado');
     await this.equipeService.exigirPermissao(
       userId,
       coupon.store?.id,
       ModuloDaLoja.COUPONS,
-      'Voce nao e dono desta loja',
+      'Você não é dono desta loja',
     );
 
     if (input.code) coupon.code = input.code.trim().toUpperCase();
@@ -122,7 +122,7 @@ export class CouponsService {
     // atribuía o discountValue sem checar — dava pra criar um cupom válido e depois
     // editá-lo para 100% (pedido de graça) ou percentual absurdo.
     if (coupon.discountType === 'PERCENT' && Number(coupon.discountValue) > 100) {
-      throw new BadRequestException('Desconto percentual nao pode ser maior que 100%');
+      throw new BadRequestException('Desconto percentual não pode passar de 100%');
     }
 
     return this.couponsRepository.save(coupon);
@@ -133,12 +133,12 @@ export class CouponsService {
       where: { id },
       relations: ['store', 'store.owner'],
     });
-    if (!coupon) throw new NotFoundException('Cupom nao encontrado');
+    if (!coupon) throw new NotFoundException('Cupom não encontrado');
     await this.equipeService.exigirPermissao(
       userId,
       coupon.store?.id,
       ModuloDaLoja.COUPONS,
-      'Voce nao e dono desta loja',
+      'Você não é dono desta loja',
     );
     coupon.isActive = !coupon.isActive;
     return this.couponsRepository.save(coupon);
@@ -149,12 +149,12 @@ export class CouponsService {
       where: { id },
       relations: ['store', 'store.owner'],
     });
-    if (!coupon) throw new NotFoundException('Cupom nao encontrado');
+    if (!coupon) throw new NotFoundException('Cupom não encontrado');
     await this.equipeService.exigirPermissao(
       userId,
       coupon.store?.id,
       ModuloDaLoja.COUPONS,
-      'Voce nao e dono desta loja',
+      'Você não é dono desta loja',
     );
     await this.couponsRepository.softRemove(coupon);
     return true;
@@ -170,12 +170,12 @@ export class CouponsService {
         where: { id: storeId },
         relations: ['owner'],
       });
-      if (!store) throw new BadRequestException('Voce nao e dono desta loja');
+      if (!store) throw new BadRequestException('Você não é dono desta loja');
       await this.equipeService.exigirPermissao(
         userId,
         store.id,
         ModuloDaLoja.COUPONS,
-        'Voce nao e dono desta loja',
+        'Você não é dono desta loja',
       );
     }
     return this.couponsRepository.find({
@@ -199,14 +199,14 @@ export class CouponsService {
       where: { id },
       relations: ['store', 'store.owner'],
     });
-    if (!coupon) throw new NotFoundException('Cupom nao encontrado');
+    if (!coupon) throw new NotFoundException('Cupom não encontrado');
     coupon.isActive = !coupon.isActive;
     return this.couponsRepository.save(coupon);
   }
 
   async adminDelete(id: string): Promise<boolean> {
     const coupon = await this.couponsRepository.findOne({ where: { id } });
-    if (!coupon) throw new NotFoundException('Cupom nao encontrado');
+    if (!coupon) throw new NotFoundException('Cupom não encontrado');
     await this.couponsRepository.softRemove(coupon);
     return true;
   }
@@ -224,11 +224,11 @@ export class CouponsService {
     });
 
     if (!coupon) {
-      throw new BadRequestException('Cupom nao encontrado');
+      throw new BadRequestException('Cupom não encontrado');
     }
 
     if (!coupon.isActive) {
-      throw new BadRequestException('Este cupom esta desativado');
+      throw new BadRequestException('Este cupom está desativado');
     }
 
     if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
@@ -242,11 +242,11 @@ export class CouponsService {
     // A mensagem NAO diz "este cupom e de outra pessoa": isso confirmaria a
     // existencia do codigo para quem esta testando codigos alheios.
     if (coupon.appUserId && coupon.appUserId !== customerId) {
-      throw new BadRequestException('Cupom nao encontrado');
+      throw new BadRequestException('Cupom não encontrado');
     }
 
     if (coupon.maxUses > 0 && coupon.usesCount >= coupon.maxUses) {
-      throw new BadRequestException('Este cupom ja atingiu o limite de usos');
+      throw new BadRequestException('Este cupom já atingiu o limite de usos');
     }
 
     // M1: Per-user coupon usage limit (1 use per customer per coupon)
@@ -268,7 +268,7 @@ export class CouponsService {
         },
       });
       if (userUsageCount > 0) {
-        throw new BadRequestException('Voce ja utilizou este cupom');
+        throw new BadRequestException('Você já utilizou este cupom');
       }
     }
 
@@ -376,7 +376,7 @@ export class CouponsService {
   /** Restaura cupom excluído (só quem tem permissão na loja). */
   async restore(id: string, userId: string): Promise<Coupon> {
     const item = await this.couponsRepository.findOne({ where: { id }, withDeleted: true, relations: ['store'] });
-    if (!item || !item.deletedAt) throw new NotFoundException('Cupom nao encontrado na lixeira');
+    if (!item || !item.deletedAt) throw new NotFoundException('Cupom não encontrado na lixeira');
     await this.equipeService.exigirPermissao(userId, item.store?.id, ModuloDaLoja.COUPONS, 'Voce nao tem permissao sobre esta loja.');
     try {
       await this.couponsRepository.restore(id);
@@ -388,7 +388,7 @@ export class CouponsService {
       throw err;
     }
     const restaurado = await this.couponsRepository.findOne({ where: { id }, relations: ['store'] });
-    if (!restaurado) throw new NotFoundException('Cupom nao encontrado');
+    if (!restaurado) throw new NotFoundException('Cupom não encontrado');
     return restaurado;
   }
 }
