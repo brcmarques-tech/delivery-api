@@ -181,6 +181,32 @@ export class StoresResolver {
     return this.storesService.findAllAdmin();
   }
 
+  /** KAN-326: lojas excluídas, para o suporte restaurar. */
+  @Query(() => [Store])
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('stores')
+  deletedStores(): Promise<Store[]> {
+    return this.storesService.findDeletedAdmin();
+  }
+
+  @Mutation(() => Store)
+  @UseGuards(GqlAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPERADMIN)
+  @Permission('stores')
+  async restoreStore(@Args('id') id: string, @CurrentUser() admin: any): Promise<Store> {
+    const loja = await this.storesService.restoreStore(id);
+    this.mailService
+      .sendAdminActionEmail(
+        admin.notificationEmail || admin.email,
+        admin.name,
+        'Loja restaurada',
+        `Loja: ${loja.name} (ID: ${loja.id}) — voltou desativada`,
+      )
+      .catch(() => {});
+    return loja;
+  }
+
   @Query(() => Float)
   async calculateDeliveryFee(
     @Args('storeId') storeId: string,

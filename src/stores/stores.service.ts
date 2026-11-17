@@ -808,6 +808,49 @@ export class StoresService implements OnApplicationBootstrap {
     return saved;
   }
 
+  /** KAN-326: lojas excluídas (lixeira do suporte), mais recentes primeiro. */
+  async findDeletedAdmin(): Promise<Store[]> {
+    return this.storesRepository
+      .createQueryBuilder('s')
+      .withDeleted()
+      .leftJoinAndSelect('s.owner', 'owner')
+      .where('s."deletedAt" IS NOT NULL')
+      .orderBy('s."deletedAt"', 'DESC')
+      .getMany();
+  }
+
+  /**
+   * KAN-326: restaura a loja e o que foi excluído JUNTO com ela (mesma data de
+   * exclusão gravada pelo confirmStoreDelete). O que o lojista já tinha apagado
+   * antes continua na lixeira. Volta desativada para o suporte conferir antes.
+   */
+  async restoreStore(id: string): Promise<Store> {
+    const [loja] = await this.storesRepository.query(
+      `SELECT id, "deletedAt" FROM stores WHERE id = $1 AND "deletedAt" IS NOT NULL`,
+      [id],
+    );
+    if (!loja) throw new NotFoundException('Loja nao encontrada na lixeira');
+    try {
+      await this.storesRepository.manager.transaction(async (m) => {
+        for (const tabela of ['products', 'services', 'categories', 'coupons', 'promotions', 'schedules']) {
+          await m.query(
+            `UPDATE "${tabela}" SET "deletedAt" = NULL WHERE "storeId" = $1 AND "deletedAt" = $2`,
+            [id, loja.deletedAt],
+          );
+        }
+        await m.query(`UPDATE stores SET "deletedAt" = NULL, "isActive" = false WHERE id = $1`, [id]);
+      });
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        throw new BadRequestException(
+          'Já existe outra loja ativa com o mesmo endereço (link) ou WhatsApp. Altere a outra loja antes de restaurar esta.',
+        );
+      }
+      throw err;
+    }
+    return this.storesRepository.findOneOrFail({ where: { id }, relations: ['owner'] });
+  }
+
   async findAllAdmin(): Promise<Store[]> {
     return this.storesRepository.find({
       relations: ['owner', 'products', 'products.category', 'categories'],
