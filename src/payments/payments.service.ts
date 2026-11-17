@@ -748,7 +748,7 @@ export class PaymentsService implements OnModuleDestroy {
     if (user.pagarmeCustomerId) return user.pagarmeCustomerId;
 
     const customerId = await this.getOrCreatePagarmeCustomer(user);
-    if (!customerId) throw new BadRequestException('Nao foi possivel criar cliente no Pagar.me');
+    if (!customerId) throw new BadRequestException('Não conseguimos falar com o sistema de pagamento agora. Tente de novo em instantes ou escolha outra forma de pagamento.');
 
     await this.appUsersService.updatePagarmeCustomerId(user.id, customerId);
     return customerId;
@@ -4524,10 +4524,52 @@ export class PaymentsService implements OnModuleDestroy {
   async createAppointmentPix(
     appointment: Appointment,
     customer: AppUser,
-  ): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string }> {
+  ): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string; settledViaSplit?: boolean }> {
     const totalCents = Math.round(Number(appointment.price) * 100);
     const phone = this.formatPhoneForPagarme(customer.phone);
     const uniqueCode = `${appointment.id}-${Date.now()}`;
+
+    // KAN-325: split na cobrança, igual ao PIX de pedido (createOrderPix). Antes
+    // o valor caía 100% na plataforma e o repasse ao prestador dependia do
+    // /transfers, que o Pagar.me recusa — o prestador nunca recebia sozinho.
+    const vendorRecipientId = appointment.store?.owner?.pagarmeRecipientId;
+    const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
+    const commissionCents = Math.round((Number(appointment.commissionAmount) || 0) * 100);
+    const splitRules: any[] = [];
+    if (vendorRecipientId && platformRecipientId) {
+      const vendorAmount = Math.max(0, totalCents - commissionCents);
+      if (vendorAmount > 0) {
+        splitRules.push({
+          amount: vendorAmount,
+          recipient_id: vendorRecipientId,
+          type: 'flat',
+          options: { charge_processing_fee: false, liable: true, charge_remainder_fee: false },
+        });
+      }
+      const platformAmount = totalCents - splitRules.reduce((s, r) => s + r.amount, 0);
+      if (platformAmount > 0) {
+        splitRules.push({
+          amount: platformAmount,
+          recipient_id: platformRecipientId,
+          type: 'flat',
+          options: { charge_processing_fee: true, liable: true, charge_remainder_fee: true },
+        });
+      } else if (splitRules.length > 0) {
+        splitRules[0].options = { ...splitRules[0].options, charge_processing_fee: true, liable: true, charge_remainder_fee: true };
+      }
+      taxaPorContaDaLoja(splitRules, vendorRecipientId, platformRecipientId);
+      if (splitRules.reduce((s, r) => s + r.amount, 0) !== totalCents) {
+        this.logger.error(`PIX split sum mismatch for appointment ${appointment.appointmentNumber} — caindo no fallback sem split`);
+        splitRules.length = 0;
+      }
+    }
+    const splitApplied = splitRules.length > 0;
+    if (!splitApplied) {
+      this.logger.error(
+        `[PIX_NO_SPLIT] Agendamento ${appointment.appointmentNumber}: cobranca PIX SEM split ` +
+          `(vendorRecipient=${vendorRecipientId || 'NULL'} platformRecipient=${platformRecipientId || 'NULL'}).`,
+      );
+    }
 
     const orderBody: any = {
       code: uniqueCode,
@@ -4556,6 +4598,7 @@ export class PaymentsService implements OnModuleDestroy {
               { name: 'Agendamento', value: appointment.appointmentNumber },
             ],
           },
+          ...(splitApplied ? { split: splitRules } : {}),
         },
       ],
       metadata: {
@@ -4580,6 +4623,7 @@ export class PaymentsService implements OnModuleDestroy {
         preferenceId: result.id,
         qrCode,
         qrCodeUrl,
+        settledViaSplit: splitApplied,
       };
     } catch (err: any) {
       // Repassa o [PIX_NAO_GERADO] sem reembrulhar na mensagem generica.
@@ -4824,6 +4868,12 @@ export class PaymentsService implements OnModuleDestroy {
         await aptRepo.update(appointment.id, { isSettled: false } as any);
         throw err;
       }
+      return;
+    }
+
+    // KAN-325: PIX cobrado com split — a loja já recebeu no pagamento.
+    if (appointment.settledViaSplit) {
+      this.logger.log(`Settlement for appointment ${appointment.appointmentNumber} | PIX com split na cobranca — nada a transferir`);
       return;
     }
 

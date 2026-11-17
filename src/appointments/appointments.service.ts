@@ -201,6 +201,11 @@ export class AppointmentsService {
     const paymentMethod = input.paymentMethod || 'ON_SERVICE';
     const isOnlinePayment = paymentMethod === 'PIX' || paymentMethod === 'CREDIT_CARD';
 
+    // KAN-325: cartão sem cartão caía no link de pagamento, que não divide o dinheiro.
+    if (paymentMethod === 'CREDIT_CARD' && !input.cardId && !input.cardToken) {
+      throw new BadRequestException('Informe os dados do cartão para pagar com cartão.');
+    }
+
     if (isOnlinePayment && !customer.cpf) {
       throw new BadRequestException('CPF obrigatorio para pagamento online');
     }
@@ -292,6 +297,7 @@ export class AppointmentsService {
             pagarmeOrderId: pixResult.preferenceId,
             pixQrCode: pixResult.qrCode,
             pixQrCodeBase64: pixResult.qrCodeUrl,
+            settledViaSplit: !!pixResult.settledViaSplit,
           });
         } else if (paymentMethod === 'CREDIT_CARD') {
           if (input.cardId || input.cardToken) {
@@ -300,12 +306,6 @@ export class AppointmentsService {
               pagarmeOrderId: chargeResult.pagarmeOrderId,
               preAuthChargeId: chargeResult.chargeId,
               paymentStatus: chargeResult.status === 'pre_authorized' ? 'AWAITING_PAYMENT' : 'PENDING',
-            });
-          } else {
-            const checkoutResult = await this.paymentsService.createAppointmentCheckout(apt, customer);
-            await this.appointmentsRepository.update(saved.id, {
-              checkoutUrl: checkoutResult.checkoutUrl,
-              pagarmeOrderId: checkoutResult.preferenceId,
             });
           }
         }

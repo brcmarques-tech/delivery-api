@@ -121,6 +121,11 @@ export class Appointment {
   @Column({ default: false })
   isSettled: boolean;
 
+  // KAN-325: PIX cobrado JÁ com split (loja + plataforma). A loja recebe no
+  // pagamento; a liquidação não tenta /transfers e o /refund desfaz o split.
+  @Column({ default: false })
+  settledViaSplit: boolean;
+
   // Repasse de LOJISTA retido na plataforma, igual ao de `orders`.
   //
   // Mesma origem: bloqueio de origem do Pagar.me (allowlist de IP, KAN-299).

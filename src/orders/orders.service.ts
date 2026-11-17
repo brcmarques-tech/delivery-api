@@ -345,6 +345,14 @@ export class OrdersService {
 
     const vendorPaymentConnected = storeOwner?.paymentConnected ?? false;
 
+    // KAN-325: cartão sempre com o cartão na mão (token ou cartão salvo), com
+    // pré-autorização e captura com split na conclusão — igual ao app. O link
+    // de pagamento hospedado não divide o dinheiro (cai 100% na plataforma e o
+    // repasse dependia do /transfers, que o Pagar.me recusa).
+    if (paymentMethod === 'CREDIT_CARD' && !input.cardId && !input.cardToken) {
+      throw new BadRequestException('Informe os dados do cartão para pagar com cartão.');
+    }
+
     if (!vendorPaymentConnected && paymentMethod !== 'ON_DELIVERY') {
       throw new BadRequestException(
         'Esta loja ainda nao aceita pagamentos online. Escolha pagamento na entrega ou retirada.',

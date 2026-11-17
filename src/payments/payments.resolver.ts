@@ -52,6 +52,17 @@ export class PaymentsResolver {
     return this.paymentsService.createPlanUpgrade(user, plan, billingPeriod, cardToken, paymentMethod);
   }
 
+  /**
+   * KAN-325: chave PÚBLICA do Pagar.me para a loja web tokenizar o cartão no
+   * navegador (o número do cartão vai direto ao Pagar.me, nunca à nossa API).
+   * É feita para ficar exposta — não é a chave secreta.
+   */
+  @Query(() => String, { nullable: true })
+  chavePublicaDoPagamento(): string | null {
+    const chave = process.env.PAGARME_PUBLIC_KEY || '';
+    return chave.startsWith('pk_') ? chave : null;
+  }
+
   @Query(() => Subscription, { nullable: true })
   @UseGuards(GqlAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)

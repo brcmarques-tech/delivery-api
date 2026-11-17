@@ -40,6 +40,8 @@ describe('PaymentsService', () => {
     update: jest.fn().mockResolvedValue({ affected: 1 }),
     increment: jest.fn().mockResolvedValue({ affected: 1 }),
     createQueryBuilder: jest.fn().mockReturnValue({
+      // historico inclui o que foi excluido (soft delete, KAN-326)
+      withDeleted: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
@@ -59,6 +61,8 @@ describe('PaymentsService', () => {
     findOne: jest.fn(),
     find: jest.fn(),
     createQueryBuilder: jest.fn().mockReturnValue({
+      // historico inclui o que foi excluido (soft delete, KAN-326)
+      withDeleted: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
