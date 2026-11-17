@@ -4732,6 +4732,13 @@ export class PaymentsService implements OnModuleDestroy {
 
     const totalCents = Math.round(Number(appointment.price) * 100);
     const splitRules = this.regrasDeSplitDoAgendamento(appointment, 'CARTAO');
+    // E2E 17/11/2026: sem endereço de cobrança o Pagar.me recusa ("billing |
+    // value is required") — o cartão no agendamento nunca funcionou. Usa o
+    // endereço do atendimento ou, sem ele, o da loja (mesma regra do pedido).
+    const billingAddress = this.buildBillingAddress(
+      { deliveryAddress: appointment.address, customer } as any,
+      appointment.store as any,
+    );
     const splitApplied = splitRules.length > 0;
     const phone = this.formatPhoneForPagarme(customer.phone);
     const uniqueCode = `${appointment.id}-${Date.now()}`;
@@ -4763,6 +4770,7 @@ export class PaymentsService implements OnModuleDestroy {
         document: customer.cpf?.replace(/\D/g, '') || '',
         document_type: 'CPF',
         ...(phone ? { phones: { mobile_phone: phone } } : {}),
+        address: billingAddress,
       },
       payments: [
         {
@@ -4772,6 +4780,7 @@ export class PaymentsService implements OnModuleDestroy {
             operation_type: 'pre_auth',
             installments: 1,
             statement_descriptor: STATEMENT_DESCRIPTOR,
+            card: { billing_address: billingAddress },
           },
           ...(splitApplied ? { split: splitRules } : {}),
         },

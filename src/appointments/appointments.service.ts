@@ -312,7 +312,14 @@ export class AppointmentsService {
         }
       } catch (err: any) {
         this.logger.error(`Payment creation failed for appointment ${saved.id}: ${err.message}`);
-        // Don't fail the appointment — it stays as AWAITING_PAYMENT
+        // CARTÃO: falhou a reserva = não há pagamento nenhum. Antes o agendamento
+        // ficava no ar "aguardando pagamento" sem o cliente saber (E2E 17/11):
+        // agora é cancelado (o horário volta a ficar livre) e o motivo chega ao
+        // cliente. PIX segue como antes (o QR pode ser gerado de novo).
+        if (paymentMethod === 'CREDIT_CARD') {
+          await this.appointmentsRepository.update(saved.id, { status: AppointmentStatus.CANCELLED } as any);
+          throw new BadRequestException(err?.message || 'Não foi possível processar o cartão. Tente outro cartão ou PIX.');
+        }
       }
     }
 
