@@ -7,6 +7,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   Index,
+  DeleteDateColumn,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { Product } from '../../products/entities/product.entity';
@@ -82,4 +83,8 @@ export class Promotion {
   @Field()
   @UpdateDateColumn()
   updatedAt: Date;
+
+  // KAN-326: soft delete — nada de negócio é apagado de vez; pode ser restaurado.
+  @DeleteDateColumn({ nullable: true })
+  deletedAt?: Date;
 }

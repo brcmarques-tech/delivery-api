@@ -945,7 +945,23 @@ export class StoresService implements OnApplicationBootstrap {
     }
 
     const storeName = store.name;
-    await this.storesRepository.remove(store);
+    // KAN-326: a loja não é apagada de vez. Ela e tudo o que é dela recebem a
+    // MESMA data de exclusão (dá para restaurar junto); pedidos e agendamentos
+    // continuam no histórico. O carrinho de quem tinha itens dela é limpo.
+    await this.storesRepository.manager.transaction(async (m) => {
+      const agora = new Date();
+      for (const tabela of ['products', 'services', 'categories', 'coupons', 'promotions', 'schedules']) {
+        await m.query(
+          `UPDATE "${tabela}" SET "deletedAt" = $1 WHERE "storeId" = $2 AND "deletedAt" IS NULL`,
+          [agora, store.id],
+        );
+      }
+      await m.query(`DELETE FROM "cart_items" WHERE "storeId" = $1`, [store.id]);
+      await m.query(
+        `UPDATE "stores" SET "deletedAt" = $1, "deleteToken" = NULL, "deleteTokenExpires" = NULL WHERE id = $2`,
+        [agora, store.id],
+      );
+    });
     return storeName;
   }
 

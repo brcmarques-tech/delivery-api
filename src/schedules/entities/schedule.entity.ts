@@ -1,12 +1,19 @@
 import { ObjectType, Field, ID, Int } from '@nestjs/graphql';
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Unique,
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
   Index,
+  DeleteDateColumn,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 
 @ObjectType()
 @Entity('schedules')
-@Unique(['storeId', 'dayOfWeek'])
+// KAN-326: um horário por dia da semana só entre os não excluídos
+@Index('UQ_schedules_store_dia_ativo', ['storeId', 'dayOfWeek'], { unique: true, where: '"deletedAt" IS NULL' })
 export class Schedule {
   @Field(() => ID)
   @PrimaryGeneratedColumn('uuid')
@@ -36,4 +43,8 @@ export class Schedule {
   @Field()
   @Column({ default: true })
   isActive: boolean;
+
+  // KAN-326: soft delete — nada de negócio é apagado de vez; pode ser restaurado.
+  @DeleteDateColumn({ nullable: true })
+  deletedAt?: Date;
 }

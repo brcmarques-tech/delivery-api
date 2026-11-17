@@ -139,7 +139,7 @@ export class AddressesService {
       where: { id: addressId, user: { id: userId } },
     });
     if (!address) throw new NotFoundException('Endereco nao encontrado');
-    await this.addressesRepository.remove(address);
+    await this.addressesRepository.softRemove(address);
     return true;
   }
 

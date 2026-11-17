@@ -8,6 +8,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   Index,
+  DeleteDateColumn,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { Category } from '../../categories/entities/category.entity';
@@ -76,4 +77,8 @@ export class Service {
   @Field()
   @UpdateDateColumn()
   updatedAt: Date;
+
+  // KAN-326: soft delete — nada de negócio é apagado de vez; pode ser restaurado.
+  @DeleteDateColumn({ nullable: true })
+  deletedAt?: Date;
 }

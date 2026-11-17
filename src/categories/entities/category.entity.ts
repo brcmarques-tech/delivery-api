@@ -7,6 +7,7 @@ import {
   OneToMany,
   CreateDateColumn,
   Index,
+  DeleteDateColumn,
 } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { Product } from '../../products/entities/product.entity';
@@ -50,4 +51,8 @@ export class Category {
   @Field()
   @CreateDateColumn()
   createdAt: Date;
+
+  // KAN-326: soft delete — nada de negócio é apagado de vez; pode ser restaurado.
+  @DeleteDateColumn({ nullable: true })
+  deletedAt?: Date;
 }

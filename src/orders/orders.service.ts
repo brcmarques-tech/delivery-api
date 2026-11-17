@@ -796,7 +796,9 @@ export class OrdersService {
        WHERE o.status NOT IN ('CANCELLED', 'EXPIRED')
          AND p."isAvailable" = true
          AND p."isActive" = true
+        AND p."deletedAt" IS NULL
          AND s."isActive" = true
+        AND s."deletedAt" IS NULL
          AND o."createdAt" >= NOW() - INTERVAL '30 days'
        GROUP BY p.id, p.name, p.description, p.price, p."promotionalPrice", p."imageUrl",
                 p."isAvailable", p."isVariableWeight", p.unit,
@@ -824,7 +826,9 @@ export class OrdersService {
          AND o.status NOT IN ('CANCELLED', 'EXPIRED')
          AND p."isAvailable" = true
          AND p."isActive" = true
+        AND p."deletedAt" IS NULL
          AND s."isActive" = true
+        AND s."deletedAt" IS NULL
        GROUP BY p.id, p.name, p.description, p.price, p."promotionalPrice", p."imageUrl",
                 p."isAvailable",
                 s.id, s.name, s."logoUrl", s."isOpen"
@@ -846,6 +850,7 @@ export class OrdersService {
        WHERE o."customerId" = $1
          AND o.status NOT IN ('CANCELLED', 'EXPIRED')
          AND s."isActive" = true
+        AND s."deletedAt" IS NULL
        GROUP BY s.id, s.name, s.description, s."logoUrl", s."bannerUrl", s."isOpen",
                 s."freeDelivery", s."deliveryFee", s."verificationLevel"
        ORDER BY "orderCount" DESC, "lastOrderAt" DESC
@@ -865,6 +870,7 @@ export class OrdersService {
        JOIN stores s ON o."storeId" = s.id
        WHERE o.status NOT IN ('CANCELLED', 'EXPIRED')
          AND s."isActive" = true
+        AND s."deletedAt" IS NULL
          AND o."createdAt" >= NOW() - INTERVAL '7 days'
        GROUP BY s.id, s.name, s.description, s."logoUrl", s."bannerUrl", s."isOpen",
                 s."freeDelivery", s."deliveryFee", s."verificationLevel"

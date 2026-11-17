@@ -6,7 +6,10 @@ import {
   ManyToOne,
   CreateDateColumn,
   UpdateDateColumn,
-  Index, Unique, JoinColumn } from 'typeorm';
+  Index,
+  JoinColumn,
+  DeleteDateColumn,
+} from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { AppUser } from '../../users/entities/app-user.entity';
 
@@ -14,7 +17,8 @@ import { AppUser } from '../../users/entities/app-user.entity';
 // Unicidade real no banco (migration 1785600000000). Antes era so uma checagem
 // read-then-write no service, sem constraint — dois cupons de mesmo codigo na
 // mesma loja eram possiveis, e o update sequer re-checava.
-@Unique('UQ_coupons_code_store', ['code', 'storeId'])
+// KAN-326: código único por loja só entre cupons não excluídos
+@Index('UQ_coupons_code_store_ativo', ['code', 'storeId'], { unique: true, where: '"deletedAt" IS NULL' })
 @Entity('coupons')
 export class Coupon {
   @Field(() => ID)
@@ -63,7 +67,7 @@ export class Coupon {
   @JoinColumn({ name: 'storeId' })
   store: Store;
 
-  // Coluna FK declarada para o @Unique('code','storeId') acima poder referencia-la
+  // Coluna FK declarada para o índice único (code, storeId) acima poder referencia-la
   // (o TypeORM exige a propriedade na entity, nao so a relacao).
   @Column()
   storeId: string;
@@ -101,4 +105,8 @@ export class Coupon {
   @Field()
   @UpdateDateColumn()
   updatedAt: Date;
+
+  // KAN-326: soft delete — nada de negócio é apagado de vez; pode ser restaurado.
+  @DeleteDateColumn({ nullable: true })
+  deletedAt?: Date;
 }

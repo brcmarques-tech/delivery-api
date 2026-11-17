@@ -56,7 +56,7 @@ export class SchedulesService {
 
     // Tudo ou nada: se o insert falhar, os horarios antigos permanecem.
     return this.schedulesRepository.manager.transaction(async (manager) => {
-      await manager.delete(Schedule, { storeId: input.storeId });
+      await manager.softDelete(Schedule, { storeId: input.storeId });
       const schedules = input.entries.map((entry) =>
         manager.create(Schedule, {
           storeId: input.storeId,

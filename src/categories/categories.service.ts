@@ -102,7 +102,7 @@ export class CategoriesService {
     if (!category) throw new NotFoundException('Categoria nao encontrada');
     // Desvincula produtos da categoria antes de excluir
     await this.productsRepository.update({ category: { id } }, { category: null as any });
-    await this.categoriesRepository.remove(category);
+    await this.categoriesRepository.softRemove(category);
     return true;
   }
 }

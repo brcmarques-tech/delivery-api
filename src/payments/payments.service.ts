@@ -844,7 +844,7 @@ export class PaymentsService implements OnModuleDestroy {
         this.logger.warn(`Failed to delete card from Pagarme: ${err.response?.data?.message || err.message}`);
       }
     }
-    await this.savedCardsRepository.remove(card);
+    await this.savedCardsRepository.softRemove(card);
     return true;
   }
 
@@ -2049,7 +2049,8 @@ export class PaymentsService implements OnModuleDestroy {
   ): Promise<{ line_1: string; zip_code: string; city: string; state: string; country: string } | null> {
     const [loja] = await this.paymentsRepository.manager.query(
       `SELECT street, number, neighborhood, city, state, "zipCode"
-         FROM stores WHERE "ownerId" = $1 ORDER BY "createdAt" ASC LIMIT 1`,
+         FROM stores WHERE "ownerId" = $1
+        ORDER BY ("deletedAt" IS NOT NULL), "createdAt" ASC LIMIT 1`,
       [vendorId],
     );
     const cep = String(loja?.zipCode || '').replace(/\D/g, '');

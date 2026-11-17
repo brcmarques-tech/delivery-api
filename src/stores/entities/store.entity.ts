@@ -8,6 +8,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   Index,
+  DeleteDateColumn,
 } from 'typeorm';
 import { VendorUser } from '../../users/entities/vendor-user.entity';
 import { Product } from '../../products/entities/product.entity';
@@ -29,7 +30,9 @@ export class Store {
   name: string;
 
   @Field({ nullable: true })
-  @Column({ nullable: true, unique: true })
+  // KAN-326: único só entre lojas não excluídas (índice parcial na migration)
+  @Index('UQ_stores_slug_ativo', { unique: true, where: '"deletedAt" IS NULL' })
+  @Column({ nullable: true })
   slug: string;
 
   @Field({ nullable: true })
@@ -74,7 +77,9 @@ export class Store {
   phone: string;
 
   @Field({ nullable: true })
-  @Column({ nullable: true, unique: true })
+  // KAN-326: único só entre lojas não excluídas (índice parcial na migration)
+  @Index('UQ_stores_whatsapp_ativo', { unique: true, where: '"deletedAt" IS NULL' })
+  @Column({ nullable: true })
   whatsappNumber: string;
 
   @Field()
@@ -237,4 +242,8 @@ export class Store {
   @Field()
   @UpdateDateColumn()
   updatedAt: Date;
+
+  // KAN-326: soft delete — nada de negócio é apagado de vez; pode ser restaurado.
+  @DeleteDateColumn({ nullable: true })
+  deletedAt?: Date;
 }

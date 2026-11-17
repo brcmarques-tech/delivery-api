@@ -98,7 +98,7 @@ export class ServicesService {
       'Voce nao tem permissao para excluir este servico.',
     );
 
-    await this.servicesRepository.remove(service);
+    await this.servicesRepository.softRemove(service);
     return true;
   }
 

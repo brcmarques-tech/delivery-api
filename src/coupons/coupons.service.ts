@@ -156,7 +156,7 @@ export class CouponsService {
       ModuloDaLoja.COUPONS,
       'Voce nao e dono desta loja',
     );
-    await this.couponsRepository.remove(coupon);
+    await this.couponsRepository.softRemove(coupon);
     return true;
   }
 
@@ -207,7 +207,7 @@ export class CouponsService {
   async adminDelete(id: string): Promise<boolean> {
     const coupon = await this.couponsRepository.findOne({ where: { id } });
     if (!coupon) throw new NotFoundException('Cupom nao encontrado');
-    await this.couponsRepository.remove(coupon);
+    await this.couponsRepository.softRemove(coupon);
     return true;
   }
 

@@ -98,7 +98,8 @@ export class PromotionsService implements OnModuleInit {
            AND pr."isActive" = true
            AND pr."startDate" <= NOW()
            AND pr."endDate" >= NOW()
-           AND pr."promotionalPrice" IS NOT NULL`;
+           AND pr."promotionalPrice" IS NOT NULL
+           AND pr."deletedAt" IS NULL`;
 
   /**
    * Aplica o preço da campanha vigente.
@@ -552,7 +553,7 @@ export class PromotionsService implements OnModuleInit {
     if (promotion.product && promotion.isPaid) {
       await this.productsRepository.update(promotion.product.id, { promotionalPrice: null as any });
     }
-    await this.promotionsRepository.remove(promotion);
+    await this.promotionsRepository.softRemove(promotion);
     return true;
   }
 }

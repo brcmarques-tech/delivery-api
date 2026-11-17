@@ -7,6 +7,7 @@ import {
   CreateDateColumn,
   JoinColumn,
   Index,
+  DeleteDateColumn,
 } from 'typeorm';
 import { AppUser } from '../../users/entities/app-user.entity';
 
@@ -47,4 +48,8 @@ export class SavedCard {
 
   @CreateDateColumn()
   createdAt: Date;
+
+  // KAN-326: soft delete — nada de negócio é apagado de vez; pode ser restaurado.
+  @DeleteDateColumn({ nullable: true })
+  deletedAt?: Date;
 }

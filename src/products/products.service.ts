@@ -40,7 +40,7 @@ export class ProductsService {
   ): Promise<void> {
     if (!categoryId) return;
     const rows = await this.productsRepository.manager.query(
-      `SELECT 1 FROM categories WHERE id = $1 AND "storeId" = $2 LIMIT 1`,
+      `SELECT 1 FROM categories WHERE id = $1 AND "storeId" = $2 AND "deletedAt" IS NULL LIMIT 1`,
       [categoryId, storeId],
     );
     if (!rows || rows.length === 0) {
