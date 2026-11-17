@@ -46,6 +46,7 @@ export class RatingsService {
     }
 
     const appointment = await this.appointmentsRepository.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: input.appointmentId },
       relations: ['customer', 'store', 'service'],
     });

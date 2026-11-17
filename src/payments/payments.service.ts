@@ -2996,6 +2996,7 @@ export class PaymentsService implements OnModuleDestroy {
     if (orderId) {
       const orderRepo = this.paymentsRepository.manager.getRepository(Order);
       const order = await orderRepo.findOne({
+        withDeleted: true, // histórico mostra também o que foi excluído
         where: { id: orderId },
         relations: ['customer', 'store'],
       });
@@ -3049,6 +3050,7 @@ export class PaymentsService implements OnModuleDestroy {
 
         // Re-fetch with full relations so subscription filters can access store.id
         const freshOrder = await orderRepo.findOne({
+          withDeleted: true, // histórico mostra também o que foi excluído
           where: { id: order.id },
           // store.owner e delivery.deliverer são necessários para o filtro de
           // ownership das subscriptions decidir quem é parte do pedido.
@@ -3228,6 +3230,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: orderId },
       relations: ['customer', 'store', 'store.owner', 'items', 'items.product'],
     });
@@ -3298,6 +3301,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: orderId },
       relations: ['customer', 'store', 'store.owner', 'items', 'items.product'],
     });
@@ -3396,6 +3400,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: orderId },
       relations: ['customer', 'store'],
     });
@@ -3440,6 +3445,7 @@ export class PaymentsService implements OnModuleDestroy {
       // (store.owner e delivery.deliverer são necessários para o filtro decidir
       // quem é parte do pedido).
       const freshOrder = await orderRepo.findOne({
+        withDeleted: true, // histórico mostra também o que foi excluído
         where: { id: order.id },
         relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
       });
@@ -3494,6 +3500,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: orderId },
       relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
     });
@@ -3616,6 +3623,7 @@ export class PaymentsService implements OnModuleDestroy {
 
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: orderId },
       relations: ['customer', 'store', 'store.owner', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
     });
@@ -3700,6 +3708,7 @@ export class PaymentsService implements OnModuleDestroy {
   ): Promise<{ success: boolean; message: string }> {
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const order = await orderRepo.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: orderId },
       relations: ['customer', 'store', 'store.owner', 'delivery', 'delivery.deliverer'],
     });
@@ -4031,6 +4040,7 @@ export class PaymentsService implements OnModuleDestroy {
     // 1. frete retido do entregador (PIX com split-on-charge)
     const pedidosEntregador = await orderRepo
       .createQueryBuilder('pedido')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('pedido.delivery', 'delivery')
       .leftJoinAndSelect('delivery.deliverer', 'deliverer')
       .where('pedido.delivererPayableCents > 0')
@@ -4050,6 +4060,7 @@ export class PaymentsService implements OnModuleDestroy {
     // 2. repasse do lojista recusado
     const pedidosLojista = await orderRepo
       .createQueryBuilder('pedido')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('pedido.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .where('pedido.vendorPayableCents > 0')
@@ -4069,6 +4080,7 @@ export class PaymentsService implements OnModuleDestroy {
     // 3. repasse do prestador de serviço recusado
     const agendamentos = await aptRepo
       .createQueryBuilder('apt')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('apt.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .where('apt.vendorPayableCents > 0')
@@ -4383,6 +4395,7 @@ export class PaymentsService implements OnModuleDestroy {
   }> {
     const row = await this.paymentsRepository
       .createQueryBuilder('payment')
+      .withDeleted() // histórico mostra também o que foi excluído
       .select('COUNT(*)', 'totalCount')
       .addSelect(
         `COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = 'approved'), 0)`,
@@ -4404,6 +4417,7 @@ export class PaymentsService implements OnModuleDestroy {
     // Revenue from plan upgrades and promotions
     const paymentResult = await this.paymentsRepository
       .createQueryBuilder('payment')
+      .withDeleted() // histórico mostra também o que foi excluído
       .select('COALESCE(SUM(payment.amount), 0)', 'total')
       .where('payment.status = :status', { status: 'approved' })
       // O tipo de pagamento de assinatura foi renomeado PLAN_UPGRADE -> SUBSCRIPTION
@@ -4420,6 +4434,7 @@ export class PaymentsService implements OnModuleDestroy {
     const orderRepo = this.paymentsRepository.manager.getRepository(Order);
     const commissionResult = await orderRepo
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .select('COALESCE(SUM(order.commissionAmount), 0)', 'total')
       .where('order.status = :status', { status: OrderStatus.COMPLETED })
       .getRawOne();

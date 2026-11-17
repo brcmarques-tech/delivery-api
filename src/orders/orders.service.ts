@@ -688,6 +688,7 @@ export class OrdersService {
 
   async findById(id: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id },
       relations: [
         'customer',
@@ -706,6 +707,7 @@ export class OrdersService {
 
   async findByOrderNumber(orderNumber: string): Promise<Order | null> {
     return this.ordersRepository.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { orderNumber },
       // BUGFIX: sem 'customer' o check de posse do agente n8n
       // (order.customer?.id !== customerId) dava SEMPRE verdadeiro (customer
@@ -728,6 +730,7 @@ export class OrdersService {
   // Perf (F6): paginado (limit/offset). O cap de 500 vira teto do limit.
   async findByCustomer(customerId: string, limit = 20, offset = 0): Promise<Order[]> {
     return this.ordersRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { customer: { id: customerId } },
       // 'customer' é @Field(() => AppUser) NÃO-nulável; sem a relation, um
       // `myOrders { customer { ... } }` 500a a lista toda.
@@ -741,6 +744,7 @@ export class OrdersService {
 
   async findByStore(storeId: string): Promise<Order[]> {
     return this.ordersRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { store: { id: storeId } },
       relations: [
         'store',
@@ -769,6 +773,7 @@ export class OrdersService {
    */
   async findByStoreSince(storeId: string, since: Date): Promise<Order[]> {
     return this.ordersRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { store: { id: storeId }, createdAt: MoreThanOrEqual(since) },
       relations: ['store', 'customer', 'items', 'items.product', 'delivery', 'delivery.deliverer'],
       order: { createdAt: 'DESC' },
@@ -874,6 +879,7 @@ export class OrdersService {
     // 30 min matches PIX QR code expiry (expires_in: 1800 in Pagar.me)
     const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000);
     const expired = await this.ordersRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: {
         status: OrderStatus.AWAITING_PAYMENT,
         createdAt: LessThanOrEqual(thirtyMinAgo),
@@ -892,6 +898,7 @@ export class OrdersService {
     // Only show READY orders that don't have a deliverer assigned yet
     const orders = await this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('order.customer', 'customer')
       .leftJoinAndSelect('order.items', 'items')
@@ -915,6 +922,7 @@ export class OrdersService {
 
   async findAllAdmin(): Promise<Order[]> {
     return this.ordersRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       relations: [
         'customer',
         'store',
@@ -939,6 +947,7 @@ export class OrdersService {
     const skip = Math.max(Number(offset) || 0, 0);
     const qb = this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('order.customer', 'customer')
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('order.items', 'items')
@@ -972,6 +981,7 @@ export class OrdersService {
   async totalRevenue(): Promise<number> {
     const result = await this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .select('COALESCE(SUM(order.total), 0)', 'total')
       .where('order.status IN (:...statuses)', {
         statuses: [OrderStatus.DELIVERED, OrderStatus.COMPLETED],
@@ -983,6 +993,7 @@ export class OrdersService {
   async countByStatus(): Promise<{ status: string; count: number }[]> {
     return this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .select('order.status', 'status')
       .addSelect('COUNT(*)', 'count')
       .groupBy('order.status')
@@ -996,6 +1007,7 @@ export class OrdersService {
     since.setDate(since.getDate() - days);
     const result = await this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .select("TO_CHAR(order.createdAt, 'YYYY-MM-DD')", 'date')
       .addSelect('COUNT(*)', 'count')
       .addSelect(
@@ -1015,6 +1027,7 @@ export class OrdersService {
 
   async recentOrders(limit: number = 5): Promise<Order[]> {
     return this.ordersRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       relations: ['customer', 'store'],
       order: { createdAt: 'DESC' },
       take: limit,
@@ -1033,6 +1046,7 @@ export class OrdersService {
   > {
     return this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .innerJoin('order.store', 'store')
       .select('store.id', 'storeId')
       .addSelect('store.name', 'storeName')
@@ -1060,6 +1074,7 @@ export class OrdersService {
 
   async confirmReceipt(orderId: string, customerId: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: orderId },
       relations: [
         'customer',
@@ -1789,6 +1804,7 @@ export class OrdersService {
     // cancelado/estornado antes do vendedor poder aceitar — pedido pago sumia.
     const expiredOrders = await this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoinAndSelect('order.customer', 'customer')
@@ -1840,6 +1856,7 @@ export class OrdersService {
     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
     const stuckOrders = await this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('order.delivery', 'delivery')
       .leftJoinAndSelect('delivery.deliverer', 'deliverer')
       .leftJoinAndSelect('order.store', 'store')
@@ -1873,6 +1890,7 @@ export class OrdersService {
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
     const expiredOrders = await this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('order.delivery', 'delivery')
       .leftJoinAndSelect('delivery.deliverer', 'deliverer')
       .leftJoinAndSelect('order.store', 'store')
@@ -1966,6 +1984,7 @@ export class OrdersService {
 
     const pendentesRetirada = await this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoinAndSelect('order.customer', 'customer')
@@ -1999,6 +2018,7 @@ export class OrdersService {
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
     const stuckOrders = await this.ordersRepository
       .createQueryBuilder('order')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('order.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       .leftJoin('order.delivery', 'delivery')
@@ -2047,6 +2067,7 @@ export class OrdersService {
 
   async findDisputed(): Promise<Order[]> {
     return this.ordersRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { status: OrderStatus.DISPUTED },
       relations: [
         'customer',
@@ -2100,6 +2121,7 @@ export class OrdersService {
   async delivererPayables(apenasAbertos = true): Promise<Order[]> {
     const qb = this.ordersRepository
       .createQueryBuilder('pedido')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('pedido.delivery', 'delivery')
       .leftJoinAndSelect('delivery.deliverer', 'deliverer')
       .leftJoinAndSelect('pedido.store', 'store')
@@ -2148,6 +2170,7 @@ export class OrdersService {
   async vendorPayables(apenasAbertos = true): Promise<Order[]> {
     const qb = this.ordersRepository
       .createQueryBuilder('pedido')
+      .withDeleted() // histórico mostra também o que foi excluído
       .leftJoinAndSelect('pedido.store', 'store')
       .leftJoinAndSelect('store.owner', 'owner')
       // Alias 'pedido' e nao 'order': ORDER e palavra reservada no Postgres.
@@ -2186,6 +2209,7 @@ export class OrdersService {
   async retryFailedSettlements(): Promise<number> {
     const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const pending = await this.ordersRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: {
         status: OrderStatus.COMPLETED,
         isSettled: false,

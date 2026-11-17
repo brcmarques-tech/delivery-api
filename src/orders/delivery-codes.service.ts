@@ -142,6 +142,7 @@ export class DeliveryCodesService {
   async gerarCodigoDoEntregador(orderId: string): Promise<void> {
     if (!DeliveryCodesService.habilitado()) return;
     const pedido = await this.ordersRepository.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: orderId },
       select: ['id', 'codigoVendedor', 'codigoEntregador'],
     });
@@ -190,6 +191,7 @@ export class DeliveryCodesService {
     const limite = new Date(Date.now() - horas * 3600_000);
 
     const pedidos = await this.ordersRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: {
         entregaSemCodigoEm: LessThanOrEqual(limite),
         codigoClienteUsadoEm: IsNull(),
@@ -246,6 +248,7 @@ export class DeliveryCodesService {
     ehSuperadmin = false,
   ): Promise<string | null> {
     const pedido = await this.ordersRepository.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id: orderId },
       relations: ['customer', 'store', 'store.owner', 'delivery', 'delivery.deliverer'],
     });

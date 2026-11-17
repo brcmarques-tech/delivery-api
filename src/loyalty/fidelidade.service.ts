@@ -315,6 +315,7 @@ export class FidelidadeService {
       // Reaproveita o caminho normal; o código determinístico + constraint
       // garantem que não sai prêmio repetido.
       const ordem = await this.ordersRepository.findOne({
+        withDeleted: true, // histórico mostra também o que foi excluído
         where: { customer: { id: r.customerId }, store: { id: r.storeId }, status: OrderStatus.COMPLETED } as any,
         relations: ['customer', 'store'],
         order: { completedAt: 'DESC' },

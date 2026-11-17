@@ -110,6 +110,7 @@ export class AppointmentsService {
 
     // Get existing appointments for this date
     const existing = await this.appointmentsRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: {
         storeId,
         scheduledDate: date,
@@ -236,6 +237,7 @@ export class AppointmentsService {
       const conflict = await manager
         .getRepository(Appointment)
         .createQueryBuilder('apt')
+        .withDeleted() // histórico mostra também o que foi excluído
         .where('apt.storeId = :storeId', { storeId: input.storeId })
         .andWhere('apt.scheduledDate = :date', { date: input.scheduledDate })
         .andWhere('apt.deletedAt IS NULL')
@@ -473,6 +475,7 @@ export class AppointmentsService {
       const conflict = await manager
         .getRepository(Appointment)
         .createQueryBuilder('apt')
+        .withDeleted() // histórico mostra também o que foi excluído
         .where('apt.storeId = :storeId', { storeId: appointment.storeId })
         .andWhere('apt.id != :selfId', { selfId: appointment.id })
         .andWhere('apt.scheduledDate = :date', { date: scheduledDate })
@@ -651,6 +654,7 @@ export class AppointmentsService {
   // Perf (F6): paginado (limit/offset), teto 100.
   async myAppointments(customerId: string, limit = 20, offset = 0): Promise<Appointment[]> {
     return this.appointmentsRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { customerId, deletedAt: IsNull() },
       relations: RELATIONS,
       order: { createdAt: 'DESC' },
@@ -682,6 +686,7 @@ export class AppointmentsService {
     if (status) where.status = status;
 
     return this.appointmentsRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where,
       relations: RELATIONS,
       order: { scheduledDate: 'ASC', scheduledTime: 'ASC' },
@@ -690,6 +695,7 @@ export class AppointmentsService {
 
   async findById(id: string): Promise<Appointment> {
     const appointment = await this.appointmentsRepository.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id, deletedAt: IsNull() },
       relations: RELATIONS,
     });
@@ -727,6 +733,7 @@ export class AppointmentsService {
   async expireUnpaidAppointments(): Promise<number> {
     const trintaMinAtras = new Date(Date.now() - 30 * 60 * 1000);
     const vencidos = await this.appointmentsRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: {
         paymentStatus: 'AWAITING_PAYMENT',
         // BUGFIX: cartao PRE-AUTORIZADO grava paymentStatus 'AWAITING_PAYMENT'
@@ -783,6 +790,7 @@ export class AppointmentsService {
   async retryFailedAppointmentSettlements(): Promise<number> {
     const janela = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const pendentes = await this.appointmentsRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: {
         status: AppointmentStatus.COMPLETED,
         isSettled: false,
@@ -827,6 +835,7 @@ export class AppointmentsService {
     };
     if (apenasAbertos) where.vendorPayablePaidAt = IsNull();
     return this.appointmentsRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where,
       relations: RELATIONS,
       order: { updatedAt: 'ASC' },
@@ -867,6 +876,7 @@ export class AppointmentsService {
 
     // Find CONFIRMED appointments for today that haven't been reminded
     const appointments = await this.appointmentsRepository.find({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: {
         scheduledDate: todayStr,
         status: AppointmentStatus.CONFIRMED,
@@ -900,6 +910,7 @@ export class AppointmentsService {
 
   private async findByIdWithRelations(id: string): Promise<Appointment> {
     const appointment = await this.appointmentsRepository.findOne({
+      withDeleted: true, // histórico mostra também o que foi excluído
       where: { id, deletedAt: IsNull() },
       relations: RELATIONS,
     });
@@ -942,6 +953,7 @@ export class AppointmentsService {
   async analyticsTotalRevenue(): Promise<number> {
     const result = await this.appointmentsRepository
       .createQueryBuilder('apt')
+      .withDeleted() // histórico mostra também o que foi excluído
       .select('COALESCE(SUM(apt.price), 0)', 'total')
       .where('apt.status = :status', { status: AppointmentStatus.COMPLETED })
       .getRawOne();
@@ -951,6 +963,7 @@ export class AppointmentsService {
   async analyticsCountByStatus(): Promise<{ status: string; count: number }[]> {
     return this.appointmentsRepository
       .createQueryBuilder('apt')
+      .withDeleted() // histórico mostra também o que foi excluído
       .select('apt.status', 'status')
       .addSelect('COUNT(*)', 'count')
       .groupBy('apt.status')
