@@ -306,6 +306,7 @@ export class AppointmentsService {
               pagarmeOrderId: chargeResult.pagarmeOrderId,
               preAuthChargeId: chargeResult.chargeId,
               paymentStatus: chargeResult.status === 'pre_authorized' ? 'AWAITING_PAYMENT' : 'PENDING',
+              settledViaSplit: !!chargeResult.settledViaSplit,
             });
           }
         }

@@ -850,8 +850,10 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Direct Charge (saved card) ────────────────────────────────────
 
-  async createOrderDirectCharge(order: Order, customer: AppUser, cardId?: string, cardToken?: string): Promise<{ pagarmeOrderId: string; status: string; chargeId?: string }> {
+  async createOrderDirectCharge(order: Order, customer: AppUser, cardId?: string, cardToken?: string): Promise<{ pagarmeOrderId: string; status: string; chargeId?: string; settledViaSplit?: boolean }> {
     const store = order.store;
+    const splitRules = this.regrasDeSplitNaCobranca(order, 'CARTAO');
+    const splitApplied = splitRules.length > 0;
 
     const customerId = await this.ensureCustomer(customer);
     const totalCents = Math.round(Number(order.total) * 100);
@@ -899,6 +901,7 @@ export class PaymentsService implements OnModuleDestroy {
               billing_address: billingAddress,
             },
           },
+          ...(splitApplied ? { split: splitRules } : {}),
         },
       ],
       metadata: {
@@ -927,13 +930,13 @@ export class PaymentsService implements OnModuleDestroy {
         this.logger.warn(
           `Pagar.me antifraud reproved for ${order.orderNumber} | charge: ${chargeId} | acquirer: "${acquirerMessage}" | antifraud score: ${antifraudResponse.score}`,
         );
-        return { pagarmeOrderId: result.id, status: 'antifraud_review', chargeId };
+        return { pagarmeOrderId: result.id, status: 'antifraud_review', chargeId, settledViaSplit: splitApplied };
       }
       if (status === 'failed' || status === 'refused' || status === 'canceled') {
         const reason = acquirerMessage || charge?.last_transaction?.gateway_response?.errors?.[0]?.message || 'Pagamento recusado';
         throw new BadRequestException(`Pagamento recusado: ${reason}`);
       }
-      return { pagarmeOrderId: result.id, status, chargeId };
+      return { pagarmeOrderId: result.id, status, chargeId, settledViaSplit: splitApplied };
     } catch (err: any) {
       if (err instanceof BadRequestException) throw err;
       const errorData = err.response?.data;
@@ -1029,12 +1032,22 @@ export class PaymentsService implements OnModuleDestroy {
 
   // ─── Order PIX ─────────────────────────────────────────────────────────
 
-  async createOrderPix(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string; settledViaSplit?: boolean }> {
+  /**
+   * Regras de split NA COBRANÇA (vendedor + plataforma), usadas pelo PIX e pela
+   * pré-autorização do cartão. O Pagar.me NÃO aceita mandar split só na captura
+   * de um cartão autorizado sem split ("Company not allowed to send split_rules
+   * on capture for a transaction authorized without split_rules" — medido no
+   * sandbox em 17/11/2026), então a divisão é sempre decidida na cobrança.
+   * O entregador não entra (só é conhecido depois): o frete fica retido na
+   * plataforma e vira repasse semanal (delivererPayableCents).
+   * Lista vazia = não dá para dividir (cobra sem split, repasse manual).
+   */
+  private regrasDeSplitNaCobranca(order: Order, meio: 'PIX' | 'CARTAO'): any[] {
     const store = order.store;
     const vendorRecipientId = store?.owner?.pagarmeRecipientId;
     const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
 
-    this.logger.log(`PIX split check: vendorRecipientId=${vendorRecipientId || 'NULL'} platformRecipientId=${platformRecipientId || 'NULL'} storeOwner=${store?.owner?.email || 'NULL'}`);
+    this.logger.log(`${meio} split check: vendorRecipientId=${vendorRecipientId || 'NULL'} platformRecipientId=${platformRecipientId || 'NULL'} storeOwner=${store?.owner?.email || 'NULL'}`);
 
     const totalCents = Math.round(Number(order.total) * 100);
     const commissionCents = Math.round((Number(order.commissionAmount) || 0) * 100);
@@ -1099,7 +1112,7 @@ export class PaymentsService implements OnModuleDestroy {
       const splitSum = splitRules.reduce((s, r) => s + r.amount, 0);
       if (splitSum !== totalCents) {
         this.logger.error(
-          `PIX split sum mismatch for order #${order.orderNumber}: sum=${splitSum}, total=${totalCents} — caindo no fallback sem split`,
+          `${meio} split sum mismatch for order #${order.orderNumber}: sum=${splitSum}, total=${totalCents} — caindo no fallback sem split`,
         );
         splitRules.length = 0; // fallback seguro: cobra sem split (nao bloqueia a venda)
       }
@@ -1108,11 +1121,19 @@ export class PaymentsService implements OnModuleDestroy {
     const splitApplied = splitRules.length > 0;
     if (!splitApplied) {
       this.logger.error(
-        `[PIX_NO_SPLIT] Pedido #${order.orderNumber}: cobranca PIX SEM split ` +
+        `[${meio}_NO_SPLIT] Pedido #${order.orderNumber}: cobranca ${meio} SEM split ` +
           `(vendorRecipient=${vendorRecipientId || 'NULL'} platformRecipient=${platformRecipientId || 'NULL'}). ` +
           `Dinheiro fica 100% na plataforma; repasse ao vendedor precisa ser manual.`,
       );
     }
+
+    return splitRules;
+  }
+
+  async createOrderPix(order: Order, customer: AppUser): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string; settledViaSplit?: boolean }> {
+    const splitRules = this.regrasDeSplitNaCobranca(order, 'PIX');
+    const splitApplied = splitRules.length > 0;
+    const totalCents = Math.round(Number(order.total) * 100);
 
     const phone = this.formatPhoneForPagarme(customer.phone);
 
@@ -1207,14 +1228,30 @@ export class PaymentsService implements OnModuleDestroy {
       const body: any = { amount: totalCents, code: `${order.id.replace(/-/g, '')}-c${Date.now()}` };
 
       const result = await this.pagarmePost(`/charges/${order.preAuthChargeId}/capture`, body);
-      this.logger.log(`Pre-auth captured for order #${order.orderNumber} | charge: ${order.preAuthChargeId} | no split (platform holds funds)`);
+      this.exigirCapturaPaga(result, `pedido #${order.orderNumber}`);
+      this.logger.log(`Pre-auth captured for order #${order.orderNumber} | charge: ${order.preAuthChargeId} | split ${order.settledViaSplit ? 'definido na autorizacao' : 'NENHUM (plataforma retem)'}`);
 
       return { status: result.status || 'paid' };
     } catch (err: any) {
+      if (err instanceof HttpException) throw err;
       const errorData = err.response?.data;
       this.logger.error(`Pre-auth capture failed: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(errorData?.message || 'Erro ao capturar pagamento');
     }
+  }
+
+  /**
+   * O Pagar.me responde 200 na captura mesmo quando ela FALHA (a transação de
+   * captura volta "failed" dentro do corpo). Medido no sandbox (17/11/2026): o
+   * pedido era marcado como capturado e liquidado com a cobrança ainda pendente.
+   */
+  private exigirCapturaPaga(result: any, rotulo: string): void {
+    const status = result?.status;
+    const lt = result?.last_transaction;
+    if (status === 'paid' && lt?.status !== 'failed') return;
+    const motivo = lt?.gateway_response?.errors?.map((e: any) => e.message).join('; ') || lt?.acquirer_message || `status ${status}`;
+    this.logger.error(`[CAPTURA_FALHOU] ${rotulo} | charge ${result?.id} | ${motivo}`);
+    throw new BadRequestException(`Captura recusada pelo Pagar.me: ${motivo}`);
   }
 
   // Captura a pré-autorização COM split — distribui para vendor, deliverer e plataforma.
@@ -1400,10 +1437,12 @@ export class PaymentsService implements OnModuleDestroy {
       };
 
       const result = await this.pagarmePost(`/charges/${order.preAuthChargeId}/capture`, body);
+      this.exigirCapturaPaga(result, `pedido #${order.orderNumber}`);
       this.logger.log(`Capture-with-split for order #${order.orderNumber} | total: ${totalCents} | splits: ${splitRules.map(r => `${r.recipient_id}:${r.amount}`).join(', ')}`);
 
       return { status: result.status || 'paid' };
     } catch (err: any) {
+      if (err instanceof HttpException) throw err;
       const errorData = err.response?.data;
       this.logger.error(`Capture-with-split failed for order #${order.orderNumber}: ${JSON.stringify(errorData || err.message)}`);
       throw new BadRequestException(errorData?.message || 'Erro ao capturar pagamento com split');
@@ -1722,27 +1761,31 @@ export class PaymentsService implements OnModuleDestroy {
 
     // Credit card with pre-auth still pending: capture with split (Pagar.me distributes automatically)
     // If capturedAt is already set (e.g. antifraud auto-capture), skip to manual transfers below
-    if (order.paymentMethod === 'CREDIT_CARD' && order.preAuthChargeId && !order.capturedAt) {
+    if (order.paymentMethod === 'CREDIT_CARD' && order.preAuthChargeId && !order.capturedAt && order.settledViaSplit) {
+      // KAN-325/E2E 17/11: o split foi definido na pré-autorização; a captura vai
+      // sem regras. Depois o fluxo continua como o do PIX com split.
       try {
-        await this.captureWithSplit(order);
-        // Marca explicitamente que ESTE pedido foi liquidado via split na captura
-        // — e o unico caso em que o estorno no Pagar.me desfaz os repasses sozinho.
-        await orderRepo.update(order.id, { capturedAt: new Date(), settledViaSplit: true } as any);
-        // O split da captura ja pagou a loja e, se ele tinha recebedor, o
-        // entregador (sem recebedor vira DELIVERER_UNPAID e segue pendente).
-        await this.marcarRepasseDaEntrega(order.id, {
-          vendorPayoutStatus: 'completed',
-          ...((order as any).delivery?.deliverer?.pagarmeRecipientId ? { payoutStatus: 'completed' } : {}),
-        });
-        const totalCents = Math.round(Number(order.total) * 100);
-        this.logger.log(`Settlement for order #${order.orderNumber} | capture-with-split | total: ${totalCents} cents`);
+        await this.capturePreAuth(order);
+        await orderRepo.update(order.id, { capturedAt: new Date() } as any);
+        order.capturedAt = new Date();
       } catch (err: any) {
         this.logger.error(`Settlement failed for order #${order.orderNumber}: ${err.message}`);
-        // Revert isSettled so it can be retried
         await orderRepo.update(order.id, { isSettled: false } as any);
         throw err;
       }
-      return;
+    } else if (order.paymentMethod === 'CREDIT_CARD' && order.preAuthChargeId && !order.capturedAt) {
+      // Pedido antigo: autorizado SEM split. O Pagar.me recusa split na captura
+      // nesse caso, entao captura simples (plataforma retem) e o repasse da loja
+      // e do entregador segue pelo caminho de transferencia/passivo abaixo.
+      try {
+        await this.capturePreAuth(order);
+        await orderRepo.update(order.id, { capturedAt: new Date() } as any);
+        order.capturedAt = new Date();
+      } catch (err: any) {
+        this.logger.error(`Settlement failed for order #${order.orderNumber}: ${err.message}`);
+        await orderRepo.update(order.id, { isSettled: false } as any);
+        throw err;
+      }
     }
 
     // PIX and other methods: manual transfers (existing logic)
@@ -1761,7 +1804,9 @@ export class PaymentsService implements OnModuleDestroy {
     // distribuidos pelo Pagar.me no momento do pagamento. Nao repassar de novo via
     // /transfers (que estava quebrado). O entregador nao entrou no split (era
     // desconhecido na cobranca), entao vira um payable off-platform aqui.
-    const pixSettledViaSplit = order.paymentMethod === 'PIX' && order.settledViaSplit;
+    // Split na cobrança (PIX, ou cartão autorizado com split): o vendedor já
+    // recebeu; o frete do entregador vira repasse semanal.
+    const pixSettledViaSplit = (order.paymentMethod === 'PIX' || order.paymentMethod === 'CREDIT_CARD') && order.settledViaSplit;
 
     // 1. Transfer to deliverer (if applicable)
     // `!order.delivererSettledAt`: no retry de uma liquidacao PARCIAL, a parte
@@ -1785,7 +1830,7 @@ export class PaymentsService implements OnModuleDestroy {
             // Alem da nota legivel, grava o valor em coluna propria: e o que torna
             // o passivo somavel, filtravel e baixavel pelo superadmin.
             delivererPayableCents: delivererAmount,
-            notes: `${order.notes || ''}\n[DELIVERER_PAYABLE] R$ ${(delivererAmount / 100).toFixed(2)} a repassar ao entregador (PIX split-on-charge; frete retido na plataforma).`.trim(),
+            notes: `${order.notes || ''}\n[DELIVERER_PAYABLE] R$ ${(delivererAmount / 100).toFixed(2)} a repassar ao entregador (split na cobrança; frete retido na plataforma).`.trim(),
           } as any);
           order.delivererSettledAt = new Date();
           this.logger.log(`[DELIVERER_PAYABLE] order #${order.orderNumber} | ${delivererAmount} cents (off-platform)`);
@@ -1847,7 +1892,7 @@ export class PaymentsService implements OnModuleDestroy {
     // 2. Transfer to vendor (idem: nao reenvia se ja saiu)
     if (pixSettledViaSplit) {
       // Vendedor ja recebeu via split na cobranca PIX — nada a repassar.
-      this.logger.log(`Vendor already settled via PIX split-on-charge for order #${order.orderNumber}`);
+      this.logger.log(`Vendor already settled via split na cobranca for order #${order.orderNumber}`);
       await this.marcarRepasseDaEntrega(order.id, { vendorPayoutStatus: 'completed' });
     } else if (vendorRecipientId && !order.vendorSettledAt) {
       const platformDeliveryFee = (!store?.hasOwnDelivery && !order.isPickup) ? deliveryFeeCents : 0;
@@ -4521,14 +4566,9 @@ export class PaymentsService implements OnModuleDestroy {
     }
   }
 
-  async createAppointmentPix(
-    appointment: Appointment,
-    customer: AppUser,
-  ): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string; settledViaSplit?: boolean }> {
+  /** Split na cobrança do agendamento (prestador + plataforma) — PIX e cartão. */
+  private regrasDeSplitDoAgendamento(appointment: Appointment, meio: 'PIX' | 'CARTAO'): any[] {
     const totalCents = Math.round(Number(appointment.price) * 100);
-    const phone = this.formatPhoneForPagarme(customer.phone);
-    const uniqueCode = `${appointment.id}-${Date.now()}`;
-
     // KAN-325: split na cobrança, igual ao PIX de pedido (createOrderPix). Antes
     // o valor caía 100% na plataforma e o repasse ao prestador dependia do
     // /transfers, que o Pagar.me recusa — o prestador nunca recebia sozinho.
@@ -4559,17 +4599,30 @@ export class PaymentsService implements OnModuleDestroy {
       }
       taxaPorContaDaLoja(splitRules, vendorRecipientId, platformRecipientId);
       if (splitRules.reduce((s, r) => s + r.amount, 0) !== totalCents) {
-        this.logger.error(`PIX split sum mismatch for appointment ${appointment.appointmentNumber} — caindo no fallback sem split`);
+        this.logger.error(`${meio} split sum mismatch for appointment ${appointment.appointmentNumber} — caindo no fallback sem split`);
         splitRules.length = 0;
       }
     }
     const splitApplied = splitRules.length > 0;
     if (!splitApplied) {
       this.logger.error(
-        `[PIX_NO_SPLIT] Agendamento ${appointment.appointmentNumber}: cobranca PIX SEM split ` +
+        `[${meio}_NO_SPLIT] Agendamento ${appointment.appointmentNumber}: cobranca ${meio} SEM split ` +
           `(vendorRecipient=${vendorRecipientId || 'NULL'} platformRecipient=${platformRecipientId || 'NULL'}).`,
       );
     }
+    return splitRules;
+  }
+
+  async createAppointmentPix(
+    appointment: Appointment,
+    customer: AppUser,
+  ): Promise<{ checkoutUrl: string; preferenceId: string; qrCode?: string; qrCodeUrl?: string; settledViaSplit?: boolean }> {
+    const totalCents = Math.round(Number(appointment.price) * 100);
+    const phone = this.formatPhoneForPagarme(customer.phone);
+    const uniqueCode = `${appointment.id}-${Date.now()}`;
+
+    const splitRules = this.regrasDeSplitDoAgendamento(appointment, 'PIX');
+    const splitApplied = splitRules.length > 0;
 
     const orderBody: any = {
       code: uniqueCode,
@@ -4639,10 +4692,12 @@ export class PaymentsService implements OnModuleDestroy {
     customer: AppUser,
     cardId?: string,
     cardToken?: string,
-  ): Promise<{ pagarmeOrderId: string; status: string; chargeId?: string }> {
+  ): Promise<{ pagarmeOrderId: string; status: string; chargeId?: string; settledViaSplit?: boolean }> {
     await this.ensureCustomer(customer);
 
     const totalCents = Math.round(Number(appointment.price) * 100);
+    const splitRules = this.regrasDeSplitDoAgendamento(appointment, 'CARTAO');
+    const splitApplied = splitRules.length > 0;
     const phone = this.formatPhoneForPagarme(customer.phone);
     const uniqueCode = `${appointment.id}-${Date.now()}`;
 
@@ -4683,6 +4738,7 @@ export class PaymentsService implements OnModuleDestroy {
             installments: 1,
             statement_descriptor: STATEMENT_DESCRIPTOR,
           },
+          ...(splitApplied ? { split: splitRules } : {}),
         },
       ],
       metadata: {
@@ -4699,9 +4755,13 @@ export class PaymentsService implements OnModuleDestroy {
       const chargeId = charge?.id;
       const status = charge?.status || result.status;
 
-      this.logger.log(`Pagar.me direct charge for appointment ${appointment.appointmentNumber} | charge: ${chargeId} | status: ${status}`);
+      this.logger.log(`Pagar.me direct charge for appointment ${appointment.appointmentNumber} | charge: ${chargeId} | status: ${status} | split ${splitApplied ? 'na autorizacao' : 'NENHUM'}`);
+      if (['failed', 'refused', 'canceled'].includes(status)) {
+        const motivo = charge?.last_transaction?.acquirer_message || charge?.last_transaction?.gateway_response?.errors?.[0]?.message || 'Pagamento recusado';
+        throw new BadRequestException(`Pagamento recusado: ${motivo}`);
+      }
 
-      return { pagarmeOrderId: result.id, status, chargeId };
+      return { pagarmeOrderId: result.id, status, chargeId, settledViaSplit: splitApplied };
     } catch (err: any) {
       const errorData = err.response?.data;
       this.logger.error(`Pagar.me appointment direct charge failed: ${JSON.stringify(errorData || err.message)}`);
@@ -4818,57 +4878,24 @@ export class PaymentsService implements OnModuleDestroy {
 
     // Credit card pre-auth: capture with split
     if (appointment.paymentMethod === 'CREDIT_CARD' && appointment.preAuthChargeId && !appointment.capturedAt) {
+      // KAN-325/E2E 17/11: split na autorização (ou nenhum, nos antigos) —
+      // o Pagar.me recusa split só na captura. Captura simples e confere.
       try {
         const totalCents = Math.round(Number(appointment.price) * 100);
-        const commissionCents = Math.round((Number(appointment.commissionAmount) || 0) * 100);
-        const vendorAmount = totalCents - commissionCents;
-        const vendorRecipientId = appointment.store?.owner?.pagarmeRecipientId;
-        const platformRecipientId = this.configService.get('PAGARME_PLATFORM_RECIPIENT_ID');
-
-        // P2: a soma do split TEM que fechar com o total, senão o Pagar.me rejeita
-        // a captura e ela re-tenta pra sempre (isSettled é resetado no catch).
-        // ANTES: se o vendedor não tinha recipient mas havia comissão, o split
-        // saía só com a parte da plataforma (< total) → captura travava. Agora a
-        // plataforma absorve o RESTANTE (total − o que foi pro vendedor), igual ao
-        // fluxo de pedidos.
-        const splitRules: any[] = [];
-        let vendorSplit = 0;
-        if (vendorRecipientId && vendorAmount > 0) {
-          vendorSplit = vendorAmount;
-          splitRules.push({
-            amount: vendorSplit,
-            recipient_id: vendorRecipientId,
-            type: 'flat',
-            options: { charge_processing_fee: false, liable: false },
-          });
-        }
-        const platformAmount = totalCents - vendorSplit;
-        if (platformRecipientId && platformAmount > 0) {
-          splitRules.push({
-            amount: platformAmount,
-            recipient_id: platformRecipientId,
-            type: 'flat',
-            options: { charge_processing_fee: true, liable: true },
-          });
-        }
-
-        taxaPorContaDaLoja(splitRules, vendorRecipientId, platformRecipientId);
-
-        const body: any = {
+        const result = await this.pagarmePost(`/charges/${appointment.preAuthChargeId}/capture`, {
           amount: totalCents,
-          code: `${appointment.id.replace(/-/g, '')}-s${Date.now()}`,
-          ...(splitRules.length > 0 ? { split: splitRules } : {}),
-        };
-
-        await this.pagarmePost(`/charges/${appointment.preAuthChargeId}/capture`, body);
+          code: `${appointment.id.replace(/-/g, '')}-c${Date.now()}`,
+        });
+        this.exigirCapturaPaga(result, `agendamento ${appointment.appointmentNumber}`);
         await aptRepo.update(appointment.id, { capturedAt: new Date() });
-        this.logger.log(`Settlement for appointment ${appointment.appointmentNumber} | capture-with-split | total: ${totalCents} cents`);
+        appointment.capturedAt = new Date();
+        this.logger.log(`Settlement for appointment ${appointment.appointmentNumber} | captura | split ${appointment.settledViaSplit ? 'na autorizacao' : 'NENHUM (repasse manual)'}`);
       } catch (err: any) {
         this.logger.error(`Settlement failed for appointment ${appointment.appointmentNumber}: ${err.message}`);
         await aptRepo.update(appointment.id, { isSettled: false } as any);
         throw err;
       }
-      return;
+      if (appointment.settledViaSplit) return;
     }
 
     // KAN-325: PIX cobrado com split — a loja já recebeu no pagamento.

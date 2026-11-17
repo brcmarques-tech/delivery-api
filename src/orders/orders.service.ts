@@ -546,7 +546,7 @@ export class OrdersService {
     ) {
       // Pré-autorização: segura o limite mas não cobra ainda
       try {
-        const { pagarmeOrderId, status, chargeId } =
+        const { pagarmeOrderId, status, chargeId, settledViaSplit } =
           await this.paymentsService.createOrderDirectCharge(
             savedOrder,
             customer,
@@ -555,6 +555,7 @@ export class OrdersService {
           );
         savedOrder.pagarmeOrderId = pagarmeOrderId;
         if (chargeId) savedOrder.preAuthChargeId = chargeId;
+        if (settledViaSplit) savedOrder.settledViaSplit = true;
 
         if (status === 'antifraud_review') {
           // Antifraud blocked but acquirer approved — save for manual reprocessing
